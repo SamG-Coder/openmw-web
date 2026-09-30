@@ -249,6 +249,14 @@ function handleStatsDynamic(ctx: StateCtx, player: Player, body: LTable): boolea
       // `{c: 99999, b: 99999}` and be stored at ten times its real maximum -- then forwarded
       // to the avatar as a restore.
       const have = cur?.[k]; if (have === undefined) return undefined;
+      // A CORPSE IS NOT HEALED. The peer says this body is dead; a raise claimed now (a regen
+      // tick, a restore racing the death) was added to the corpse's 0, the doc went above 0, and
+      // the one PlayerDeath the client sends was then refused as unconfirmed -- dead for good
+      // (s22 #172, backlog 520). The respawn clears avatarDead (server.ts) and the refill flows.
+      // ...a corpse the DOC agrees is dead: avatarDead alone can be stale (a death report while
+      // not driving sets it, and the living reports after it are gated), and it then refused
+      // every heal of a living player (#175 s112).
+      if (k === 'hp' && player.avatarDead === true && have.c <= 0) return undefined;
       if (restRefused) {
         // Only the RAISE is the refused rest's healing; a base step in the window is a
         // level-up, and dropping it lost the health gain for the session (backlog 256).
@@ -301,12 +309,22 @@ function handleStatsDynamic(ctx: StateCtx, player: Player, body: LTable): boolea
       player[field] = (player[field] ?? 0) + gained;
     }
     if (!r.hp && !r.mp && !r.ft) return true; // consumed, not applied
+    // Measured BEFORE the write: `cur` is the live doc the update below changes.
+    const gains = { hp: r.hp && r.hp.c - (cur?.hp?.c ?? r.hp.c), mp: r.mp && r.mp.c - (cur?.mp?.c ?? r.mp.c), ft: r.ft && r.ft.c - (cur?.ft?.c ?? r.ft.c) };
     ctx.store.update(player.charId, (doc) => {
       const d = doc.stats?.dynamic; if (!d) return;
       if (r.hp) d.hp = r.hp; if (r.mp) d.mp = r.mp; if (r.ft) d.ft = r.ft;
     }, 'sweep');
     const worldPeer = ctx.worldPeer();
-    if (worldPeer) worldPeer.peer.sendEvent('AvatarRestore', { id: player.id, ...(r.hp ? { hp: r.hp } : {}), ...(r.mp ? { mp: r.mp } : {}), ...(r.ft ? { ft: r.ft } : {}) });
+    // THE CHANGE RIDES ALONG AS `g`, and the avatar ADDS it. An absolute `c` raced the peer's
+    // report already in flight: that report (taken before this restore landed) overwrote the
+    // doc, the next claim's gain was added to the stale value, and a gain was lost per overlap
+    // -- a 50-point heal reached the avatar as +42 (s165 #158). `c` stays for the doc's sake.
+    const withG = (k: 'hp' | 'mp' | 'ft') => {
+      const v = r[k]; if (!v) return {};
+      return { [k]: { ...v, g: gains[k] } };
+    };
+    if (worldPeer) worldPeer.peer.sendEvent('AvatarRestore', { id: player.id, ...withG('hp'), ...withG('mp'), ...withG('ft') });
     return true;
   }
   // DEATH IS A FLUSH POINT. Everything else here rides the sweep, but hp reaching 0 must hit
@@ -335,16 +353,24 @@ function baseSpeed(ctx: StateCtx, player: Player): number | undefined {
 }
 
 // Flat string->finite-number map (attributes, skills).
-function parseNumberMap(body: LTable): Record<string, number> | undefined {
-  if (body.size > MAX_STAT_ENTRIES) return undefined;
+function parseNumberMap(body: LTable, player: Player, name: string): Record<string, number> | undefined {
+  const refuse = (why: string, key?: unknown, value?: unknown) => {
+    log('warn', 'state.stat_refused', { from: player.name, name, why, key: String(key ?? ''), value: String(value ?? '') });
+    return undefined;
+  };
+  if (body.size > MAX_STAT_ENTRIES) return refuse('too_many', body.size);
   const out: Record<string, number> = {};
   for (const [k, v] of body) {
     const n = finite(v);
-    if (typeof k !== 'string' || k.length === 0 || k.length > MAX_STAT_KEY || n === undefined) return undefined;
+    if (typeof k !== 'string' || k.length === 0 || k.length > MAX_STAT_KEY || n === undefined) return refuse('shape', k, v);
+    if (n < 0) return refuse('negative', k, v);
     // An attribute or skill lives in [0, 100] in the game's own rules and fortifies past it
     // only through effects, which never travel here (base values do). A DoS bound, like the
     // inventory's: a modified client declaring Strength 999 was stored and pushed to the avatar.
-    if (n < 0 || n > MAX_STAT_VALUE) return undefined;
+    // REFUSED WHOLE, on purpose (#369/#422): a base over 100 is the engine TEMPLATE (the
+    // example suite's Acrobatics 125), not a player, and storing any of that map would write the
+    // template over the real character. The refusal now says which key (s132, #157).
+    if (n > MAX_STAT_VALUE) return refuse('over_bound', k, v);
     out[k] = n;
   }
   return out;
@@ -365,7 +391,7 @@ function raiseWithin(player: Player, key: string, delta: number, limit: number):
 }
 
 function handleNumberMap(ctx: StateCtx, player: Player, body: LTable, field: 'attributes' | 'skills'): boolean {
-  const map = parseNumberMap(body);
+  const map = parseNumberMap(body, player, field);
   if (!map) return false;
   // #369: refused, not counted -- the server's copy stands and the next declaration is
   // measured against it. The first declaration (no baseline) is accepted as chargen's.
@@ -374,7 +400,7 @@ function handleNumberMap(ctx: StateCtx, player: Player, body: LTable, field: 'at
     for (const [k, v] of Object.entries(map)) {
       // #393: a key the previous declaration omitted is a raise FROM ZERO, not a free pass --
       // dropping Long Blade and re-adding it at 100 was measured against nothing. Damage keys
-      // come and go with the effect (identity.lua emits "<id>_damage" only while dmg != 0)
+      // were emitted only while dmg != 0 by older clients (now always, 0 included)
       // and only ever lower the stat, so those alone start from wherever they appear.
       const from = had[k] ?? (k.endsWith('_damage') ? v : 0);
       if (!raiseWithin(player, `${field}:${k}`, v - from, STAT_RAISE_PER_WINDOW)) {
@@ -832,6 +858,31 @@ export function handleAvatarItemStatesBatch(ctx: StateCtx, sender: Player, value
     const states = parseItemStatesL(tbl(e.get('itemStates')));
     if (Object.keys(states).length > MAX_INVENTORY) continue;
     p.peerItemStatesAt = now;
+    // THE AVATAR'S STACKS ARE ONLY THE OWNER'S STACKS WHEN THEY HOLD THE SAME NUMBER (backlog
+    // 507). A bucket is POSITIONAL -- one entry per stack, with its size -- and the owner's
+    // client applies it by splitting its own stacks to match (applyItemStates). While the
+    // avatar is still catching up to the doc (a slow peer frame, a pack changing fast) its
+    // layout describes a different pack, and applying it moved the PLAYER'S real count:
+    // twelve cuirasses given one by one reached the peer as 5, 2, 5, 8, 7, 4, 10, 2..., the
+    // avatar chased each figure, and after a drop it was left holding ten, over-encumbered,
+    // pinning its player in place (s151; switching this forward off made the sequence
+    // 1..12 exactly). So a record whose bucket counts a different number of items than the
+    // doc holds is left out -- of the doc merge (its stored states stand) and of the forward
+    // -- until a report arrives in which the two agree. A bucket that does not size every
+    // stack, or a record the doc does not list, is taken as before: neither can re-split a
+    // pack the owner holds.
+    const held = new Map((ctx.store.getCached(p.charId)?.inventory ?? []).map((it) => [it.id, it.n]));
+    const mismatched = new Set<string>();
+    for (const [rid, bucket] of Object.entries(states)) {
+      const have = held.get(rid);
+      if (have === undefined || bucket.some((st) => st.n === undefined)) continue;
+      const counted = bucket.reduce((sum, st) => sum + (st.n as number), 0);
+      if (counted !== have) { mismatched.add(rid); delete states[rid]; }
+    }
+    if (mismatched.size > 0) {
+      metrics.avatarItemLayoutSkipped.inc({}, mismatched.size);
+      log('debug', 'state.avatar_layout_mismatch', { player: p.name, records: [...mismatched].slice(0, 8) });
+    }
     // PER FIELD, the mirror of the client->doc rule above. A wholesale replace refunded within
     // one report interval what only the client spends: a cast-when-used charge (the avatar
     // still held the pre-cast charge and reported it back), a repair likewise. Charge and
@@ -859,7 +910,12 @@ export function handleAvatarItemStatesBatch(ctx: StateCtx, sender: Player, value
           return out;
         });
       }
-      if (Object.keys(merged).length > 0) doc.itemStates = merged;
+      // A record left out above keeps what the doc already had (the merge below replaces the
+      // map wholesale).
+      const kept: Record<string, ItemStateDoc[]> = {};
+      for (const rid of mismatched) if (have[rid]) kept[rid] = have[rid];
+      const next = { ...kept, ...merged };
+      if (Object.keys(next).length > 0) doc.itemStates = next;
       else delete doc.itemStates;
     }, 'sweep');
     const wire: Record<string, JsLike[]> = {};
@@ -896,7 +952,27 @@ function effectMagnitude(ctx: StateCtx, op: ActiveOp): number {
   }
   return sum;
 }
-type ActiveOp = { key: string; id: string; effects?: number[] };
+type ActiveOp = { key: string; id: string; effects?: number[]; mags?: number[] };
+// The sender's ROLLED magnitude per effect (identity.lua snapActive / global.lua
+// avatarEffectsTick), parallel to `effects`, -1 = none: the other body applies exactly that
+// instead of re-rolling a ranged effect into a different speed. Optional (older clients send
+// none); a malformed list refuses the op like a bad index. Bounded for shape only -- the
+// engine caps each one at its record's own max (magicbindings.cpp), so a claim can never
+// exceed a legitimate roll, and the magnitude budget above already charges that max.
+const MAX_ROLLED_MAG = 10_000;
+function magsOf(e: LTable, n: number): number[] | undefined | null {
+  const raw = e.get('mags');
+  if (raw === undefined) return undefined;
+  const t = tbl(raw);
+  if (!t || t.size !== n) return null;
+  const out: number[] = [];
+  for (const [, mv] of t) {
+    const m = finite(mv);
+    if (m === undefined || m < -1 || m > MAX_ROLLED_MAG) return null;
+    out.push(m);
+  }
+  return out;
+}
 function handleActiveSpells(ctx: StateCtx, player: Player, body: LTable): boolean {
   const list = (v: LValue | undefined, withEffects: boolean): ActiveOp[] | undefined => {
     const t = tbl(v);
@@ -918,7 +994,9 @@ function handleActiveSpells(ctx: StateCtx, player: Player, body: LTable): boolea
         if (i === undefined || !Number.isInteger(i) || i < 0 || i >= MAX_EFFECT_INDEXES) return undefined;
         effects.push(i);
       }
-      out.push({ key, id, effects });
+      const mags = magsOf(e, effects.length);
+      if (mags === null) return undefined;
+      out.push(mags ? { key, id, effects, mags } : { key, id, effects });
     }
     return out;
   };
@@ -1007,7 +1085,9 @@ export function handleAvatarEffectsBatch(ctx: StateCtx, sender: Player, value: L
         const fx = tbl(o.get('effects')); const effects: number[] = [];
         if (!fx || fx.size === 0 || fx.size > MAX_EFFECT_INDEXES) return [];
         for (const [, iv] of fx) { const i = finite(iv); if (i === undefined || !Number.isInteger(i) || i < 0 || i >= MAX_EFFECT_INDEXES) return []; effects.push(i); }
-        out.push({ key: rid, id: rid, effects });
+        const mags = magsOf(o, effects.length);
+        if (mags === null) return [];
+        out.push(mags ? { key: rid, id: rid, effects, mags } : { key: rid, id: rid, effects });
       }
       return out;
     };

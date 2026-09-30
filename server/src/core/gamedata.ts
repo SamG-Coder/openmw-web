@@ -282,10 +282,14 @@ export function buildPeerSettings(): string {
     'enabled = false',
     '[Navigator]',
     'max nav mesh tiles cache size = 268435456',
-    // The peer is single-threaded otherwise and the box has spare cores: physics off the
-    // main thread is the one parallelism the engine offers for free (#267).
+    // PHYSICS ON THE MAIN THREAD, deliberately (#267 had moved it off for parallelism). Async
+    // physics lands a body's move one frame AFTER the frame whose scripts read its position,
+    // so every avatar pose the peer streams was one frame (50 ms at the 20 fps cap) behind the
+    // input seq stamped on it, and the owner was corrected toward that gap on every step:
+    // 15-25 u typical, 30-50 u p95, while running (dev box telemetry, 2026-09-23). A peer at
+    // 20 fps has the headroom (~40% of one core measured there); a correct pose does not.
     '[Physics]',
-    'async num threads = 1',
+    'async num threads = 0',
     '',
   ].join('\n');
 }
@@ -329,12 +333,17 @@ export function gameDataDir(dataDir: string): string {
 export function hashContentFiles(
   data: GameData,
   mods: { slug: string; enabled: boolean; plugins: { file: string; enabled: boolean }[] }[] = [],
+  stack?: Pick<ModStack, 'refused'>,
 ): Map<string, string> {
   const out = new Map<string, string>();
   if (!data.ok) return out;
   const paths = data.contentFiles.map((name) => [name, join(data.dir, name)] as const);
+  // A mod refused for shadowing a stock file is not loaded by anything, so its copy must not
+  // hash over the stock one; an APPROVED swap is hashed here, later in `paths`, and so wins the
+  // map entry -- the manifest then names the bytes the world actually runs.
+  const refused = new Set((stack?.refused ?? []).map((r) => r.slug));
   for (const m of mods) {
-    if (!m.enabled) continue;
+    if (!m.enabled || refused.has(m.slug)) continue;
     for (const p of m.plugins) {
       if (p.enabled) paths.push([p.file, join(data.dir, MODS_SUBDIR, m.slug, p.file)]);
     }

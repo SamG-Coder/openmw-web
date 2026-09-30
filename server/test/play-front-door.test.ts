@@ -101,6 +101,27 @@ test('the F5 fragment keeps mpnew until chargen is done, then drops it', clientO
     'chargenDone must strip mpnew from the stash');
 });
 
+test('a rescue reboot mid-creation keeps mpnew, a character switch still drops it', clientOpts, () => {
+  // The SSO auth rescue reboots into the SAME world through rebootIntoWorld. It used to drop
+  // mpnew unconditionally, so a world restart during chargen booted the page without it: the
+  // opening was skipped and the server stored a character with no race, class or sign.
+  const fn = /async function rebootIntoWorld\(wsUrl\)\{[\s\S]*?\r?\n  \}/.exec(index);
+  assert.ok(fn, 'rebootIntoWorld not found');
+  assert.match(fn[0], /var stillCreating = !swChar && String\(window\.omw\.state\.chargenDone \|\| ''\) !== '1';/);
+  assert.match(fn[0], /if \(k === 'mpnew'\) return stillCreating;/);
+  assert.doesNotMatch(fn[0], /k !== 'mpnew'/, 'an unconditional mpnew drop is the bug');
+});
+
+test('an F5 into a deleted character goes to the character screen, not a dead world', clientOpts, () => {
+  // A tab left open on a character deleted elsewhere restored its fragment on reload and
+  // dialled that character's discarded world forever (404 each time).
+  const block = /var mchS = [\s\S]*?location\.replace\('launcher\.html#characters'\);/.exec(index);
+  assert.ok(block, 'no stale-character check on the restored fragment');
+  assert.match(block[0], /fetch\('\/auth\/characters'/);
+  assert.match(block[0], /!\/\(\^\|&\)mpnew=\/\.test\(savedFrag\)/, 'a character in creation must be exempt');
+  assert.match(block[0], /sessionStorage\.removeItem\('omwmp:bootfrag'\)/);
+});
+
 test('the launcher no longer emits mpstart and index.html no longer boots with --start', clientOpts, () => {
   // 406: an unknown --start cell dies in the engine's own "Failed to start new game" box, so the
   // reboot-once retry in fatalOverlay was unreachable; __omwAwaitRestore holds the screen instead.

@@ -11,6 +11,8 @@
 // here) and retreats 450 units; the creature must
 // close to melee reach within 15 s.
 import assert from 'node:assert/strict';
+import { pickUntil } from './_probe.mjs';
+import { focus, armMelee, swingUntil, probeOf as probeRec } from './_realfight.mjs';
 
 export const managedPeer = true;
 const STEP = 30_000;
@@ -40,10 +42,12 @@ export default async function run(ctx) {
 
   // The nearest living named creature (keyed by record, s164).
   const me = await poseOf(b);
-  const probe = JSON.parse(await b.eval('window.omw.state.actorProbe||"{}"'));
-  const dist = (r) => { const p = probe[r]; return p && !p.dead ? Math.hypot(p.x - me.x, p.y - me.y) : Infinity; };
-  const victim = Object.values(await netObjs(b)).sort((x, y) => dist(x) - dist(y))[0];
-  assert.ok(victim && Number.isFinite(dist(victim)), `no living named creature in the probe: ${JSON.stringify(Object.keys(probe))}`);
+  let probe = {};
+  // One a provoking blow cannot kill and that is alone under its record (#178: the 8 hp scrib
+  // died to the sting, and 'n' was 2 -- the probe's one position for 'scrib' could be either).
+  const { found: victim } = await pickUntil(ctx, async () => [Object.values(await netObjs(b)), JSON.parse(await b.eval('window.omw.state.actorProbe||"{}"'))],
+    (names, pr) => { probe = pr; const live = (r) => pr[r] && !pr[r].dead; const ok = (r) => live(r) && (pr[r].n ?? 1) === 1; return names.filter((r) => ok(r) && !(pr[r].hp >= 0 && pr[r].hp < 20)).sort((x, y) => Math.hypot(pr[x].x - me.x, pr[x].y - me.y) - Math.hypot(pr[y].x - me.x, pr[y].y - me.y))[0] ?? names.filter(ok)[0] ?? names.find(live); }); // last resort: a duplicated record (#179: the cell held only rats, n > 1)
+  assert.ok(victim, `no living named creature in the probe: ${JSON.stringify(Object.keys(probe))}`);
 
   // Provoke it with ONE STING, not a spell that kills it. A Fire Bite is 15-30 damage and the
   // mark the peer rolls here is a scrib with 8 health: #106 killed it with the provocation
@@ -55,13 +59,14 @@ export default async function run(ctx) {
   await b.cmd(`snapto:${Math.round(p0.x + 60)},${Math.round(p0.y)},${Math.round(p0.z + 8)}`);
   await b.eval("if (window.omw.state) window.omw.state.selfDivergence = null; 'cleared';");
   await b.waitFor('typeof window.omw.state.selfDivergence === "string" && Number(window.omw.state.selfDivergence) < 96', 60_000, 'the avatar rules our pose beside the mark');
+  // Provoked FOR REAL and weakly (longblade 40): hurt, not killed, so it has a reason to chase.
   let hurt = false;
-  for (let stings = 0; stings < 4 && !hurt; stings++) {
-    await b.cmd(`hitn:${victim}:1`);
-    await ctx.sleep(2_000);
+  await focus(b); await armMelee(b, undefined, 40);
+  await swingUntil(ctx, b, () => probeRec(b, victim), async () => {
     const q = await probeOf(b, victim);
     hurt = !!q && Number(q.hp) < Number(p0.hp);
-  }
+    return hurt;
+  }, { maxSwings: 15, budgetMs: 120_000 });
   const stung = await probeOf(b, victim);
   ctx.log(`the mark: the peer's "${victim}" hp ${p0.hp} -> ${(stung || {}).hp} (hurt=${hurt}); B retreats ${RETREAT} u`);
   assert.ok(hurt, `the ${victim} was never hurt by the sting; nothing to provoke a chase with`);
@@ -69,16 +74,27 @@ export default async function run(ctx) {
 
   // Retreat: 450 u east of the creature, and the chase must close the gap.
   const p1 = (await probeOf(b, victim)) || p0;
-  await b.cmd(`snapto:${Math.round(p1.x + RETREAT)},${Math.round(p1.y)},${Math.round(p1.z + 8)}`);
+  // INSIDE THE CELL: the actor probe covers B's own cell only, and a retreat over the border
+  // left the mark out of it -- "gone" (#172: -1 u). East unless that crosses the line, then west.
+  const cellX = Math.floor(p1.x / 8192);
+  const dir = Math.floor((p1.x + RETREAT) / 8192) === cellX ? 1 : -1;
+  const backX = Math.round(p1.x + dir * RETREAT);
+  await b.cmd(`snapto:${backX},${Math.round(p1.y)},${Math.round(p1.z + 8)}`);
   // READ THE GAP THE MOMENT THE SNAP LANDS. The mark is already provoked and a rat covers
   // 200+ u in the 2.5 s this used to sleep (#107 104 u, #111 227 u: "the retreat did not open
   // the gap" -- it had, and the chase under test had already eaten it). The pose mirror is
   // 2 Hz; poll it until the snap shows, then measure.
-  await b.waitFor(`Math.abs((JSON.parse(window.omw.state.pose||"{}").x||0) - ${Math.round(p1.x + RETREAT)}) < 64`, 10_000, 'the pose mirror shows the retreat');
+  await b.waitFor(`Math.abs((JSON.parse(window.omw.state.pose||"{}").x||0) - ${backX}) < 64`, 10_000, 'the pose mirror shows the retreat');
   // -1, NOT Infinity: the eval crosses as JSON, where Infinity is not a value -- a dead or
   // absent mark came back as NaN and every message about it read "NaN u" (#106).
   const gapExpr = `(function(){const p=JSON.parse(window.omw.state.actorProbe||"{}")[${JSON.stringify(victim)}];const m=JSON.parse(window.omw.state.pose||"{}");return p&&!p.dead&&m.x!==undefined?Math.hypot(p.x-m.x,p.y-m.y):-1;})()`;
-  const gap0 = Number(await b.eval(gapExpr));
+  // ...and give the actor probe its refresh: the pose mirror is 10 Hz now, the probe is not,
+  // so the first read after the snap can land before the mark is listed again.
+  let gap0 = -1;
+  for (const until = Date.now() + 3_000; Date.now() < until && gap0 < 0;) {
+    gap0 = Number(await b.eval(gapExpr));
+    if (gap0 < 0) await ctx.sleep(250);
+  }
   ctx.log(`gap after the retreat: ${gap0.toFixed(0)} u`);
   // The retreat is the setup: it must leave the mark OUTSIDE reach (else the close below is
   // vacuous); how much of the 450 u the chase has already closed is the chase's business.

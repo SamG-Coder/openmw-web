@@ -156,8 +156,15 @@ local function stanceOf(obj) return types.Actor.getStance(obj) end
 -- Bit 3 (use, the player pose's bit): the AI's wind-up-to-release window, plus a spell cast
 -- in flight -- setAttackingOrSpell drops the moment the cast animation starts, so the 10 Hz
 -- sample would miss every spell without the animation read (#288).
+-- The cast half comes from companion.lua on the actor itself (mpActorCasting): openmw.animation
+-- does not load in this global script, and the require used to throw inside the pcall, so no
+-- NPC spell ever reached another screen (s172).
+local casting = {}
+function actors.noteCasting(obj, on)
+    if obj and obj:isValid() then casting[refKeyOf(obj)] = on == true or nil end
+end
 local function attackingOf(obj)
-    return (mp.isAttacking and mp.isAttacking(obj)) or require('openmw.animation').isPlaying(obj, 'spellcast')
+    return (mp.isAttacking and mp.isAttacking(obj)) or casting[refKeyOf(obj)] == true
 end
 
 local function actorPose(obj)
@@ -661,11 +668,16 @@ actors.handlers.MP_ActorDisposition = function(data)
     local ownPlayer = world.players[1]
     if not (ownPlayer and ownPlayer:isValid()) then return end
     pcall(function() types.NPC.setBaseDisposition(obj, ownPlayer, data.disposition) end)
+    -- FIGHT/FLEE/ALARM ON THE ACTOR. Stat setters are Self-gated (mwlua/stats.cpp), unlike
+    -- setBaseDisposition: written from here they threw inside the pcall and no AI setting
+    -- ever reached another client. companion.lua (on every NPC and creature) writes them.
     if type(data.ai) == 'table' then
+        local ai = {}
         for _, k in ipairs(AI_SETTINGS) do
             local v = tonumber(data.ai[k])
-            if v then pcall(function() types.Actor.stats.ai[k](obj).base = math.floor(v) end) end
+            if v then ai[k] = math.floor(v) end
         end
+        if next(ai) then pcall(function() obj:sendEvent('mpSetStats', { ai = ai }) end) end
     end
 end
 
@@ -736,6 +748,12 @@ end
 -- so this is the only "is it fighting" the follow-teleport (global.lua) can ask.
 local inCombat = {}
 
+-- The dialogue lock lives in quests.lua; required lazily (both load inside global.lua).
+local function talkingTo(obj)
+    local ok, quests = pcall(require, 'scripts.mp.quests')
+    return ok and type(quests) == 'table' and quests.isTalkingTo ~= nil and quests.isTalkingTo(obj) == true
+end
+
 function actors.inCombat(obj)
     return inCombat[refKeyOf(obj)] == true
 end
@@ -754,6 +772,10 @@ function actors.noteCombat(obj, target)
         -- drifts into the next cell to bite it produced this claim per frame, refused per frame.
         local own = deps.ownIdFn and deps.ownIdFn() or nil
         if foeId == nil or foeId ~= own or (mp.isSystem and mp.isSystem()) then return end
+        -- ONLY FROM THE CONVERSATION (s171). The holder's own fight reaches this puppet as
+        -- MP_ActorAI and stacks a Combat package on it; companion.lua then read that package
+        -- back and claimed it as ours -- refused by the server, every time a creature engaged.
+        if not talkingTo(obj) then return end
     end
     local body = withAddr({
         cellKey = cellKey, epoch = actors.epochOf(cellKey) or 0, combat = foeId or false,
@@ -770,9 +792,12 @@ function actors.noteTravel(obj, dest)
     if not (obj and obj:isValid()) or type(dest) ~= 'table' or type(dest.x) ~= 'number' then return end
     local cellKey = actors.cellKeyOfObj(obj)
     if not cellKey then return end
+    -- A non-holder's claim stands only from the conversation (as noteCombat): a puppet's Travel
+    -- the holder relayed, or one its record carries, is not ours to claim.
+    if not actors.isHolderOf(cellKey) and not talkingTo(obj) then return end
     local body = withAddr({
         cellKey = cellKey, epoch = actors.epochOf(cellKey) or 0,
-        travel = { x = dest.x, y = dest.y or 0, z = dest.z or 0 },
+        travel ={ x = dest.x, y = dest.y or 0, z = dest.z or 0 },
     }, obj)
     if body then mp.sendEvent('ActorAI', body) end
 end
@@ -1027,17 +1052,47 @@ local function objOfWireKey(key)
     return ok and obj or nil
 end
 
+-- HOLDER RETRY (s157 #187: eldafire came back alive on the restarted peer while every screen
+-- showed her corpse). The record is answered ONCE per held cell and a key that does not resolve
+-- in that frame was dropped ("the next WorldCellState says it again" -- never true for a holder:
+-- nothing re-sends it) while `recorded` opened the bars anyway. A held cell now keeps its unkilled
+-- keys and retries each tick for DEATH_RETRY_SECONDS. Bounded: a scripted Resurrect after that
+-- must not be undone by a stale list.
+local DEATH_RETRY_SECONDS = 30
+local function killRecorded(cell, now)
+    local left = {}
+    for _, wireKey in ipairs(cell.deathKeys or {}) do
+        local obj = objOfWireKey(wireKey)
+        local okv, valid = pcall(function() return obj and obj:isValid() end)
+        if okv and valid then
+            local okd, dead = pcall(types.Actor.isDead, obj) -- a key that names a non-actor must not abort the holder tick
+            if okd and not dead then
+                if not obj:hasScript('scripts/mp/testkill.lua') then pcall(function() obj:addScript('scripts/mp/testkill.lua', {}) end) end
+                left[#left + 1] = wireKey -- until it reads dead
+            end
+        else
+            left[#left + 1] = wireKey
+        end
+    end
+    cell.deathKeys = (#left > 0 and now < (cell.deathUntil or 0)) and left or nil
+    if #left > 0 and not cell.deathKeys then print('[mp] recorded deaths never applied in ' .. tostring(cell.cellKey) .. ': ' .. table.concat(left, ',')) end
+end
+
 function actors.noteCellDeaths(cellKey, keys)
     -- The record answered the request broadcastCell sent once the cell had actors (#431):
     -- from here the holder's bars can go out. The grant's own request may be answered before
     -- the cell is loaded, when no key below resolves; that answer does not count.
     if held[cellKey] and held[cellKey].resynced then held[cellKey].recorded = true end
+    if held[cellKey] and keys and #keys > 0 then
+        local h = held[cellKey]
+        h.cellKey, h.deathKeys, h.deathUntil = cellKey, keys, core.getRealTime() + DEATH_RETRY_SECONDS
+    end
     for _, wireKey in ipairs(keys or {}) do
         local obj = objOfWireKey(wireKey)
         local okv, valid = pcall(function() return obj and obj:isValid() end)
         if not (okv and valid) then
-            -- Not loaded here yet: nothing to key on. The next WorldCellState for the cell
-            -- (sent on every entry) says it again once the object exists.
+            -- Not loaded here yet: nothing to key on. A held cell retries it (killRecorded);
+            -- a viewer waits for its next WorldCellState.
         else
             local key = refKeyOf(obj)
             if held[cellKey] then
@@ -1056,7 +1111,14 @@ end
 function actors.killActorByRecord(recordId)
     watchKillRecord = recordId
     for _, obj in ipairs(cellActors(deps.ownCellKeyFn())) do
-        if obj.recordId == recordId then
+        -- NOT A CORPSE, NOT ONE ALREADY DYING: the first match was always the same fish (the
+        -- dead stay in the cell's list, and a kill lands at the END of the frame), so four
+        -- kills killed one and the rest bit on (#158 s149).
+        local okL, alive = pcall(function()
+            return not types.Actor.isDead(obj) and types.Actor.stats.dynamic.health(obj).current > 0
+                and not obj:hasScript('scripts/mp/testkill.lua')
+        end)
+        if obj.recordId == recordId and okL and alive then
             -- Dynamic-stat writes are Self-gated: setting health from here silently fails
             -- (a pcall around it just hides the error). Attach a one-shot CUSTOM script to
             -- reach the actor's own Self context instead.
@@ -1167,6 +1229,7 @@ function actors.tick(now)
     -- One knob, on the server, instead of two that alias against each other.
     local byCell = next(held) and actorsByCell() or nil
     for cellKey, cell in pairs(held) do
+        if cell.deathKeys then killRecorded(cell, now) end
         broadcastCell(cellKey, cell.epoch, cell, now, byCell[cellKey] or {})
     end
     if now - lastSnapshot >= SNAPSHOT_SECONDS then
@@ -1206,13 +1269,22 @@ function actors.tick(now)
         -- Deterministic cross-client actor probe: world.activeActors is in engine-internal
         -- order, which differs per client, so key by recordId and sort. Scenarios compare
         -- the SAME record on both clients.
-        local probe = {}
+        local probe, probeN = {}, {}
         for _, obj in ipairs(cellActors(ownCell)) do
             local rec = obj.recordId
             -- n: how many of this record stand in the cell. First-wins by record means two
             -- clients can be looking at DIFFERENT fish (s42 #117: slaughterfish_small 4859 u
             -- apart); a scenario compares records with n == 1 only.
             if probe[rec] then probe[rec].n = probe[rec].n + 1 end
+            -- THE BODY THE HOLDER DRIVES, over a local-only twin of the same record: a twin
+            -- stands still where the content placed it, and a scenario swung at it 150 u from
+            -- the real NPC for a hundred swings (s157 #166: client 60 u, peer 153-213 u).
+            local puppeted = actors.isPuppetedActor(obj) == true
+            if probe[rec] and puppeted and not probe[rec].puppet then
+                local n = probe[rec].n
+                probe[rec] = nil
+                probeN[rec] = n
+            end
             if not probe[rec] then
                 local p = obj.position
                 -- `guard` so a scenario can find the actor that is supposed to REACT to a
@@ -1225,7 +1297,7 @@ function actors.tick(now)
                 local hp = -1
                 pcall(function() hp = types.Actor.stats.dynamic.health(obj).current end)
                 probe[rec] = { x = p.x, y = p.y, z = p.z, dead = types.Actor.isDead(obj),
-                    guard = isGuard, hp = hp, n = 1 }
+                    guard = isGuard, hp = hp, n = probeN[rec] or 1, puppet = puppeted }
             end
         end
         mp.set('actorProbe', json.encode(probe))

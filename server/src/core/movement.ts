@@ -22,6 +22,9 @@ import { MSG_PLAYER_STATE_BATCH, packPlayerStateBatch } from '../proto/input';
 // last word does not pin players for perceptible time.
 import { PEER_POSE_FRESH_MS } from './players';
 
+// 66 ms. A 50 ms tick (matching the peer's 20 Hz avatar cadence) was tried for s172 #179 and measured
+// no gain over the host's own run-to-run noise (p50 425-525 ms either way) for ~33% more near-tier
+// traffic, so it was reverted (#181).
 export const BATCH_INTERVAL_MS = 66;
 // Sanity bound on a pose, not a world size: 512000 (62.5 cells) left Tamriel Rebuilt's mainland,
 // which reaches cell -60 (~491k units), 2.5 cells of headroom, and past it a player was invisible
@@ -78,6 +81,13 @@ export function parseExterior(cellKey: string): { x: number; y: number } | null 
 // placed at the cell CENTRE (half-diagonal 5793 < 7168, so the anchor is fully covered) and a
 // real measurement of what its processing radius reaches — not an assumption about what is
 // loaded.
+//
+// This function stays one cell: it is what the peer's OWN avatar claims when it walks. The
+// 3x3 around each PLAYER is held separately (server.ts heldRing), which became safe once both
+// preconditions above held: one anchor per player at their live position (not one per cell,
+// where the last player seen won), resent every 2 s. Every NPC a client processes is then
+// within the same radius of an anchor on the peer, so a held neighbour is simulated, not a
+// statue. worldstate hears() relays the ring beyond that to the peer.
 export function loadedCells(cellKey: string): string[] {
   return [cellKey];
 }
@@ -269,6 +279,15 @@ export class MoveBroadcaster {
     const nowMs = Date.now();
     for (const p of this.roster.inWorld()) {
       if (p.system === true || p.bot === true) continue;
+      // NOT DURING CHARACTER CREATION. The peer's world is past chargen (creation only ever
+      // advances in the player's own engine; see the chargen sanctuary in worldstate.ts), so
+      // its Seyda Neen is not the one the player is walking through: objects the opening
+      // enables and disables, and NPCs the player's own engine is running, stand elsewhere.
+      // Reconciling against that body rubber-banded every step of the opening and held the
+      // player on the dock bridge against something only the peer's world had. The client's
+      // own path rules until ChargenComplete (the degraded mode below, already safe); the
+      // avatar rejoins the player at the Census office door, a cell change it follows.
+      if (p.inChargen === true) continue;
       if (p.peerPoseAt === undefined || nowMs - p.peerPoseAt > PEER_POSE_FRESH_MS) continue;
       if (!p.pose || p.lastInputSeq === undefined) continue;
       p.peer.sendBinaryFrame(MSG_PLAYER_STATE_BATCH, packEnvelope(MSG_PLAYER_STATE_BATCH,

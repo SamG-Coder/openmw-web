@@ -10,9 +10,10 @@
 //
 // s66 covers the same bars for PvP at the unit tier only; this is the product path, live: no
 // hit injection on the victim at all, just a provoked creature and an avatar standing in
-// reach of it.
+// reach of it. Provoked FOR REAL: up to three swings with the mouse button (_realfight.mjs).
 import assert from 'node:assert/strict';
 import { pickUntil } from './_probe.mjs';
+import { focus, armMelee, provoke, probeOf as probeRec } from './_realfight.mjs';
 
 const BOOT = { retail: true, joinTimeoutMs: 420_000 };
 const SPOT = '-12500,-53100,512'; // inside -2,-7 (see s109)
@@ -42,7 +43,7 @@ export default async function run(ctx) {
 
   // Stand next to the creature: a bite has a reach, and the avatar follow-teleports with us.
   let names, probe, victim;
-  ({ found: victim, probes: [names, probe] } = await pickUntil(ctx, async () => [Object.values(await netObjs(a)), await probeOf(a)], (names, probe) => names.find((r) => probe[r] && !probe[r].dead)));
+  ({ found: victim, probes: [names, probe] } = await pickUntil(ctx, async () => [Object.values(await netObjs(a)), await probeOf(a)], (names, probe) => names.find((r) => probe[r] && !probe[r].dead && !(probe[r].hp >= 0 && probe[r].hp < 20)) ?? names.find((r) => probe[r] && !probe[r].dead))); // one a provoking swing cannot kill before it bites back (s112 #172)
   assert.ok(victim, `no living named creature in the probe: net=${JSON.stringify(names)} probe=${JSON.stringify(Object.keys(probe))}`);
   const p = probe[victim];
   await a.cmd(`snapto:${Math.round(p.x + 60)},${Math.round(p.y)},${Math.round(p.z + 8)}`);
@@ -56,14 +57,20 @@ export default async function run(ctx) {
   await a.waitFor('String(window.omw.state.selfStats||"").indexOf("/") > 0', 30_000, 'the peer reports the bars');
   const before = parseBars(await a.eval('window.omw.state.selfStats'));
   ctx.log(`selfStats before=${before.c}/${before.b}`);
-  const deadline = Date.now() + 120_000;
-  let bars = null, dropped = false, pokes = 0;
-  while (Date.now() < deadline && !dropped) {
-    if (pokes < 3) { await a.cmd(`hitn:${victim}:1`); pokes++; }
-    await ctx.sleep(2_000);
+  let bars = null, dropped = false;
+  const bitten = async () => {
     bars = parseBars(await a.eval('window.omw.state.selfStats'));
     dropped = !!bars && bars.c <= before.c - 1;
-  }
+    return dropped;
+  };
+  // A scrib will not start a fight on its own: up to three real swings to start one.
+  // WEAKLY (longblade 40), swing then wait for it to fight back (_realfight provoke): three swings at 100 killed the scrib (#156),
+  // and a dead creature bites nobody. Hurt, it turns on us.
+  await focus(a); await armMelee(a, undefined, 40);
+  const poke = await provoke(ctx, a, () => probeRec(a, victim), bitten);
+  ctx.log(`provoked with ${poke.swings} real swing(s)`);
+  const deadline = Date.now() + 120_000;
+  while (Date.now() < deadline && !(await bitten())) await ctx.sleep(2_000);
   ctx.log(`selfStats after=${bars ? bars.c + '/' + bars.b : 'none'} hitFwd=${await a.eval('window.omw.state.hitFwd')} probe=${JSON.stringify((await probeOf(a))[victim])}`);
   assert.ok(dropped, `the player's peer-reported health never dropped while standing in reach of a provoked "${victim}": `
     + 'either the peer creature does not attack avatars, or its damage never reached the owner as SelfStats');

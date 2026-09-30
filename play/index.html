@@ -545,7 +545,7 @@ window.omw = (function(){
    function want(text, cls){
      if (mode === 'all') return true;
      if (cls === 'err') return true;
-     return /\berror\b|\bwarn|\bfailed\b|\bABORT\b|Lua error/i.test(text);
+     return /\berror\b|\bwarn|\bfailed\b|\bABORT\b|Lua error|can not parse/i.test(text);
    }
    function flush(){
      if (sending || !queue.length) return;
@@ -569,6 +569,131 @@ window.omw = (function(){
      if (queue.length >= MAX_QUEUE) { dropped++; return; }
      queue.push(text);
    };
+ })();
+ // MOVEMENT TELEMETRY, every 5 s while in a multiplayer world: what the player's screen is
+ // doing, which the server otherwise never sees. Frame rate and the worst frame gap (browser
+ // stalls), the self-correction distances (selfDivergence, sampled every 100 ms: p50/p95/max),
+ // hard snaps, and the rate of the streams that drive the screen (own moves, actor batches).
+ // One /clientlog line, info level, on the same bounded route the error reporter uses. Off
+ // with ?clientlog=off like the rest of it. A diagnostic, not analytics: no account, a
+ // per-load session id only.
+ (function omwTelemetry(){
+   if (/[?&]clientlog=(0|off)/.test(location.search)) return;
+   var session = Math.random().toString(36).slice(2, 10);
+   var frames = 0, worstGap = 0, lastFrame = 0;
+   function tick(t){ if (lastFrame) { var g = t - lastFrame; if (g > worstGap) worstGap = g; } lastFrame = t; frames++; requestAnimationFrame(tick); }
+   requestAnimationFrame(tick);
+   // Binary frames as the BROWSER receives them, by envelope type: tells "never arrived"
+   // apart from "arrived and the engine dropped it" (the Lua counters only see the latter).
+   var wsRx = {}, lastSeq = 0, dumped = false;
+   var actorTap = window.__omwActorTap = { last: {}, edges: [], events: [] };
+   var NativeWS = window.WebSocket;
+   if (NativeWS) {
+     window.WebSocket = function(url, protocols){
+       var ws = protocols === undefined ? new NativeWS(url) : new NativeWS(url, protocols);
+       lastSeq = 0; // the engine resets its cursor per connection too
+       ws.addEventListener('message', function(e){
+         var d = e.data;
+         if (!(d instanceof ArrayBuffer) || d.byteLength < 2) return;
+         var v = new DataView(d), ty = v.getUint16(0, true), t = ty.toString(16);
+         wsRx[t] = (wsRx[t] || 0) + 1;
+         // The engine's movement-family checks, mirrored: one seq cursor shared by 0x101/0x103/
+         // 0x200 (a frame at or below it is dropped), and 0x200's exact size rule.
+         if ((ty === 0x101 || ty === 0x103 || ty === 0x200) && d.byteLength >= 6) {
+           var seq = v.getUint32(2, true);
+           if (seq <= lastSeq) wsRx[t + ':stale'] = (wsRx[t + ':stale'] || 0) + 1; else lastSeq = seq;
+           if (ty === 0x200 && (d.byteLength < 11 || d.byteLength !== 11 + v.getUint8(10) * 28))
+             wsRx['200:size' + d.byteLength] = (wsRx['200:size' + d.byteLength] || 0) + 1;
+         }
+         // Per-actor tap (s171): the newest pose each actor got AS RECEIVED, and every edge of
+         // its use bit (bit 3), so a scenario can tell "never sent" from "sent, not shown".
+         // Keys: 'n<netId>' for a named runtime actor (contentFile -2), '<cf>:<index>' otherwise.
+         var now = Date.now();
+         if (ty === 0x200 && d.byteLength >= 11) {
+           for (var i = 0, n = v.getUint8(10); i < n && 11 + (i + 1) * 28 <= d.byteLength; i++) {
+             var o = 11 + i * 28, cf = v.getInt32(o + 4, true), k = (cf === -2 ? 'n' : cf + ':') + v.getUint32(o, true);
+             var fl = v.getUint8(o + 23), was = actorTap.last[k];
+             if (was && ((was.fl ^ fl) & 8)) actorTap.edges.push([now, k, fl]);
+             actorTap.last[k] = { t: now, x: v.getFloat32(o + 8, true), y: v.getFloat32(o + 12, true), z: v.getFloat32(o + 16, true), fl: fl, yaw: v.getUint16(o + 20, true) * 2 * Math.PI / 65536 };
+           }
+           if (actorTap.edges.length > 600) actorTap.edges.splice(0, 300);
+         } else if (ty === 0x0002 && d.byteLength > 7) {
+           var nl = v.getUint8(6), nm = '';
+           for (var j = 0; j < nl && 7 + j < d.byteLength; j++) nm += String.fromCharCode(v.getUint8(7 + j));
+           if (nm === 'ActorStatsDynamic' || nm === 'ActorAI') { actorTap.events.push([now, nm]); if (actorTap.events.length > 600) actorTap.events.splice(0, 300); }
+         }
+       });
+       return ws;
+     };
+     window.WebSocket.prototype = NativeWS.prototype;
+     ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function(k){ window.WebSocket[k] = NativeWS[k]; });
+   }
+   var div = [], snaps = 0, lastSnap = '', prev = null, lastSent = Date.now();
+   function st(){ return (window.omw && window.omw.state) || {}; }
+   // NPC AGREEMENT, live: each alive actor this screen draws (the probe mirror, its own copy)
+   // against the nearest pose the server sent in the last second. The live half of the 64 u
+   // bar -- a software-rendered harness client cannot run fast enough to judge it.
+   var npcGap = [];
+   setInterval(function(){
+     var s = st();
+     if (s.netstate !== 'Joined' || !s.actorProbe) return;
+     var probe; try { probe = JSON.parse(s.actorProbe); } catch (e) { return; }
+     var now = Date.now(), rx = [];
+     for (var k in actorTap.last) { var r = actorTap.last[k]; if (now - r.t < 1000) rx.push(r); }
+     if (!rx.length) return;
+     for (var rec in probe) {
+       var p = probe[rec];
+       if (rec === 'player' || !p || p.dead || (p.n || 1) !== 1) continue;
+       var best = Infinity;
+       for (var i = 0; i < rx.length; i++) { var dx = rx[i].x - p.x, dy = rx[i].y - p.y, dd = dx * dx + dy * dy; if (dd < best) best = dd; }
+       if (best < 1024 * 1024) npcGap.push(Math.sqrt(best)); // beyond that it is another actor
+     }
+   }, 1000);
+   setInterval(function(){
+     var s = st();
+     if (s.netstate !== 'Joined') return;
+     var d = parseFloat(s.selfDivergence);
+     if (!isNaN(d)) div.push(d);
+     if (s.selfSnap && s.selfSnap !== lastSnap) { if (lastSnap) snaps++; lastSnap = s.selfSnap; }
+   }, 100);
+   setInterval(function(){
+     var s = st();
+     if (s.netstate !== 'Joined') { frames = 0; worstGap = 0; div = []; return; }
+     var now = Date.now(), secs = (now - lastSent) / 1000; lastSent = now;
+     var cur = { a: +s.actorBatchesIn || 0, m: +s.moveRx || 0 };
+     // Rates are taken against the PREVIOUS reading, so it is captured before `prev` moves on
+     // (it used to be overwritten first, and every rate read 0.0).
+     var last = prev;
+     var rate = function(k){ return last ? ((cur[k] - last[k]) / secs).toFixed(1) : '-'; };
+     prev = cur;
+     div.sort(function(a, b){ return a - b; });
+     var q = function(p){ return div.length ? div[Math.min(div.length - 1, Math.floor(p * div.length))].toFixed(1) : '-'; };
+     npcGap.sort(function(a, b){ return a - b; });
+     var gq = function(p){ return npcGap.length ? npcGap[Math.min(npcGap.length - 1, Math.floor(p * npcGap.length))].toFixed(0) : '-'; };
+     var line = '[telemetry] fps=' + (frames / secs).toFixed(1) + ' worstFrameMs=' + Math.round(worstGap)
+       + ' div p50=' + q(0.5) + ' p95=' + q(0.95) + ' max=' + q(0.999) + ' n=' + div.length
+       + ' snaps=' + snaps + ' actorBatches/s=' + rate('a') + ' moves/s=' + rate('m')
+       + ' cell=' + (s.cell || '?') + ' holder=' + (s.authorityHolder || '?') + ' actors=' + (s.actorCount || '?')
+       + ' puppeted=' + (s.puppetedActors || '?')
+       + ' npcGap p50=' + gq(0.5) + ' p95=' + gq(0.95) + ' n=' + npcGap.length
+       + ' wsRx=' + JSON.stringify(wsRx)
+       + ' raw=' + JSON.stringify({ abi: s.actorBatchesIn, isHolder: s.isHolder, puppetRx: s.puppetRx,
+           puppetMark: s.puppetMark, simReady: s.simReady, snap: s.selfSnap, stale: s.selfStale });
+     // Once per load, the short state keys: what the scripts believe (holder, sim, chargen).
+     // Personal fields (profile*, email, characters, chat) never leave the page.
+     if (!dumped) {
+       dumped = true;
+       var keep = {};
+       Object.keys(s).forEach(function(k){
+         if (/profile|email|character|chat|friend|invite|token|journal|topics/i.test(k)) return;
+         var v = String(s[k]); if (v.length <= 60) keep[k] = v;
+       });
+       line += ' state=' + JSON.stringify(keep);
+     }
+     frames = 0; worstGap = 0; div = []; snaps = 0; wsRx = {}; npcGap = [];
+     fetch('/clientlog', { method: 'POST', keepalive: true, headers: { 'content-type': 'application/json' },
+       body: JSON.stringify({ session: session, lines: [line] }) }).catch(function(){});
+   }, 5000);
  })();
  // Themed loading overlay controller. Driven by setStatus (engine download %), append()
  // log lines (game-data download / local mount phases), and hidden on the first engine frame.
@@ -731,7 +856,30 @@ window.omw = (function(){
  try {
    if (!location.hash && (location.search === '' || location.search === '?')) {
      var savedFrag = sessionStorage.getItem('omwmp:bootfrag');
-     if (savedFrag) history.replaceState(null, '', location.pathname + location.search + '#' + savedFrag);
+     if (savedFrag) {
+       history.replaceState(null, '', location.pathname + location.search + '#' + savedFrag);
+       // ...BUT ONLY IF THAT CHARACTER STILL EXISTS. A tab left open on a character that was
+       // then deleted rebooted, on F5, into the deleted character's world: discarded with it,
+       // so the gateway answered 404 on every dial and the tab retried forever (dev box,
+       // 2026-09-23). Asked in the background, from the token the fragment already carries;
+       // a missing character sends the tab to the character screen. Anything unclear (offline,
+       // an expired token) leaves the reload alone, and so does a character still in creation:
+       // a provisional one (mpnew) is not in the list until ChargenComplete adopts it.
+       var mchS = /(^|&)mpchar=([^&]+)/.exec(savedFrag), lokS = /(^|&)mplocker=([^&]+)/.exec(savedFrag);
+       if (mchS && lokS && !/(^|&)mpnew=/.test(savedFrag)) {
+         var savedChar = decodeURIComponent(mchS[2]);
+         fetch('/auth/characters', { cache: 'no-store',
+           headers: { authorization: 'Bearer ' + decodeURIComponent(lokS[2]) } })
+           .then(function(r){ return r.ok ? r.json() : null; })
+           .then(function(d){
+             if (!d || !Array.isArray(d.characters)) return;
+             if (d.characters.some(function(c){ return c && c.id === savedChar; })) return;
+             try { sessionStorage.removeItem('omwmp:bootfrag'); } catch (e) {}
+             window.__omwAllowLeave = true;
+             location.replace('launcher.html#characters');
+           }).catch(function(){});
+       }
+     }
    }
  } catch (e) {}
  if (location.pathname.endsWith('/index.html')
@@ -747,7 +895,13 @@ window.omw = (function(){
  // Hard requirement check: this build uses pthreads (SharedArrayBuffer), which needs
  // cross-origin isolation and a capable browser. Fail with a CLEAR message, not a cryptic
  // instantiation error (Safari/iOS and non-isolated hosts land here).
- if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined'){
+ if (!self.isSecureContext){
+   // The launcher says the same: a desktop browser on http://<LAN address> is not "unsupported".
+   fatalOverlay('Open this page over HTTPS',
+     'The engine needs a secure page, and browsers only treat https:// (or this computer\'s own '
+     + 'localhost) as one. Ask the server\'s owner for its https:// address, or play on the '
+     + 'server machine itself at http://localhost.', false);
+ } else if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined'){
    fatalOverlay('Browser not supported',
      'This build needs SharedArrayBuffer + cross-origin isolation (COOP/COEP headers). '
      + 'Use a desktop Chrome/Edge/Firefox, and serve via play/server.py or an HTTPS host '
@@ -2296,6 +2450,9 @@ window.omw = (function(){
          // Read before the no-mods return: a switched-off expansion is an answer on its own.
          window.__mwDisabled = Array.isArray(doc.disabled) ? doc.disabled : [];
          if (window.__mwDisabled.length) append('[data] disabled by the server: ' + window.__mwDisabled.join(', '));
+         // A stock file replaced by a community copy needs nothing else here: the mod's folder is a
+         // later data= root than /mwdata, so the engine resolves the stock name to the copy.
+         (doc.swaps || []).forEach(function(s){ append('[data] ' + s.file + ' replaced by ' + s.name); });
          if (!Array.isArray(doc.mods) || !doc.mods.length) return out;
 
          try { StreamFS.init(); } catch (e) { append('[mods] streamfs unavailable: '+e,'err'); return out; }
@@ -4132,10 +4289,18 @@ window.omw = (function(){
     // A character switch rides the mirror: Lua state dies with the reload, so without this
     // the reused fragment's mpchar rebooted the OLD character and the click did nothing.
     var swChar = String(window.omw.state.switchChar || '');
+    // A CHARACTER STILL IN CREATION KEEPS mpnew. Dropping it is right for a world change (the
+    // character exists; the new page must not run chargen again), and world changes are
+    // refused while creating anyway. But the SSO auth rescue reboots into the SAME world, and
+    // a restart mid-creation reached this with chargen unfinished: the page booted without
+    // mpnew, the engine skipped the opening, reported chargenstate -1, and the server stored
+    // a character with no race, class or sign, standing at the origin (dev box, 2026-09-23).
+    var stillCreating = !swChar && String(window.omw.state.chargenDone || '') !== '1';
     var keep = frag.split('&').filter(function(kv){
       var k = kv.split('=')[0];
       if (swChar && (k === 'mpchar' || k === 'mpcharname')) return false;
-      return k !== 'mp' && k !== 'mpticket' && k !== 'mpstart' && k !== 'mpnew' && k !== 'mpclosed' && k !== 'mpclosedby' && kv !== '';
+      if (k === 'mpnew') return stillCreating;
+      return k !== 'mp' && k !== 'mpticket' && k !== 'mpstart' && k !== 'mpclosed' && k !== 'mpclosedby' && kv !== '';
     });
     keep.unshift('mp=' + encodeURIComponent(wsUrl), 'mpticket=' + encodeURIComponent(ticket));
     if (swChar) keep.push('mpchar=' + encodeURIComponent(swChar));
@@ -5110,6 +5275,9 @@ window.omw = (function(){
     if (!mc) { carriedClosedShown = true; return; }
     carriedClosedShown = true;
     var byM = /(^|&)mpclosedby=([^&]+)/.exec(frag);
+    // What the scenarios read (s102, s141): a fast client is home and rebooted before the
+    // old page's worldClosed mirror can be read, and this is the notice it was told there.
+    window.__omwWorldClosedShown = { why: decodeURIComponent(mc[2]), by: byM ? decodeURIComponent(byM[2]) : '' };
     showNotice('Back in your own world', worldClosedCopy(decodeURIComponent(mc[2]), byM ? decodeURIComponent(byM[2]) : ''), GLYPH_WORLD);
     // Do not carry it a second time.
     window.__omwBootFrag = frag.split('&').filter(function(kv){ return !/^mpclosed(by)?=/.test(kv); }).join('&');

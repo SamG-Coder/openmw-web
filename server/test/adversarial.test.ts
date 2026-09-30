@@ -342,3 +342,4 @@ test('stat values are bounded, a level steps once per window, a first open is pl
   assert.equal(doc.stats?.attributes?.['strength'], 60, 'Strength 999 was refused, 60 landed');
   assert.equal(doc.stats?.level, 3, 'the first declaration seeds; then one step per window (4 refused)');
 });
+

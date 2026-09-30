@@ -227,6 +227,23 @@ export class WorldState {
   // cellKey -> count of ActorMoveBatch frames relayed for that cell, the phase source for
   // actor LOD striding. Cleared when the cell empties.
   private readonly actorBatchNo = new Map<string, number>();
+  // RELAY ACCOUNTING, logged every 30 s while there is traffic (actor.relay_stats): frames
+  // accepted per cell, rejected by reason, and relayed per recipient. A client whose NPCs
+  // stand still can then be told apart from a peer that is not streaming, a holder/epoch
+  // mismatch, and a relay that skips the player -- without enabling /metrics.
+  private relayStats = { accepted: new Map<string, number>(), rejected: new Map<string, number>(), sent: new Map<string, number>(), shed: new Map<string, number>() };
+  private relayStatsAt = Date.now();
+  private noteRelay(kind: 'accepted' | 'rejected' | 'sent' | 'shed', key: string): void {
+    const m = this.relayStats[kind];
+    m.set(key, (m.get(key) ?? 0) + 1);
+    const now = Date.now();
+    if (now - this.relayStatsAt < 30_000) return;
+    const obj = (x: Map<string, number>) => Object.fromEntries([...x].sort());
+    log('info', 'actor.relay_stats', { secs: Math.round((now - this.relayStatsAt) / 1000),
+      accepted: obj(this.relayStats.accepted), rejected: obj(this.relayStats.rejected), sent: obj(this.relayStats.sent), shed: obj(this.relayStats.shed) });
+    this.relayStats = { accepted: new Map(), rejected: new Map(), sent: new Map(), shed: new Map() };
+    this.relayStatsAt = now;
+  }
   // #364: cellKey -> refKey -> last time the holder streamed it as an actor.
   private readonly actorRefs = new Map<string, Map<string, number>>();
   private isActorRef(cellKey: string, refKey: string): boolean {
@@ -320,6 +337,9 @@ export class WorldState {
   // Who holds the conversation lock on an NPC (quests.ts). Wired by server.ts; the second
   // actor fact a non-holder may state hangs off it (see actorEvent, ActorDisposition).
   dialogueHolder?: (refKey: string) => number | undefined;
+  // The cells simPeerPass has the peer holding right now (anchors and the ring around each
+  // player). Set by server.ts; absent (tests, no peer) = none.
+  peerHolds?: (cellKey: string) => boolean;
 
   /** Backlog 298: the peer's manifest just became the world's content list (connection.ts
    *  handleHello, ContentGate.setAuthoritative). Every c:<index>:<contentFile> key in the cell
@@ -399,8 +419,26 @@ export class WorldState {
   // The HOLDER hears everything about a cell it simulates, wherever its own avatar stands:
   // the peer anchors far interiors and exteriors, and a door opened there must open for its
   // pathing too, not only for the players within a cell of it.
+  //
+  // AND THE RING AROUND EACH HELD EXTERIOR. The peer's engine loads the vanilla 3x3 around
+  // every anchor (Scene::setSimAnchors) and runs the AI there out to 7168 units of the
+  // anchoring player -- what that player's own engine does. A door opened, a ref disabled, a
+  // crate moved in a neighbour reached every client that could see it and never the peer, so
+  // its copy of the street diverged one cell from each player and the avatar walked into what
+  // the player could not see. Hearing is not holding: who simulates NPCs is unchanged (see
+  // loadedCells). The ring's recorded state reaches the peer from server.ts simPeerPass.
   private hears(p: Player, cellKey: string): boolean {
-    return cellsVisible(p.cellKey, cellKey) || (p.system === true && this.authority.holderOf(cellKey) === p.id);
+    if (cellsVisible(p.cellKey, cellKey)) return true;
+    if (p.system !== true) return false;
+    if (this.authority.holderOf(cellKey) === p.id) return true;
+    const at = parseExterior(cellKey);
+    if (!at) return false;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        if (this.authority.holderOf(`${at.x + dx},${at.y + dy}`) === p.id) return true;
+      }
+    }
+    return false;
   }
 
   private relayCell(cellKey: string, name: string, body: JsLike): void {
@@ -536,6 +574,13 @@ export class WorldState {
       // peer simulating them, so dropping authority here only produced a dormancy window that
       // clients now see (puppets detach, swings stop landing) before simPeerPass re-grants.
       if (system && this.roster.inWorld().some((p) => p.cellKey === c)) continue;
+      // ...AND NEITHER DO CELLS THE PASS HOLDS. The peer now holds the 3x3 around every player,
+      // and its dummy follows the first player's cell: stepping from -2,-9 to -2,-8 released
+      // -2,-9 (nobody standing IN it) although it is the player's neighbour, and the next pass
+      // re-granted it at a new epoch. Every creature there flipped to the client's local AI
+      // and back, mid-fight (dev box, 2026-09-23). simPeerPass owns this footprint and
+      // releases a cell itself, by its diff, when it truly leaves every player's ring.
+      if (system && this.peerHolds?.(c)) continue;
       this.authorityLeave(playerId, c, connected);
     }
   }
@@ -977,15 +1022,18 @@ export class WorldState {
       // (not just dropped) so forgery is VISIBLE — a modified client trying to move
       // everyone's NPCs shows up in /metrics instead of failing silently.
       metrics.actorBatchRejected.inc({ reason: cellKey ? 'not_holder' : 'no_cell' });
+      this.noteRelay('rejected', `${cellKey ?? '?'}:${cellKey ? 'not_holder' : 'no_cell'}`);
       return;
     }
     if (this.authority.currentEpoch(cellKey) !== epoch) {
       metrics.actorBatchRejected.inc({ reason: 'stale_epoch' });
+      this.noteRelay('rejected', `${cellKey}:stale_epoch`);
       return;
     }
     // Liveness: this holder is demonstrably doing the job. Recorded only for ACCEPTED
     // frames, so a stale-epoch sender cannot keep a dead cell looking alive.
     this.authority.noteActorFrame(cellKey);
+    this.noteRelay('accepted', cellKey);
     const batchNo = (this.actorBatchNo.get(cellKey) ?? 0) + 1;
     this.actorBatchNo.set(cellKey, batchNo);
     // #364: remember WHICH refs the holder streams as actors (one frame in twenty: the set
@@ -1024,7 +1072,8 @@ export class WorldState {
         if (st > 1 && (batchNo + p.id) % st !== 0) continue;
       }
       frame ??= packEnvelope(MSG_ACTOR_MOVE_BATCH, nextBroadcastSeq(), payload);
-      p.peer.sendBinaryFrame(MSG_ACTOR_MOVE_BATCH, frame);
+      const ok = p.peer.sendBinaryFrame(MSG_ACTOR_MOVE_BATCH, frame);
+      this.noteRelay(ok ? 'sent' : 'shed', `${p.name}@${p.cellKey}`);
     }
   }
 
@@ -1251,6 +1300,14 @@ export class WorldState {
     const ext = parseExterior(cellKey);
     if (ext && (Math.abs(ext.x) > MAX_FAR_CELL_COORD || Math.abs(ext.y) > MAX_FAR_CELL_COORD)) return false;
     if (hiding && !this.farDisableAllowed(player)) return false;
+    // THE BUDGET IS FOR CELLS THAT WOULD BE NEW. What it guards (backlog 337) is get()
+    // minting and persisting a doc for any key it is handed. A cell that already has a doc
+    // costs nothing to write to, and charging it spent the whole budget in the first second:
+    // the client's own Startup toggles a hundred refs across Vvardenfell on every load, into
+    // cells the peer's Startup has already written. A later quest enable or disable into a
+    // genuinely far cell was then refused, the peer's world kept the old state, and the
+    // avatar walked through (or into) something the player's world did not have.
+    if (this.cells.has(cellKey)) return true;
     const far = (player.farEnableCells ??= new Set());
     if (!far.has(cellKey) && far.size >= MAX_FAR_ENABLE_CELLS) return false;
     far.add(cellKey);

@@ -19,7 +19,7 @@ const bars = (hp: number) => ({
 async function world(t: { after(fn: () => unknown): void }) {
   const server = await startServer({
     requireGameData: false, dataDir: tmpDataDir(), port: 0, host: '127.0.0.1',
-    configOverride: { server: { password: PEER_PASS }, limits: { maxConnsPerIp: 16 } },
+    configOverride: { server: { password: PEER_PASS }, limits: { maxConnsPerIp: 16 }, admin: { dashboardToken: 'stats-dash' } },
   });
   t.after(() => server.close());
   const peer = await TestClient.simPeer(server.port, PEER_PASS);
@@ -255,7 +255,17 @@ test('a claim carrying its gain as `d` lands on top of the doc, not on the stale
   a.sendEvent('PlayerStatsDynamic', { hp: { c: 25, b: 100, d: 5 } });
   await restore(35);
   a.sendEvent('PlayerStatsDynamic', { hp: { c: 22, b: 100, d: 2.5 } });
-  await restore(37.5);
+  const r3 = await restore(37.5);
+  // THE CHANGE TRAVELS, NOT ONLY THE BAR (s165 #158: a 50-point heal reached the avatar as +42).
+  // A peer report taken before the last restore landed puts the doc back to 20; the next
+  // claim's absolute `c` is then 25 -- set on a body already at 37.5, it would undo two
+  // restores. `g` is what the avatar adds to what it holds.
+  assert.equal((r3.value as { hp?: { g?: number } }).hp?.g, 2.5, 'a restore carries its change');
+  peer.sendEvent('AvatarStatsBatch', { entries: [{ id: a.playerId, ...bars(20) }] });
+  await new Promise((r) => setTimeout(r, 250)); // the stale report lands in the doc first
+  const r4 = restore(25);
+  a.sendEvent('PlayerStatsDynamic', { hp: { c: 25, b: 100, d: 5 } });
+  assert.equal(((await r4).value as { hp?: { g?: number } }).hp?.g, 5, 'the gain after a stale report is the claim, not the stale difference');
   // Gains only for health: a negative `d` is the peer's business and changes nothing.
   peer.inbox.events.length = 0;
   a.sendEvent('PlayerStatsDynamic', { hp: { c: 5, b: 100, d: -20 } });
@@ -352,6 +362,18 @@ test("a client's active effects are forwarded to the peer for the avatar, and ga
   const next = await peer.waitEvent('AvatarActiveSpells', (v) => (v as { id?: number })?.id === a.playerId);
   assert.equal((next.value as { add: { id: string }[] }).add[0]!.id, 'fortify_speed',
     'the malformed message was dropped, the well-formed one after it was forwarded');
+
+  // The ROLLED magnitude rides with each effect (-1 = none), so the avatar applies the owner's
+  // roll instead of its own -- a different Fortify Speed roll is a different speed. A list that
+  // is out of step with the indexes, or not a sane number, refuses the op like a bad index.
+  peer.inbox.events.length = 0;
+  a.sendEvent('PlayerActiveSpells', { add: [{ key: '11', id: 'fortify_speed', effects: [0], mags: [1e9] }], remove: [] });
+  a.sendEvent('PlayerActiveSpells', { add: [{ key: '12', id: 'fortify_speed', effects: [0], mags: [3, 4] }], remove: [] });
+  a.sendEvent('PlayerActiveSpells', { add: [{ key: '13', id: 'p_water_walking_s', effects: [0, 1], mags: [-1, 12.5] }], remove: [] });
+  const rolled = await peer.waitEvent('AvatarActiveSpells', (v) => (v as { id?: number })?.id === a.playerId);
+  const r = (rolled.value as { add: { key: string; mags?: number[] }[] }).add[0]!;
+  assert.equal(r.key, '13', 'the out-of-range and out-of-step magnitude lists were dropped');
+  assert.deepEqual(r.mags, [-1, 12.5], 'rolled magnitudes travel whole');
 });
 
 // WHAT THE WORLD DID TO THE AVATAR comes back. A bite on the peer puts a disease in the avatar's
@@ -362,13 +384,14 @@ test("the peer's report of a disease and a hostile effect reaches the owner; a c
   a.inbox.events.length = 0;
   peer.sendEvent('AvatarEffectsBatch', { entries: [{
     id: a.playerId, spellsAdd: ['ataxia'],
-    effectsAdd: [{ id: 'paralyze', effects: [0] }], effectsRemove: [{ id: 'burden' }],
+    effectsAdd: [{ id: 'paralyze', effects: [0] }, { id: 'burden', effects: [0], mags: [17] }], effectsRemove: [{ id: 'burden' }],
   }] });
   const spells = await a.waitEvent('SelfSpells');
   assert.deepEqual((spells.value as { add: string[] }).add, ['ataxia'], 'the disease reaches the owner');
   const fx = await a.waitEvent('SelfActiveSpells');
   const v = fx.value as { add: { id: string; effects: number[] }[]; remove: { id: string }[] };
   assert.equal(v.add[0]!.id, 'paralyze'); assert.deepEqual(v.add[0]!.effects, [0]);
+  assert.deepEqual((v.add[1] as { mags?: number[] }).mags, [17], 'the peer\'s roll reaches the owner');
   assert.equal(v.remove[0]!.id, 'burden');
   // Persisted: a rejoin restores the disease (the record the welcome carries lists it).
   await server.flush();
@@ -424,7 +447,7 @@ test("a player's active effects reach the other clients, and a late joiner is ca
 // respawn is a free full heal and a teleport. With the peer reporting a living body the
 // event is dropped and counted; once the peer reports zero it is honoured.
 test("a client's PlayerDeath is ignored while the peer reports it alive, honoured once the peer reports 0", async (t) => {
-  const { peer, a } = await world(t);
+  const { server, peer, a } = await world(t);
   let seq = 0;
   const timer = setInterval(() => a.sendInput({ move: 1 }, ++seq), 100);
   t.after(() => clearInterval(timer));
@@ -437,9 +460,35 @@ test("a client's PlayerDeath is ignored while the peer reports it alive, honoure
   a.sendEvent('PlayerDeath', {});
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(a.inbox.events.filter((e) => e.name === 'PlayerResurrect').length, 0, 'a free respawn on a client\'s say-so');
+  const o = await (await fetch(`http://127.0.0.1:${server.port}/admin/api/overview`, { headers: { authorization: 'Bearer stats-dash' } })).json() as { players: { account: string; anomalies: Record<string, number> }[] };
+  assert.equal(o.players.find((p) => p.account === 'runner')?.anomalies.death_unconfirmed, 1, 'the claimed death is recorded for moderation');
 
   hp = 0;
   await a.waitEvent('SelfStats', (v) => (v as { hp?: { c?: number } })?.hp?.c === 0);
+  a.sendEvent('PlayerDeath', {});
+  await a.waitEvent('PlayerResurrect', () => true, 3000);
+});
+
+// A CORPSE IS NOT HEALED, AND ITS DEATH IS NOT REFUSED (s22 #172, backlog 520). A raise claimed
+// between the peer's last report (dead) and the client's PlayerDeath -- a regen tick, a restore
+// racing the death -- used to land on the doc, lift it above 0, and get the one death the client
+// sends refused as unconfirmed: dead for good.
+test('a heal claimed onto a dead avatar neither lifts the doc nor blocks the respawn', async (t) => {
+  const { peer, a } = await world(t);
+  let seq = 0;
+  const timer = setInterval(() => a.sendInput({ move: 1 }, ++seq), 100);
+  t.after(() => clearInterval(timer));
+  const reporter = setInterval(() => peer.sendEvent('AvatarStatsBatch', { entries: [{ id: a.playerId, ...bars(0) }] }), 100);
+  t.after(() => clearInterval(reporter));
+  await a.waitEvent('SelfStats', (v) => (v as { hp?: { c?: number } })?.hp?.c === 0);
+  clearInterval(reporter); // the next report is still in flight: the window the heal lands in
+  await new Promise((r) => setTimeout(r, 200));
+  peer.inbox.events.length = 0;
+  a.sendEvent('PlayerStatsDynamic', { hp: { c: 5, b: 100, d: 5 } });
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(peer.inbox.events.filter((e) => e.name === 'AvatarRestore' && (e.value as { hp?: unknown }).hp !== undefined).length, 0,
+    'a heal went onto a corpse');
+  a.inbox.events.length = 0;
   a.sendEvent('PlayerDeath', {});
   await a.waitEvent('PlayerResurrect', () => true, 3000);
 });

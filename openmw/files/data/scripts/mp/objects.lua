@@ -26,6 +26,10 @@ local deps = nil
 local DROP_DETECT_RANGE = 600 -- only the dropper relays (someone must own the spawn)
 local CONTAINER_WATCH_SECONDS = 15 -- native container UI has no close signal; poll window
 local CONTAINER_POLL = 0.25
+-- Frames counted by objects.tick. A network apply lands on the next delayed-actions pass, so
+-- three frames on, whatever differs from what was applied is the player's own doing (s175).
+local frameNo = 0
+local EXPECT_FRAMES = 3
 local LOCK_WATCH_SECONDS = 4
 local DOOR_READ_DELAY = 0.4 -- door starts turning on activation; read the resulting state
 -- Containers get the same treatment for a sharper reason. Morrowind resolves a container's
@@ -67,6 +71,9 @@ local openRetries = {} -- obj.id -> attempts so far
 -- just rewritten by a canonical ContainerState. Retried rather than applied once, because the
 -- recreated items do not exist until a later frame.
 local equipPending = {}
+-- Containers whose rewrite is not finished (adds in flight): rerun next frame (backlog R5).
+local containerRedo = {}
+local reconcile = require('scripts.mp.reconcile') -- global context only (see run.lua)
 local EQUIP_RESTORE_WINDOW = 3.0 -- give up after this; a permanent retry would leak the entry
 local lockWatch = {} -- obj.id -> {obj=, locked=, level=, until_=}
 -- Phase 4: obj.id -> last seen `enabled`. Unlike locks, an enable/disable is not tied to
@@ -290,14 +297,23 @@ local function setContainerContents(obj, items)
             end
         end
     end
+    -- RECONCILE, NOT REWRITE. This used to remove everything and create the list afresh --
+    -- and a second canonical state in the same frame (a ContainerState and a WorldCellState on
+    -- cell entry, a resync) found the store empty, since the first rewrite's creates land at the
+    -- end of the frame, removed nothing and created the whole list again: the container
+    -- doubled. reconcile.lua brings the store to the list counting what is in flight, and a
+    -- pass that is not finished runs again next frame (objects.tick).
     pcall(function()
-        for _, item in ipairs(content:getAll()) do
-            item:remove()
-        end
+        local list = {}
         for _, entry in ipairs(items or {}) do
-            local okc, created = pcall(function() return world.createObject(worldmp.toLocal(entry.id), entry.n) end)
-            if okc then created:moveInto(content) end
+            list[#list + 1] = { id = worldmp.toLocal(entry.id), n = entry.n or 1 }
         end
+        local r = reconcile.reconcileInventory({
+            inventory = content, items = list, key = 'c:' .. tostring(obj.id), shed = true,
+            createObject = function(rid, n) return world.createObject(rid, n) end,
+        })
+        if r.pending then containerRedo[obj.id] = { obj = obj, items = items, gen = reconcile.generation() }
+        else containerRedo[obj.id] = nil end
     end)
     -- DEFERRED, not inline. createObject+moveInto lands a frame or more later, so calling
     -- setEquipment here finds an empty store and fails silently -- identity.lua hit exactly
@@ -313,7 +329,18 @@ local function setContainerContents(obj, items)
     -- second opener, and a friend's purchase deleted a matching item from our own pack. The
     -- baseline is taken on the next poll instead, from the store as it really is.
     local watch = containerWatch[obj.id]
-    if watch then watch.last = nil; watch.rebase = true; watch.nextPoll = core.getRealTime() + CONTAINER_POLL end
+    if watch then
+        watch.last = nil; watch.rebase = true; watch.nextPoll = core.getRealTime() + CONTAINER_POLL
+        -- ...and WHAT the store will hold once it has: a put made between this apply and the
+        -- rebase poll used to be swallowed into the new baseline -- the item left the player's
+        -- pack and never reached the server's chest (s175).
+        local expect = {}
+        for _, entry in ipairs(items or {}) do
+            local id = worldmp.toLocal(entry.id)
+            expect[id] = (expect[id] or 0) + entry.n
+        end
+        watch.expect, watch.expectFrame = expect, frameNo + EXPECT_FRAMES
+    end
 end
 
 local function applyContainerDelta(obj, itemId, dn)
@@ -336,7 +363,29 @@ local function applyContainerDelta(obj, itemId, dn)
         end
     end)
     local watch = containerWatch[obj.id]
-    if watch then watch.last = nil; watch.rebase = true; watch.nextPoll = core.getRealTime() + CONTAINER_POLL end
+    if watch then
+        -- The expected store is the old baseline plus this delta; with no baseline there is
+        -- nothing to expect, and the plain rebase stands.
+        local expect = nil
+        if watch.last then
+            expect = {}
+            for id, n in pairs(watch.last) do expect[id] = n end
+            expect[itemId] = math.max(0, (expect[itemId] or 0) + dn)
+            if expect[itemId] == 0 then expect[itemId] = nil end
+        elseif watch.expect then
+            expect = watch.expect -- a delta on top of an apply still landing
+            expect[itemId] = math.max(0, (expect[itemId] or 0) + dn)
+            if expect[itemId] == 0 then expect[itemId] = nil end
+        end
+        watch.last = nil; watch.rebase = true; watch.nextPoll = core.getRealTime() + CONTAINER_POLL
+        watch.expect, watch.expectFrame = expect, expect and frameNo + EXPECT_FRAMES or nil
+    end
+end
+
+local function sameCounts(a, b)
+    for id, n in pairs(a) do if (b[id] or 0) ~= n then return false end end
+    for id, n in pairs(b) do if (a[id] or 0) ~= n then return false end end
+    return true
 end
 
 -- Diff a watched container against its last snapshot and report every change. Extracted so the
@@ -348,11 +397,26 @@ local function diffContainer(obj, watch)
         return
     end
     if watch.rebase or watch.last == nil then
-        -- The first read after a network apply: the store as it really is, now that the
-        -- deferred rewrite has landed. Nothing to report.
-        watch.rebase = nil
-        watch.last = current
-        return
+        if watch.expect then
+            if sameCounts(current, watch.expect) then
+                -- The apply has landed and nothing else happened: this is the baseline.
+                watch.rebase, watch.expect, watch.expectFrame = nil, nil, nil
+                watch.last = current
+                return
+            elseif frameNo < watch.expectFrame then
+                return -- still landing; look again next poll
+            end
+            -- Landed frames ago and the store still differs: the difference is the player's.
+            -- Diff against what was applied, below, instead of absorbing it.
+            watch.last = watch.expect
+            watch.rebase, watch.expect, watch.expectFrame = nil, nil, nil
+        else
+            -- The first read after a network apply: the store as it really is, now that the
+            -- deferred rewrite has landed. Nothing to report.
+            watch.rebase = nil
+            watch.last = current
+            return
+        end
     end
     local seen = {}
     for recId, n in pairs(current) do
@@ -698,6 +762,7 @@ end
 local handlers = {}
 
 handlers.MP_ObjectSpawnAck = function(data)
+    if data.tempId == nil then return end -- no key, nothing to clear: t[nil] = nil throws, and a throwing handler goes silent
     local obj = pendingSpawns[data.tempId]
     pendingSpawns[data.tempId] = nil
     if not (obj and obj:isValid() and data.netId) then return end
@@ -859,6 +924,13 @@ handlers.MP_ObjectMove = function(data)
     end)
 end
 
+-- A lock this client has just REPORTED itself (the harness door commands): the cell poll must
+-- not see the change as a script's and report it a second time. That duplicate arrived after a
+-- friend's unlock on a slow client and locked the door again under them (s32, #144/#147).
+function objects.noteLockSent(obj, level)
+    if obj then scriptLockWatch[obj.id] = level or false end
+end
+
 handlers.MP_ObjectLock = function(data)
     if isOwnEcho(data) then return end
     local obj = resolveBody(data)
@@ -877,13 +949,25 @@ end
 -- appearing, a hidden door becoming real). Vanilla runs these locally on every client, but
 -- only the client whose script ran sees them once quest globals stop being world-relayed —
 -- so the change travels explicitly. enableWatch mutes the echo, exactly like locks.
+-- An ACTOR switched on or off by the network, said once per apply (s59 #150: an NPC that took
+-- one spell and then no more; enable/disable only started landing with 2094ccaf).
+local function sayActorEnabled(obj, want, via)
+    local ok, actor = pcall(function() return types.Actor.objectIsInstance(obj) end)
+    if ok and actor then print(string.format('[mp] actor %s %s via %s', tostring(obj.recordId), want and 'ENABLED' or 'DISABLED', via)) end
+end
+
 handlers.MP_ObjectEnabled = function(data)
     if isOwnEcho(data) then return end
     local obj = resolveBody(data)
     if not (obj and obj:isValid()) then return end
     local want = data.enabled ~= false
     enableWatch[obj.id] = want -- record BEFORE applying: the poll must not re-report this
-    pcall(function() obj:setEnabled(want) end)
+    sayActorEnabled(obj, want, 'ObjectEnabled')
+    -- A PROPERTY, NOT A METHOD. A global script turns a ref on and off by assigning
+    -- `obj.enabled` (mwlua/objectbindings.cpp); there is no obj:setEnabled, so this and the
+    -- snapshot paths below threw inside their pcalls and no enable or disable ever landed
+    -- on another client.
+    pcall(function() obj.enabled = want end)
 end
 
 handlers.MP_DoorState = function(data)
@@ -1025,7 +1109,7 @@ handlers.MP_CellSnapshotReplace = function(data)
         for _, obj in ipairs(cell:getAll()) do
             if obj:isValid() and not obj.enabled and not disabled[refKeyOfObj(obj)] then
                 enableWatch[obj.id] = true
-                pcall(function() obj:setEnabled(true) end)
+                pcall(function() obj.enabled = true end)
             end
         end
     end
@@ -1094,14 +1178,15 @@ handlers.MP_WorldCellState = function(data)
         local obj = resolveRefKey(refKey)
         if obj and obj:isValid() then
             enableWatch[obj.id] = false
-            pcall(function() obj:setEnabled(false) end)
+            sayActorEnabled(obj, false, 'cell state')
+            pcall(function() obj.enabled = false end)
         end
     end
     for _, refKey in ipairs(data.enabled or {}) do
         local obj = resolveRefKey(refKey)
         if obj and obj:isValid() then
             enableWatch[obj.id] = true
-            pcall(function() obj:setEnabled(true) end)
+            pcall(function() obj.enabled = true end)
         end
     end
     -- M6 per-object script locals: the same apply path as a live MemberVarUpdate (quests.lua),
@@ -1158,6 +1243,14 @@ end
 -- ---------------------------------------------------------------- tick
 
 function objects.tick(now)
+    frameNo = frameNo + 1
+    -- Finish container rewrites whose adds have landed since (setContainerContents).
+    for id, redo in pairs(containerRedo) do
+        if redo.gen < reconcile.generation() then
+            containerRedo[id] = nil
+            if redo.obj:isValid() then setContainerContents(redo.obj, redo.items) end
+        end
+    end
     -- Phase 4: watch the player's cell for scripted enable/disable. Cheap (a boolean read
     -- per object at 1 Hz) and only for the cell we are standing in. The fallback behind
     -- onScriptNote above, for an engine baked before the choke-point hook existed.
@@ -1261,7 +1354,10 @@ function objects.tick(now)
             end
             if ready or now > pending.until_ then
                 equipPending[id] = nil
-                pcall(function() types.Actor.setEquipment(obj, pending.slots) end)
+                -- ON THE ACTOR. setEquipment is Self-gated (mwlua/types/actor.cpp), so called
+                -- from here it threw inside the pcall and every merchant stayed stripped;
+                -- companion.lua is on every NPC and creature and equips itself.
+                pcall(function() obj:sendEvent('mpSetEquipment', pending.slots) end)
             end
         end
     end

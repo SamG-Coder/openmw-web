@@ -20,6 +20,7 @@ local types = require('openmw.types')
 local core = require('openmw.core')
 local I = require('openmw.interfaces')
 local mp = require('openmw.mp')
+local util = require('openmw.util')
 
 -- PvP POLICY, pushed by global.lua (mpAvatarPolicy) on spawn and whenever it changes.
 -- The peer resolves avatar-vs-avatar melee NATIVELY, so with pvp off the server's
@@ -31,6 +32,33 @@ local avatarObjIds = {}
 
 local input = nil -- latest {seq, move, side, yaw, pitch, flags}
 local inputAt = 0
+local appliedSeqSent = nil -- the newest input seq this body has put into its controls
+-- WHERE THIS BODY STOOD WHEN THE SEQ ARRIVED, not where it stands a frame or two later. The
+-- peer steps at 20 fps and the owner sends at 30 Hz, so a pose stamped "seq N" already held
+-- up to 1.5 frames (up to 75 ms) of N's movement that the owner's ring entry for N does not:
+-- 0-12 units of phantom divergence on every running sample, corrected as if it were real.
+-- Backed off by the frames N has run plus half a frame for when inside a frame it arrived.
+local frameNo, appliedFrame, lastPos, stepVel = 0, 0, nil, nil
+local FRAME_STEP_MAX = 200 -- a per-frame move beyond this is a teleport, not a velocity
+-- The owner's simulated time not yet spent (see the timed branch in onUpdate). Capped so a burst
+-- after a stall cannot owe the avatar seconds of running; the correction absorbs the rest.
+local timed = false
+local segs = {} -- {t = seconds left, d = the controls for them}, played in order
+local SEGS_MAX_S = 0.5 -- a 200 ms hitch plus a burst behind it; beyond that the correction absorbs it
+local SEGS_LAG_S = 0.1 -- queued beyond this, a standing segment is skipped rather than waited out
+local lastDone = nil -- seq of the newest input whose time has been played in full
+local prevTimed = nil -- the controls the NEXT input's time was spent under (see mpAvatarInput)
+local sinceDone = util.vector3(0, 0, 0)
+local frameDt, spendPrev, tailPrev, doneInPrev = 0, 0, 0, false
+-- OWED: time this body kept moving under the newest input while the queue was dry, paid back
+-- out of the next segments. A dry queue used to LOSE the rest of the frame, the time came in
+-- later anyway, and during a continuous run the queue only grew until the cap dropped real
+-- movement (s172 #159: the pose ~0.6 s behind, the owner corrected up to 100 u). Bounded: a
+-- stop that arrives late overshoots by at most OWED_MAX_S of movement (0.25 overshot a stop by
+-- 20 u in the replay; 0.15 keeps every pose within 8 u of the owner's ring and still cuts the
+-- bursty-link lag from 0.44 s to 0.29 s).
+local owed, OWED_MAX_S, owedDonePrev = 0, 0.15, 0
+local motionSaidAt = nil -- the once-a-second motion line
 -- 1.0, not 0.35: a TCP retransmit stall (300 ms RTO, seconds on a Wi-Fi roam) must not stop
 -- the avatar while the owner keeps running -- the burst collapses to the newest input and the
 -- owner is snapped back by v x stall (#205).
@@ -42,6 +70,23 @@ local prevJump = false
 -- second input of a tick overwrote the first and one jump in three (or a short use click)
 -- never reached the avatar while observers, who latch, saw it (#198).
 local jumpLatch, useLatch = false, false
+local useWasOn, useProbeAt = false, nil
+local useOnSince, useHeldSaidAt = nil, nil
+local function pressProbe(when)
+    pcall(function()
+        local ft = types.Actor.stats.dynamic.fatigue(self)
+        local w = types.Actor.getEquipment(self, types.Actor.EQUIPMENT_SLOT.CarriedRight)
+        -- attacking (the engine's copy of controls.use) must read FALSE at a press on a live body:
+        -- the press is logged after a frame whose use was 0. TRUE at every press means the engine
+        -- stopped applying this body's controls (#161 s118). body=none with a weapon drawn means
+        -- the actor is not in the engine's actor list at all.
+        local hp = types.Actor.stats.dynamic.health(self)
+        print(string.format('[mp] avatar use %s: attacking=%s body=%s dead=%s hp=%.0f staggered=%s stance=%s fatigue=%.0f/%.0f weapon=%s',
+            when, tostring(mp.isAttacking and mp.isAttacking(self.object)), tostring(mp.upperBody and mp.upperBody(self.object)),
+            tostring(types.Actor.isDead(self)), hp.current, tostring(mp.isKnockedDown and mp.isKnockedDown(self.object)),
+            tostring(types.Actor.getStance(self)), ft.current, ft.base, w and w.recordId or 'none'))
+    end)
+end
 local hitHandlerRegistered = false
 
 -- Veto player-on-player damage while pvp is off: the peer resolves avatar-vs-avatar melee
@@ -170,7 +215,24 @@ return {
             -- belonging to nobody. See mwmp/puppets.hpp.
             if mp.setAvatar then mp.setAvatar(self.object, true) end
         end,
-        onUpdate = function()
+        onUpdate = function(dt)
+            frameNo = frameNo + 1
+            frameDt = dt or 0
+            do
+                local pos = self.position
+                local step = lastPos and (pos - lastPos) or nil
+                stepVel = (step and step:length() <= FRAME_STEP_MAX) and step or nil
+                lastPos = pos
+                -- How far the body has moved since the owner's last fully played input ended:
+                -- last frame's step, split at the moment that input finished if it finished then.
+                if not stepVel then
+                    sinceDone = util.vector3(0, 0, 0) -- a teleport: the ring restarts there too
+                elseif doneInPrev and spendPrev > 0 then
+                    sinceDone = stepVel * ((tailPrev + owedDonePrev) / spendPrev)
+                else
+                    sinceDone = sinceDone + stepVel
+                end
+            end
             equipTick(core.getRealTime())
             fallProbe()
             -- I.Combat comes from the builtin combat script on this body; if it was not up
@@ -187,30 +249,138 @@ return {
                 -- owner held the button (measured 1.6 per arrow from a long bow). A bow held
                 -- a moment longer harms nothing; keep it for a bounded while.
                 local keepUse = input and bit(input.flags, 3) and now - inputAt <= USE_HOLD_S
+                segs, spendPrev, doneInPrev, owed = {}, 0, false, 0
                 stop()
                 if keepUse then self.controls.use = 1 end
                 return
             end
-            self.controls.movement = input.move or 0
-            self.controls.sideMovement = input.side or 0
+            -- MOVE FOR AS LONG AS THE OWNER DID, WITH WHAT THE OWNER DID THEN. A timed input
+            -- (simMs > 0) is a SEGMENT: the seconds its owner actually simulated, and the controls
+            -- for them. Each frame plays up to its own dt of the queue in order, the axes weighted
+            -- by time. A hitch on the owner's side (their engine caps a frame at 200 ms of
+            -- simulated time) therefore costs the avatar exactly the movement it cost the owner --
+            -- it used to walk the whole wall-clock hitch and yank the owner forward after it.
+            local ctl = input
+            local moveAxis, sideAxis = input.move or 0, input.side or 0
+            -- The pose read this frame is LAST frame's physics: pair it with the input that had
+            -- finished by then, not with whatever this frame's spend finishes.
+            local doneAtRead = lastDone
+            if timed then
+                local left, mSum, sSum, tail, done, owedDone = frameDt, 0, 0, 0, false, 0
+                -- THE QUEUE ONLY EVER GREW. Each frame spends its own dt, so one peer hitch or a
+                -- late burst of input was lag for every observer for good (s172 #158: the pose
+                -- 1.15 s behind, the owner corrected 117 u). Time the owner spent STANDING moves
+                -- nothing, so it is the lag that can be dropped: skipped, the body catches up.
+                local backlog = 0
+                for _, sg in ipairs(segs) do backlog = backlog + sg.t end
+                while #segs > 1 and backlog > SEGS_LAG_S and (segs[1].d.move or 0) == 0 and (segs[1].d.side or 0) == 0 do
+                    local s = table.remove(segs, 1)
+                    backlog, ctl, lastDone, done = backlog - s.t, s.d, s.d.seq, true
+                end
+                while left > 0 and #segs > 0 do
+                    local s = segs[1]
+                    local use = math.min(s.t, left)
+                    mSum, sSum = mSum + (s.d.move or 0) * use, sSum + (s.d.side or 0) * use
+                    left, s.t, ctl = left - use, s.t - use, s.d
+                    if s.t <= 1e-6 then
+                        table.remove(segs, 1)
+                        lastDone, done, tail, owedDone = s.d.seq, true, 0, owed
+                    else
+                        tail = tail + use
+                    end
+                end
+                -- Dry before the frame is spent: keep going under the newest input's controls (they
+                -- are the next segment's) and owe the time.
+                if left > 0 and owed < OWED_MAX_S and ((input.move or 0) ~= 0 or (input.side or 0) ~= 0) then
+                    local e = math.min(left, OWED_MAX_S - owed)
+                    mSum, sSum = mSum + (input.move or 0) * e, sSum + (input.side or 0) * e
+                    left, owed, tail = left - e, owed + e, tail + e
+                end
+                moveAxis = frameDt > 0 and mSum / frameDt or 0
+                sideAxis = frameDt > 0 and sSum / frameDt or 0
+                spendPrev, tailPrev, doneInPrev, owedDonePrev = frameDt - left, tail, done, owedDone
+            end
+            -- ONCE A SECOND while the owner moves: what this body did with it (#167 s172: one leg
+            -- with the avatar nearly a run speed short of its owner). Speed, run flag, backlog,
+            -- owed: blocked, walking, or queued.
+            if (input.move or 0) ~= 0 or (input.side or 0) ~= 0 then
+                local nowS = core.getRealTime()
+                if nowS - (motionSaidAt or 0) >= 1 then
+                    motionSaidAt = nowS
+                    local q = 0
+                    for _, sg in ipairs(segs) do q = q + sg.t end
+                    pcall(function()
+                        print(string.format('[mp] avatar motion: speed=%.0f axis=%.2f run=%s backlog=%.2f owed=%.2f seq=%s',
+                            stepVel and frameDt > 0 and stepVel:length() / frameDt or -1, moveAxis, tostring(bit(ctl.flags, 0)), q, owed, tostring(input.seq)))
+                    end)
+                end
+            end
+            self.controls.movement = moveAxis
+            self.controls.sideMovement = sideAxis
             local curYaw = self.rotation:getYaw()
-            self.controls.yawChange = shortestArc((input.yaw or curYaw) - curYaw)
+            self.controls.yawChange = shortestArc((ctl.yaw or curYaw) - curYaw)
             -- PITCH TOO. The input has always carried it (radians, same scale as the pose) and
             -- the avatar never applied it, so it aimed level: an arrow at a cliff-top archer, or
             -- a swing at a rat underfoot, went out flat no matter where the owner was looking.
             local curPitch = self.rotation:getPitch()
-            self.controls.pitchChange = (input.pitch or curPitch) - curPitch
-            self.controls.run = bit(input.flags, 0)
-            self.controls.sneak = bit(input.flags, 1)
+            self.controls.pitchChange = (ctl.pitch or curPitch) - curPitch
+            self.controls.run = bit(ctl.flags, 0)
+            self.controls.sneak = bit(ctl.flags, 1)
             local jump = jumpLatch or bit(input.flags, 2)
             jumpLatch = false
             self.controls.jump = jump and not prevJump
             prevJump = jump
+            -- THE SEQ THIS BODY HAS ACTUALLY APPLIED. The pose stream used to be stamped with the
+            -- newest input the global script had RECEIVED, but that input only reaches these
+            -- controls a frame later (a local event) and moves the body a frame after that, so
+            -- every pose claimed ~100-150 ms of input it did not contain. The owner's client
+            -- compares a pose with where it stood when that seq left (player.lua posAt), so the
+            -- false claim was a correction on every start, stop and turn: constant micro
+            -- rubber-banding. Reported once per new seq; global.lua stamps the stream with it.
+            if input.seq and input.id then
+                if input.seq ~= appliedSeqSent then
+                    appliedSeqSent = input.seq
+                    appliedFrame = frameNo
+                end
+                -- Every frame, the (seq, pose) PAIR: the position read here is last frame's
+                -- physics, which holds (frameNo - appliedFrame) frames of this seq.
+                local pos = self.position
+                local seq, at = input.seq, nil
+                if timed then
+                    -- EXACT: where this body stood when the owner's last fully played input ended
+                    -- -- which is where the owner stood when that input's successor left
+                    -- (player.lua ring[seq]).
+                    seq = doneAtRead
+                    at = pos - sinceDone
+                else
+                    local v = stepVel or util.vector3(0, 0, 0)
+                    at = pos - v * ((frameNo - appliedFrame) + 0.5)
+                end
+                if seq then
+                    core.sendGlobalEvent('mpAvatarApplied', { obj = self.object, id = input.id, seq = seq,
+                        x = at.x, y = at.y, z = at.z })
+                end
+            end
             -- Phase 4C: THE AVATAR SWINGS. The owner's use bit drives the attack control, and
             -- this engine computes the hit natively against the actors it simulates. Safe
             -- now because combat.lua no longer forwards a real swing while the peer holds
             -- the cell -- so a blow lands exactly once, here.
             self.controls.use = (useLatch or bit(input.flags, 3)) and 1 or 0
+            -- WHAT THE BODY WAS DOING WHEN THE PRESS CAME, and a moment later (#159 s157: every
+            -- press reached the controls, 1 of 113 swings reached the hit test). On each rising
+            -- edge of use, and once ~0.3 s after it: attacking, staggered, stance, fatigue, weapon.
+            local useNow = self.controls.use == 1
+            if useNow and not useWasOn then useProbeAt = core.getRealTime() + 0.3; useOnSince = core.getRealTime(); pressProbe('press') end
+            if useProbeAt and core.getRealTime() >= useProbeAt then useProbeAt = nil; pressProbe('+0.3s') end
+            -- THE FALLING EDGE, and a use held past 3 s (#178: NPC hp froze after ~10 landed blows;
+            -- was the swing released, or held for good behind a latch while hit recovery kept the
+            -- body 'knocked down'?). The release is what lands the blow.
+            if useWasOn and not useNow then pressProbe('release') end
+            if useNow and useOnSince and core.getRealTime() - useOnSince > 3 and core.getRealTime() - (useHeldSaidAt or 0) >= 1 then
+                useHeldSaidAt = core.getRealTime()
+                pressProbe('held ' .. string.format('%.0fs latch=%s bit=%s', core.getRealTime() - useOnSince, tostring(useLatch), tostring(bit(input.flags, 3))))
+            end
+            useWasOn = useNow
             -- ...BUT NOT WHILE STAGGERED (backlog 309). A body in hit recovery or on the floor
             -- cannot start a swing, so a latch consumed there was a tap lost for good. Hold it
             -- until the body can act; mp.isKnockedDown covers hit recovery too.
@@ -252,7 +422,10 @@ return {
                     if d then
                         local stat = types.Actor.stats.dynamic[statName](self)
                         if d.b then stat.base = d.b end
-                        if d.c then stat.current = d.c end
+                        -- A restore carries its change (`g`, playerstate.ts): added to what the
+                        -- body holds NOW, so a bite or a report in between is not undone (s165).
+                        if d.g then stat.current = math.max(0, math.min(stat.base, stat.current + d.g))
+                        elseif d.c then stat.current = d.c end
                     end
                 end
             end)
@@ -274,6 +447,27 @@ return {
             if input and data.seq and input.seq and data.seq <= input.seq then return end
             input = data
             inputAt = core.getRealTime()
+            timed = (tonumber(data.simMs) or 0) > 0
+            if timed then
+                -- Input N carries the time the owner simulated since input N-1 left, and that time
+                -- ran under N-1's controls (the owner records ring[N] before N's controls act). So
+                -- the segment is N's time with N-1's controls; played out, the body is at ring[N].
+                local ctl = prevTimed or { move = 0, side = 0, yaw = data.yaw, pitch = data.pitch, flags = 0 }
+                segs[#segs + 1] = { t = data.simMs / 1000, d = { seq = data.seq, move = ctl.move, side = ctl.side,
+                    yaw = ctl.yaw, pitch = ctl.pitch, flags = ctl.flags } }
+                prevTimed = data
+                -- Time already moved ahead of the queue pays this segment down first.
+                local sg = segs[#segs]
+                local pay = math.min(owed, sg.t)
+                sg.t, owed = sg.t - pay, owed - pay
+                local total = 0
+                for _, sg in ipairs(segs) do total = total + sg.t end
+                while total > SEGS_MAX_S and #segs > 1 do
+                    total = total - segs[1].t
+                    lastDone = segs[1].d.seq
+                    table.remove(segs, 1)
+                end
+            end
             if bit(data.flags, 2) then jumpLatch = true end
             if bit(data.flags, 3) then useLatch = true end
         end,

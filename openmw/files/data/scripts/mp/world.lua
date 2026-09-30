@@ -321,13 +321,21 @@ local function tickWeather(now)
     if now - lastWeatherAt < WEATHER_POLL then return end
     lastWeatherAt = now
     if not ownRegion or not isHolderOf(ownRegion) then return end
-    local okc, current = pcall(function() return core.weather.getCurrent() end)
+    -- THE CELL IS REQUIRED. core.weather.getCurrent/getNext/getTransition exist only as
+    -- (cell) overloads (mwlua/weatherbindings.cpp overloadForActiveCell); called bare they threw
+    -- inside this pcall, so no holder -- player or peer -- ever sent the weather, every region's
+    -- holder read as silent to the server and was handed off every three minutes, and players
+    -- never shared a sky (s175, #148; weather.silent_holder on the dev box).
+    local p = playerObj()
+    local cell = p and p.cell
+    if not cell then return end
+    local okc, current = pcall(function() return core.weather.getCurrent(cell) end)
     if not okc or not current then return end -- interiors have no sky
     local index = buildWeatherIndex()
     local body = { region = ownRegion, current = index[current.recordId] or 0 }
-    local okn, nextW = pcall(function() return core.weather.getNext() end)
+    local okn, nextW = pcall(function() return core.weather.getNext(cell) end)
     if okn and nextW then body.next = index[nextW.recordId] end
-    local okt, transition = pcall(function() return core.weather.getTransition() end)
+    local okt, transition = pcall(function() return core.weather.getTransition(cell) end)
     if okt and type(transition) == 'number' then
         body.transition = math.max(0, math.min(1, transition))
     end
@@ -340,6 +348,7 @@ local function tickWeather(now)
     lastWeatherSent = fp
     lastWeatherSaidAt = now
     mp.sendEvent('WorldWeather', body)
+    print('[mp] weather said: ' .. fp) -- s175: which half of a missed sky stalled
 end
 
 -- ================================================================== records
@@ -592,7 +601,13 @@ handlers.MP_WorldWeather = function(data)
     -- holder on whatever weather it rolled at boot. Solo, that is a fresh roll every session:
     -- the "weather is randomised on each load" report.
     if isHolderOf(data.region) and data.restore ~= true then return end
-    local rec = weatherRecordAt(data.current)
+    -- TRANSITION WITH THE HOLDER, not after it. changeWeather on the holder starts a transition:
+    -- its `current` stays the OLD weather, with the new one as `next`, until the transition has
+    -- run its game time -- and applying only `current` left everyone else under the old sky for
+    -- the holder's whole transition (s175: 90 s on a slow client and still not there). Start the
+    -- same transition here the moment it begins.
+    local target = (type(data.next) == 'number' and data.next ~= data.current) and data.next or data.current
+    local rec = weatherRecordAt(target)
     if not rec then
         print('[mp] weather index ' .. tostring(data.current) .. ' unknown here')
         return
@@ -602,10 +617,12 @@ handlers.MP_WorldWeather = function(data)
         print('[mp] changeWeather(' .. data.region .. ') failed: ' .. tostring(err))
         return
     end
-    weatherApplied = { region = data.region, current = data.current }
+    weatherApplied = { region = data.region, current = data.current, next = data.next, target = target }
+    print(string.format('[mp] weather applied: %s current=%s next=%s target=%s', data.region, tostring(data.current), tostring(data.next), tostring(target)))
 end
 
 handlers.MP_RecordCreateAck = function(data)
+    if data.tempId == nil then return end -- no key, nothing to clear: t[nil] = nil throws, and a throwing handler goes silent
     local localId = pendingRecords[data.tempId]
     pendingRecords[data.tempId] = nil
     if not localId or type(data.recordNetId) ~= 'string' then return end
@@ -616,7 +633,7 @@ end
 -- The server would not mint the record (caps or ceiling, backlog 323): forget the pending
 -- id so a later ack for a reused tempId cannot bind the wrong local record, and say why.
 handlers.MP_RecordCreateRefused = function(data)
-    pendingRecords[data.tempId] = nil
+    if data.tempId ~= nil then pendingRecords[data.tempId] = nil end
     print('[mp] record refused: ' .. tostring(data.reason))
 end
 

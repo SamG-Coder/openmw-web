@@ -21,6 +21,9 @@ local I = require('openmw.interfaces')
 -- 1 Hz. Recruiting is a dialogue action and losing a follower is a conversation or a death --
 -- none of it needs a fast beat, and the cost here is multiplied by every actor in the cell.
 local POLL = 1.0
+local isPeer = nil -- resolved on the first update (openmw.mp answers only once the session runs)
+local reportedCast = false
+local hitLogArmed = false -- the peer-only hit log (onUpdate)
 local nextPoll = 0
 -- The last thing we told the global script, so a follower standing still says nothing at all.
 -- Starts nil, which is also "following nobody" -- so an ordinary NPC, which is almost all of
@@ -126,6 +129,36 @@ end
 return {
     engineHandlers = {
         onUpdate = function()
+            -- A CAST IS SEEN (s172). The holder's pose stream marks an attacking actor with the
+            -- use bit, but a spell cast is only visible in the animation, and openmw.animation
+            -- does not load in the global script that builds the stream -- so every NPC spell
+            -- played on the peer and nowhere else. This script runs ON the actor, where it does
+            -- load; peer only, reported on change, every frame (a cast is ~1 s).
+            if isPeer == nil then
+                local okp, mpapi = pcall(require, 'openmw.mp')
+                isPeer = okp and mpapi.isSystem ~= nil and mpapi.isSystem() == true
+            end
+            -- WHAT A BLOW DID, on the peer (s164 #150: fifteen avatar swings in range and a scrib
+            -- that never died, with nothing saying whether they hit, missed or were undone). One
+            -- line per hit this actor takes: attacker, whether it connected, the damage.
+            if isPeer and not hitLogArmed and I.Combat and I.Combat.addOnHitHandler then
+                hitLogArmed = true
+                I.Combat.addOnHitHandler(function(attack)
+                    local okn, who = pcall(function() return attack.attacker and attack.attacker.recordId end)
+                    local d = attack.damage or {}
+                    print(string.format('[mp] hit on peer: %s by %s ok=%s health=%s fatigue=%s type=%s',
+                        tostring(self.object.recordId), okn and tostring(who) or '?', tostring(attack.successful),
+                        tostring(d.health), tostring(d.fatigue), tostring(attack.sourceType)))
+                end)
+            end
+            if isPeer then
+                local okc, casting = pcall(function() return require('openmw.animation').isPlaying(self, 'spellcast') end)
+                casting = okc and casting == true
+                if casting ~= reportedCast then
+                    reportedCast = casting
+                    core.sendGlobalEvent('mpActorCasting', { actor = self.object, on = casting })
+                end
+            end
             local now = core.getRealTime()
             if now < nextPoll then return end
             nextPoll = now + POLL
@@ -222,6 +255,15 @@ return {
                     end
                 end
             end)
+            -- Fight/Flee/Alarm from ActorDisposition (actors.lua): Self-gated like the bars.
+            for k, v in pairs(type(dyn.ai) == 'table' and dyn.ai or {}) do
+                pcall(function() types.Actor.stats.ai[k](self).base = v end)
+            end
+        end,
+        -- A merchant's equipment after its stock was rewritten (objects.lua equipPending).
+        -- setEquipment is Self-gated, so the global script hands the slots over.
+        mpSetEquipment = function(slots)
+            if type(slots) == 'table' then pcall(types.Actor.setEquipment, self, slots) end
         end,
     },
 }

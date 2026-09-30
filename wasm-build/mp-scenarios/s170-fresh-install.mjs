@@ -16,13 +16,14 @@
 // binary plus retail data must exist for the worlds to simulate anything.
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { adminApi } from './_gateway.mjs';
 import { drown } from './_death.mjs';
+import { focus } from './_realfight.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const GW_PORT = 18700; // below the 18860..19150 band the other gateway scenarios use
@@ -229,6 +230,11 @@ export default async function run(ctx) {
   // An EMPTY data dir. The shell script hands one over so the run's artefacts (setup-token,
   // .mode, logs, the uploaded game files) can be inspected afterwards; alone, a temp dir.
   const dataDir = process.env.OMW_FRESH_DATA || mkdtempSync(join(tmpdir(), 'omw-fresh-'));
+  // A RETRY starts from the empty dir the rehearsal is about (#188: the harness's one retry died in 0.6 s on the first
+  // attempt's leftovers). Only the dir the shell script handed over, only on the second attempt.
+  if (process.env.HARNESS_ATTEMPT === '2' && process.env.OMW_FRESH_DATA) {
+    for (const f of readdirSync(dataDir)) rmSync(join(dataDir, f), { recursive: true, force: true });
+  }
   assert.ok(existsSync(dataDir) && readdirSync(dataDir).length === 0, `the fresh data dir must be EMPTY: ${dataDir} holds ${readdirSync(dataDir).join(', ')}`);
   ctx.syncPeerScripts(); // the worlds' peers run the scripts under test, not the image's baked copy
   const gwLog = () => ctx.childLogTail('gateway', 20_000);
@@ -561,9 +567,10 @@ export default async function run(ctx) {
   // The sting (a relay hit, refused by a production-shaped server: combat_hit_refused) is the
   // only hit this client ever forwards; it goes out when the engine reaches it, which can be
   // after a page-side clear of the mirror (fresh62). Count forwards instead, like s164.
-  await host.cmd(`hitn:${victim}:1`);
-  await host.waitFor('Number(window.omw.state.hitFwdCount||0) > 0', 20_000, 'the sting went out').catch(() => {});
-  const fwdBefore = String(await host.eval('window.omw.state.hitFwdCount'));
+  // NO STING (a production-shaped server refuses the relay anyway): the fight is REAL swings --
+  // the pointer taken like a player takes it, the mouse button held -- and none is forwarded.
+  await focus(host);
+  const fwdBefore = String(await host.eval('String(window.omw.state.hitFwdCount||0)'));
   const deadExpr = `((JSON.parse(window.omw.state.actorProbe||"{}")[${JSON.stringify(victim)}]||{}).dead === true)`;
   // WHERE THE AVATAR IS, not where the local body is: at a frame every few seconds the body
   // lags its avatar by hundreds of units (445; fresh29: divergence 314, zero swings in 180 s
@@ -621,7 +628,8 @@ export default async function run(ctx) {
       else await ctx.sleep(1_000);
       continue;
     }
-    await host.evalAsync(`Promise.all([window.omw.send('face:${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z + 20)}', 120000), window.omw.send('stance:weapon', 120000), window.omw.send('attack:1500', 120000)]).then(function(r){ if (!r.every(function(x){ return x.ok; })) throw new Error('swing cmd failed: ' + JSON.stringify(r)); return 'ok'; })`);
+    await host.evalAsync(`Promise.all([window.omw.send('face:${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z + 20)}', 120000), window.omw.send('stance:weapon', 120000)]).then(function(r){ if (!r.every(function(x){ return x.ok; })) throw new Error('swing cmd failed: ' + JSON.stringify(r)); return 'ok'; })`);
+    await host.mouseHold(1500); // the swing: the mouse button, held
     swings++; dry++;
     const tSwing = Date.now() - t0;
     if (swings % 5 === 1) { const av = await avatarPos(); const q = (await probeOf(host, victim)) || {}; ctx.log(`  swing ${swings}: avatar (${Math.round(av.x)},${Math.round(av.y)},${Math.round(av.z)}) mark (${Math.round(q.x)},${Math.round(q.y)},${Math.round(q.z)}) range ${Math.hypot(q.x - av.x, q.y - av.y).toFixed(0)} hp=${q.hp} dead=${q.dead} div=${st.div} flags=${await host.eval('window.omw.state.selfFlags')}`); }
@@ -637,7 +645,7 @@ export default async function run(ctx) {
     await ctx.sleep(2_000);
   }
   assert.ok(died, `the ${victim} never died after ${swings} swings`);
-  assert.equal(String(await host.eval('window.omw.state.hitFwdCount')), fwdBefore, 'the owner sent no hit of its own during the fight');
+  assert.equal(String(await host.eval('String(window.omw.state.hitFwdCount||0)')), fwdBefore, 'the owner sent no hit of its own during the fight');
   await guest.waitFor(deadExpr, STEP, "the creature is dead on the friend's screen too");
   ctx.log(`ok: the peer's ${victim} killed with ${swings} real swing(s)`);
 
@@ -645,8 +653,29 @@ export default async function run(ctx) {
   await host.cmd('equiptest'); // a dynamic helmet record (global.lua mpTestItem), equipped beside the sword
   await host.waitFor(`(window.omw.state.equippedIds||"").split(",").some(function(id){ return id && id !== ${JSON.stringify(WEAPON)}; })`, 12_000, 'the host holds a test item');
   const itemId = (await host.eval('window.omw.state.equippedIds')).split(',').find((id) => id && id !== WEAPON);
-  await host.cmd(`chest:open:${netId}`);
-  await host.waitFor(`Object.prototype.hasOwnProperty.call(JSON.parse(window.omw.state.containerItems||"{}"), "n:${netId}")`, STEP, 'the corpse registered as a container');
+  // WHICH net object is the corpse: the kill is tracked by RECORD ('rat'), and the world holds several of a kind
+  // (#191: four rats, netId was the first ranked one, the swings killed another -- containers [] on a live rat).
+  // Ask each net object of that record to open; only the dead one registers as a container.
+  const sameKind = Object.entries(JSON.parse(await host.eval('window.omw.state.netObjects||"{}"'))).filter((e) => e[1] === victim).map((e) => e[0]);
+  let opened = false; // opened ONCE: a second chest:open of the same corpse re-arms its watch and the put never lands
+  for (const id of [netId, ...sameKind.filter((k) => k !== netId)]) {
+    await host.cmd(`chest:open:${id}`);
+    const got = await host.waitFor(`Object.prototype.hasOwnProperty.call(JSON.parse(window.omw.state.containerItems||"{}"), "n:${id}")`, sameKind.length > 1 ? 6_000 : STEP, 'a corpse registered').then(() => true).catch(() => false);
+    if (got) { netId = id; opened = true; break; }
+  }
+  if (!opened) await host.cmd(`chest:open:${netId}`);
+  try {
+    await host.waitFor(`Object.prototype.hasOwnProperty.call(JSON.parse(window.omw.state.containerItems||"{}"), "n:${netId}")`, STEP, 'the corpse registered as a container');
+  } catch (e) {
+    // WHAT THE HOST SAW (#188: red here, s111 loots the same way and passed): the net objects it knows, the
+    // containers it holds, and the container/chest lines of its own log -- the last 25 log lines were weather.
+    const NL = String.fromCharCode(10);
+    ctx.log(`  net ${netId} objects: ${await host.eval('window.omw.state.netObjects')}`);
+    ctx.log(`  containers: ${await host.eval('window.omw.state.containerItems')}`);
+    const cl = (host.logTail ? host.logTail(2000) : '').split(NL).filter((l) => /\[mp\].*(ontainer|hest|OpenContainer|ObjectContainer|corpse)/i.test(l)).slice(-10);
+    ctx.log('  host [mp] container lines: ' + (cl.length ? cl.join(' || ') : '(none)'));
+    throw e;
+  }
   await host.cmd(`chest:put:${itemId}`);
   await host.waitFor(corpseHas(netId, itemId, 1), STEP, 'the corpse holds the item');
   await guest.cmd(`chest:open:${netId}`);

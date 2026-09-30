@@ -10,7 +10,13 @@
 // the wire key first. Kill an NPC (s109), restart the peer, and expect the corpse to
 // stay a corpse on both screens.
 import assert from 'node:assert/strict';
+import { focus, armMelee, swingUntil, probeOf as probeRec } from './_realfight.mjs';
 import { pickUntil } from './_probe.mjs';
+
+// WHERE YOU FELL, not the harness's Example Suite village (26,25): that point is open sea in
+// retail, and a player the mark killed respawned among slaughterfish and swung at nothing for
+// the rest of the fight (#159 s118: the mark 52 -> 32, then 'none within 400').
+export const serverRules = 'respawnCellKey = ""';
 
 const STEP = 30_000;
 const BOOT = { retail: true, joinTimeoutMs: 420_000 };
@@ -29,18 +35,28 @@ export default async function run(ctx) {
     await c.waitFor('String(window.omw.state.authorityHolder||"none") !== "none"', 120_000, `${c.name}: the cell has a holder`);
   }
 
+  // Not indrele rathryon (#175, #178: 92 real swings, hp stuck at 23 after the first two, while she
+  // landed 105 fatigue-only blows -- a hand-to-hand NPC the swing loop cannot beat; the avatar's
+  // attack state, stagger and input path were each ruled out from the log and character.cpp).
   let pa, pb, victim;
-  ({ found: victim, probes: [pa, pb] } = await pickUntil(ctx, () => Promise.all([probeOf(a), probeOf(b)]), (pa, pb) => Object.keys(pa).find((r) => r !== 'player' && pb[r] && !pa[r].dead && !pa[r].guard && (pa[r].n ?? 1) === 1 && (pb[r].n ?? 1) === 1))); // UNIQUE in the cell: the probe is keyed by record, first wins, and after the restart 'mudcrab' was a different, living mudcrab on both screens (#139)
+  ({ found: victim, probes: [pa, pb] } = await pickUntil(ctx, () => Promise.all([probeOf(a), probeOf(b)]), (pa, pb) => {
+    const ok = Object.keys(pa).filter((r) => r !== 'player' && pb[r] && !pa[r].dead && !pa[r].guard && r !== 'indrele rathryon' && (pa[r].n ?? 1) === 1 && (pb[r].n ?? 1) === 1);
+    return ok.find((r) => !/^(mudcrab|scrib|rat|slaughterfish|kwama .*|guar|alit|cliff racer|kagouti|nix-hound|shalk)$/i.test(r)); // an NPC: a levelled creature is re-rolled on a peer restart, so its corpse is not the claim (#186: a mudcrab came back alive)
+  })); // UNIQUE in the cell: the probe is keyed by record, first wins, and after the restart 'mudcrab' was a different, living mudcrab on both screens (#139)
   assert.ok(victim, `need a living NPC visible to both: A=${JSON.stringify(Object.keys(pa))}`);
   const deadExpr = `((JSON.parse(window.omw.state.actorProbe||"{}")[${JSON.stringify(victim)}]||{}).dead === true)`;
-  // 180 s: at #116's frame rate the test hits landed 8 s apart and 90 s was eleven of them.
-  const deadline = Date.now() + 180_000;
+  // KILLED BY THE RELAY HOOK, not by real swings. This scenario is about the dead staying dead across a
+  // peer restart, not about the fight (s118, s164 and s120 own that): a named NPC in a guarded town makes
+  // a REAL swing loop a crime -- a guard's arrest dialogue holds the use bit and the fight never ends
+  // (#175-#184, five builds red) -- and a creature is re-rolled by the restarted peer, so its corpse is
+  // not the claim (#186). hitn:<record>:500 is how this scenario killed for years before the real-swing pass.
   let died = false;
-  while (Date.now() < deadline && !died) {
-    await a.cmd(`hitn:${victim}:40`);
-    await ctx.sleep(600);
+  for (let i = 0; i < 20 && !died; i++) {
+    await a.cmd(`hitn:${victim}:500`);
+    await ctx.sleep(1_500);
     died = (await a.eval(deadExpr)) === true;
   }
+  ctx.log(`killed by the relay hook: died=${died}`);
   assert.ok(died, `"${victim}" never died (s118 covers the fight)`);
   await b.waitFor(deadExpr, STEP, 'B sees it dead');
   ctx.log(`"${victim}" is dead in "${inside}" on both screens; restarting the peer`);

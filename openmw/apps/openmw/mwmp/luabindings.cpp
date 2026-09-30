@@ -132,7 +132,8 @@ namespace MWMP
         api["sendInput"] = [](const sol::table& t) {
             return NetManager::instance().sendInput(t.get_or("seq", 0u), t.get_or("move", 0.f),
                 t.get_or("side", 0.f), t.get_or("yaw", 0.f), t.get_or("pitch", 0.f),
-                static_cast<uint8_t>(t.get_or("flags", 0)));
+                static_cast<uint8_t>(t.get_or("flags", 0)),
+                static_cast<uint16_t>(std::clamp(t.get_or("simMs", 0), 0, 65535)));
         };
 
         // Phase 3, peer only: mp.sendAvatarMoveBatch(array of {id=,lastInputSeq=,x=,y=,z=,
@@ -363,6 +364,24 @@ namespace MWMP
             if (ptr.isEmpty() || !ptr.getClass().isActor())
                 return false;
             return ptr.getClass().getCreatureStats(ptr).getAttackingOrSpell();
+        };
+        // WHERE AN ATTACK IS in the body's own state machine (#161 s118: the avatar swung once --
+        // fatigue 200 -> 191 -- and every later press did nothing while the use bit flowed).
+        // "windup" | "busy" (release / follow / casting) | "ready" (weapon drawn, idle) | "none".
+        api["upperBody"] = [](const sol::object& obj) -> std::string {
+            if (!obj.is<MWLua::Object>())
+                return "none";
+            const MWWorld::Ptr& ptr = obj.as<MWLua::Object>().ptrOrEmpty();
+            if (ptr.isEmpty() || !ptr.getClass().isActor())
+                return "none";
+            const auto mm = MWBase::Environment::get().getMechanicsManager();
+            if (mm->isAttackPreparing(ptr))
+                return "windup";
+            if (mm->isAttackingOrSpell(ptr))
+                return "busy";
+            if (mm->isReadyToBlock(ptr))
+                return "ready";
+            return "none";
         };
         // Backlog 230: TalkedToPc lives on CreatureStats, per engine, and no save carries it in
         // multiplayer -- every NPC greeted a returning player as a stranger. The player script
@@ -775,6 +794,15 @@ namespace MWMP
         // clear, exposed so the restore can reset to a clean slate before re-adding. The
         // engine re-applies each ability on the next update, guarded by isSpellActive, so the
         // count after a restore is exactly one and cannot climb.
+        // HARNESS: go to jail, exactly as the guard's "Go to jail" choice does (its result script is
+        // GoToJail -> World::goToJail, mwscript/miscextensions.cpp). The first call forfeits the
+        // bounty and confiscates stolen goods; World::update finishes it the next frame (prison
+        // marker, the jail screen, days of rest and the clock). A headless client cannot click a
+        // dialogue choice, and without this no scenario could reach jail at all (backlog 45).
+        api["goToJail"] = [luaManager = context.mLuaManager]() {
+            luaManager->addAction([] { MWBase::Environment::get().getWorld()->goToJail(); }, "MPGoToJail");
+        };
+
         api["clearActiveSpells"] = [luaManager = context.mLuaManager]() {
             luaManager->addAction(
                 [] {
@@ -888,6 +916,22 @@ namespace MWMP
                     world->adjustActorPosition(world->getPlayerPtr(), off);
                 },
                 "MPCorrectSelf");
+        };
+
+        // mp.setSelfCollisionBody(on): whether OTHER actors collide with this process's player.
+        // For the SIM PEER's own dummy player only. It stands 200 u beside whichever real player
+        // anchors a cell (global.lua MP_SimAnchors) and no client ever sees it, yet its capsule
+        // blocked the avatars: players were held back and rubber-banded against something that
+        // was not on their screen, on paths, bridges and door exits they had just walked. The
+        // console's TCL is no help here -- it deliberately keeps the body solid to others
+        // (PhysicsSystem::toggleCollisionMode). Queued like correctSelf; idempotent in the engine.
+        api["setSelfCollisionBody"] = [luaManager = context.mLuaManager](bool on) {
+            luaManager->addAction(
+                [on] {
+                    MWBase::World* world = MWBase::Environment::get().getWorld();
+                    world->enableActorCollision(world->getPlayerPtr(), on);
+                },
+                "MPSelfCollisionBody");
         };
 
         // SIM ANCHORS. The server tells this process which regions to keep simulated: one

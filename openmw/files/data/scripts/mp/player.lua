@@ -67,7 +67,10 @@ end
 -- ~15 Hz real-time while moving, plus edge-triggered sends on jump and on stop. Kept well
 -- under the server's 40 msg/s movement budget.
 local SEND_INTERVAL = 1 / 15
-local POSE_MIRROR_INTERVAL = 0.5 -- 2 Hz test-surface mirror
+-- 10 Hz test-surface mirror. At 2 Hz a scenario's "truth" was a straight line between samples half
+-- a second apart: it cut every corner and start and read a friend's puppet up to ~40 u and
+-- several hundred ms further behind than it was (s172 #168). One page call per 100 ms is nothing.
+local POSE_MIRROR_INTERVAL = 0.1
 
 local lastSend = 0
 local lastSentPos = nil
@@ -181,16 +184,37 @@ local INPUT_EVERY = 1 / 30
 -- by RTT x speed on a real link (invisible on the LAN harness, #197). Reconciliation
 -- compares the sample with where we were at that seq instead. ~2 s at 30 Hz.
 local POS_RING_N = 64
-local posRing = {} -- [seq % POS_RING_N] = {seq, x, y, z}
+local posRing = {} -- [seq % POS_RING_N] = {seq, x, y, z, cx, cy, cz}
+-- EVERY CORRECTION ALREADY SENT, summed. A ring entry is where we stood when its input left;
+-- a correction applied after that moved us, and the entry did not know. With several samples
+-- in flight at once (the round trip is 150-300 ms at ~15 samples/s) each one measured the
+-- SAME gap again and corrected it again: 3-6 x the gain, an overshoot, a smaller swing back --
+-- ringing that read as constant rubber-banding. Each entry records the total at the time it
+-- was taken, and posAt adds whatever has been corrected since.
+local corrX, corrY, corrZ = 0, 0, 0
+-- The total as of the START of this frame: an entry recorded later in the frame (inputTick
+-- runs after selfReconcileTick) was taken before this frame's correction lands, since the
+-- engine applies it at the end of the frame.
+local frameCorrX, frameCorrY, frameCorrZ = 0, 0, 0
 local function posAt(seq)
     seq = tonumber(seq)
     if seq == nil then return nil end
     local r = posRing[seq % POS_RING_N]
-    if r and r.seq == seq then return r end
+    if r and r.seq == seq then
+        return { x = r.x + (corrX - r.cx), y = r.y + (corrY - r.cy), z = r.z + (corrZ - r.cz) }
+    end
     return nil -- older than the ring (a long stall): the caller uses the current position
 end
 
 local tookControlsSaid = false -- once per session: the rejoin position hold lets go
+-- THE TIME THIS BODY WAS ACTUALLY SIMULATED since the last input left. The engine caps a frame at
+-- 200 ms of simulated time, so a hitch (a cell load, a GC pause, a busy tab) moves the player
+-- less than the wall clock says -- while the avatar on the peer kept walking the whole hitch,
+-- and the next correction yanked the player forward. Each input carries this (ms, u16) and the
+-- avatar moves for exactly that long (avatar.lua budget): the same movement on both sides.
+-- The CURRENT frame's time is not in it: ring[seq] is recorded before this frame's physics, so
+-- this frame belongs to the next input (the one whose controls it runs under).
+local simAcc, simFrameDt = 0, 0
 local function inputTick(now)
     -- The PEER's own dummy player has no avatar and the server drops its input
     -- (playerInputDropped{from_peer}); 30 Hz of frames for the bin.
@@ -204,6 +228,12 @@ local function inputTick(now)
             local dbg = require('openmw.debug')
             if not dbg.isGodMode() then dbg.toggleGodMode() end
         end)
+        -- AND NOTHING WALKS INTO IT. It stands 200 u beside a real player on every cell change,
+        -- where no client can see it, and its capsule held back the avatars walking there: the
+        -- owner was rubber-banded against something that was not on their screen. Re-asserted
+        -- every tick (the engine ignores a no-op) because a cell change can rebuild the body.
+        if mp.setSelfCollisionBody then mp.setSelfCollisionBody(false) end
+        simAcc = 0
         return
     end
     if not tookControlsSaid then
@@ -223,7 +253,8 @@ local function inputTick(now)
     lastInputSend = now
     inputSeq = inputSeq + 1
     local p = self.position
-    posRing[inputSeq % POS_RING_N] = { seq = inputSeq, x = p.x, y = p.y, z = p.z }
+    posRing[inputSeq % POS_RING_N] = { seq = inputSeq, x = p.x, y = p.y, z = p.z,
+        cx = frameCorrX, cy = frameCorrY, cz = frameCorrZ }
     local c = self.controls
     local flags = 0
     if c.run then flags = flags + 1 end
@@ -252,7 +283,9 @@ local function inputTick(now)
             yaw = self.rotation:getYaw(),
             pitch = self.rotation:getPitch(),
             flags = flags,
+            simMs = math.max(1, math.min(65535, math.floor((simAcc - simFrameDt) * 1000 + 0.5))),
         })
+        simAcc = simFrameDt
     end
 end
 
@@ -262,6 +295,7 @@ end
 --   small divergence  -> a capped mp.correctSelf offset, resolved by the next physics step
 --   past the hard threshold -> one snap through the global teleport path (cooldown below)
 local SNAP_DIST = 256
+local CORRECT_CAP = 48 -- = maxCorrectPerCall in mwmp/luabindings.cpp
 local CORRECT_GAIN = 0.25 -- fraction of the divergence per FRAME that has a fresh sample
 local latestSelf = nil -- newest authoritative self pose, consumed by selfReconcileTick
 local lastSnapAt = 0
@@ -362,8 +396,16 @@ local function selfReconcileTick()
     if mp.correctSelf then
         -- The engine caps the per-call offset (it is load-bearing: an uncapped correction
         -- pushes through geometry before physics gets a say); the gain keeps the approach
-        -- smooth over several frames instead of a visible yank.
-        mp.correctSelf(dx * CORRECT_GAIN, dy * CORRECT_GAIN, dz * CORRECT_GAIN)
+        -- smooth over several frames instead of a visible yank. The same cap is applied here
+        -- so the running total (posAt) records what actually moved us.
+        local cx, cy, cz = dx * CORRECT_GAIN, dy * CORRECT_GAIN, dz * CORRECT_GAIN
+        local len = math.sqrt(cx * cx + cy * cy + cz * cz)
+        if len > CORRECT_CAP then
+            local k = CORRECT_CAP / len
+            cx, cy, cz = cx * k, cy * k, cz * k
+        end
+        mp.correctSelf(cx, cy, cz)
+        corrX, corrY, corrZ = corrX + cx, corrY + cy, corrZ + cz
     end
 end
 
@@ -381,6 +423,7 @@ end
 local function movementTick()
     if mp.status().state ~= 'Joined' then
         lastCellKey = nil -- rejoin resends PlayerCellChange (required to become visible)
+        simAcc = 0 -- time spent unjoined is not movement the avatar owes
         identity.reset() -- and the identity diffs re-upload
         return
     end
@@ -398,6 +441,7 @@ local function movementTick()
         self.controls.sideMovement = 0
         self.controls.jump = false
     end
+    frameCorrX, frameCorrY, frameCorrZ = corrX, corrY, corrZ -- before this frame's correction
     selfReconcileTick() -- Phase 3: one correction per frame toward the newest peer pose
     inputTick(now) -- Phase 3: raw intent to the peer, beside the pose stream
     identity.tick(now) -- M2: appearance/equipment/stats/inventory diff broadcasts
@@ -893,6 +937,16 @@ local function dispatch(cmd)
             end)
             mp.set('body', ok and v or ('err:' .. tostring(v)))
         end
+        -- whoami: what character creation made of us -- name, race, class, birthsign (s176).
+        if cmd == 'whoami' then
+            local ok, v = pcall(function()
+                local rec = types.NPC.record(self)
+                local okb, sign = pcall(function() return types.Player.getBirthSign(self) end)
+                return json.encode({ name = rec.name, race = rec.race, class = rec.class,
+                    sign = okb and tostring(sign or '') or '' })
+            end)
+            mp.set('whoami', ok and v or ('err:' .. tostring(v)))
+        end
         -- actives: the ids of our active spells right now (did the cast take?).
         if cmd == 'actives' then
             local ids = {}
@@ -1178,6 +1232,10 @@ local function dispatch(cmd)
         if cmd == 'takeowned' then core.sendGlobalEvent('mpTestTakeOwned', {}) end
         local bountyN = cmd:match('^bounty:(%d+)$')
         if bountyN then core.sendGlobalEvent('mpTestBounty', { n = tonumber(bountyN) }) end
+        -- jail: what the guard's "Go to jail" choice does (mp.goToJail = World::goToJail).
+        if cmd == 'jail' then
+            if mp.goToJail then mp.goToJail() else print('[mp] jail: this engine has no mp.goToJail') end
+        end
         local facId, facRank = cmd:match('^faction:([^:]+):(%d+)$')
         if facId then
             core.sendGlobalEvent('mpTestFaction', { id = facId, rank = tonumber(facRank) })
@@ -1305,7 +1363,7 @@ local function disableMenuPause()
     end
 end
 
-return {
+local script = {
     engineHandlers = {
         onInit = disableMenuPause,
         onLoad = disableMenuPause,
@@ -1327,7 +1385,9 @@ return {
                 toggleChat()
             end
         end,
-        onFrame = function() -- runs while paused too — the harness must not stall in menus
+        onFrame = function(dt) -- runs while paused too — the harness must not stall in menus
+            simAcc = simAcc + (dt or 0) -- 0 while paused: a menu simulates nothing
+            simFrameDt = dt or 0
             pollCommands()
             faceTick()
             walkTick()
@@ -1378,6 +1438,7 @@ return {
             -- Scenario mirror: proves the PEER-authoritative bars actually flowed (a local
             -- fall would drop hp too; only this marker distinguishes the sources).
             mp.set('selfStats', string.format('%.0f/%.0f', data.hp.c, data.hp.b))
+            if data.ft then mp.set('selfFt', string.format('%.0f/%.0f', data.ft.c or 0, data.ft.b or 0)) end
             if data.mp then mp.set('selfMagicka', string.format('%.0f/%.0f', data.mp.c, data.mp.b)) end
             identity.notePeerBars(data.hp.c, data.mp and data.mp.c, data.ft and data.ft.c)
             -- Backlog 73: reports come at 4 Hz; hold a little past the next one.
@@ -1389,6 +1450,12 @@ return {
                 -- The blow landed on the peer, so this engine never ran its hit chain: the
                 -- drop in the bar is the only sign, and it was silent (backlog 130).
                 if data.hp.c < d.health(self).current then core.sound.playSound3d('Health Damage', self) end
+                -- HARNESS DIAGNOSTIC (s22 #178): the engine holds this body dead while the peer's
+                -- bar is above zero -- the latch the write below cannot clear.
+                local okd, isDead = pcall(types.Actor.isDead, self)
+                if okd and isDead == true and data.hp.c >= 1 then
+                    print(string.format('[mp] self is dead-latched while the peer reports hp=%.1f/%.1f', data.hp.c, data.hp.b))
+                end
                 d.health(self).current = data.hp.c
                 d.magicka(self).current = data.mp.c
                 d.fatigue(self).current = data.ft.c
@@ -1501,3 +1568,10 @@ return {
         end,
     },
 }
+
+-- A server event with no body is an empty one (as in global.lua): a handler that throws goes
+-- silent for the rest of the session. run.lua calls each MP_ handler here with none.
+for name, fn in pairs(script.eventHandlers) do
+    if name:sub(1, 3) == 'MP_' then script.eventHandlers[name] = function(data) return fn(data or {}) end end
+end
+return script

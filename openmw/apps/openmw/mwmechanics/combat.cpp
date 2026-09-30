@@ -2,7 +2,9 @@
 #include "combat.hpp"
 
 #include <array>
+#include <cstdlib>
 
+#include <components/debug/debuglog.hpp>
 #include <components/misc/rng.hpp>
 #include <components/settings/values.hpp>
 
@@ -240,6 +242,13 @@ namespace MWMechanics
         const MWWorld::Store<ESM::GameSetting>& gmst = world->getStore().get<ESM::GameSetting>();
 
         bool validVictim = !victim.isEmpty() && victim.getClass().isActor();
+
+        // WHERE AN AVATAR'S ARROW ENDS, on the sim peer (s138 #186: 24 real shots, the mark never died,
+        // and nothing said whether an arrow ever hit anything). One line per arrow that reaches here.
+        if (attacker != getPlayer() && MWMP::isAvatar(attacker.getCellRef().getRefNum()))
+            Log(Debug::Info) << "[mp] avatar arrow hit: victim="
+                             << (victim.isEmpty() ? std::string("none") : victim.getCellRef().getRefId().toDebugString())
+                             << " actor=" << validVictim << " strength=" << attackStrength;
 
         ESM::RefId weaponSkill = ESM::Skill::Marksman;
         if (!weapon.isEmpty())
@@ -734,14 +743,33 @@ namespace MWMechanics
             MWBase::Environment::get().getMechanicsManager()->getActorsInRange(
                 actorPos, static_cast<float>(Settings::game().mActorsProcessingRange), targets);
 
+        // WHY A SWING FOUND NOTHING, on the sim peer (#158: avatars killed every creature and
+        // never touched an NPC -- 100+ swings from 51 u, not one hit line on the peer). Each
+        // actor near an avatar's empty swing is logged with the check that ruled it out.
+        const bool whyNot = actor != getPlayer() && MWMP::isAvatar(actor.getCellRef().getRefNum());
+        std::string rejected;
+        const auto reject = [&](const MWWorld::Ptr& t, const char* why, float d) {
+            if (whyNot && d < 400.f)
+                rejected += " " + t.getCellRef().getRefId().toDebugString() + "@" + std::to_string(static_cast<int>(d)) + ":" + why;
+        };
+        // THE SIM PEER'S OWN PLAYER IS A DUMMY: a god-mode body parked at the start that nobody
+        // sees. As the nearest actor in the arc it took every blow aimed at a player standing
+        // there (#159 s66: '"player"@-55' beside the victim's avatar; 20 swings, no damage).
+        static const bool sHeadlessPeer = std::getenv("OPENMW_HEADLESS") != nullptr;
+        const MWWorld::Ptr peerDummy = sHeadlessPeer ? getPlayer() : MWWorld::Ptr();
         for (MWWorld::Ptr& target : targets)
         {
             if (actor == target || target.getClass().getCreatureStats(target).isDead())
                 continue;
+            if (sHeadlessPeer && target == peerDummy)
+                continue;
 
             const float dist = getDistanceToBounds(actor, target);
             if (dist >= minDist || !isInMeleeReach(actor, target, reach))
+            {
+                reject(target, dist >= minDist ? "farther" : "reach", dist);
                 continue;
+            }
 
             const osg::Vec3f targetPos(target.getRefData().getPosition().asVec3());
 
@@ -751,12 +779,18 @@ namespace MWMechanics
 
             // Use dot product to check if the target is behind first...
             if (actorToTargetXY.x() * actorDirXY.x() + actorToTargetXY.y() * actorDirXY.y() <= 0.f)
+            {
+                reject(target, "behind", dist);
                 continue;
+            }
 
             // And then perp dot product to calculate the hit angle sine.
             // This gives us a horizontal hit range of [-asin(fCombatAngleXY / 90); asin(fCombatAngleXY / 90)]
             if (std::abs(actorToTargetXY.x() * actorDirXY.y() - actorToTargetXY.y() * actorDirXY.x()) > fCombatAngleXY)
+            {
+                reject(target, "angleXY", dist);
                 continue;
+            }
 
             // Vertical angle checks. Nice cliff racer hack, Todd.
             if (!canMoveByZ)
@@ -771,16 +805,26 @@ namespace MWMechanics
 
                 if (actorVerticalAngle - actorToTargetHead.z() > fCombatAngleZ
                     || actorVerticalAngle - actorToTargetFeet.z() < -fCombatAngleZ)
+                {
+                    reject(target, "angleZ", dist);
                     continue;
+                }
             }
 
             // Gotta use physics somehow!
             if (!world->getLOS(actor, target))
+            {
+                reject(target, "los", dist);
                 continue;
+            }
 
             minDist = dist;
             result = target;
         }
+
+        if (whyNot && result.isEmpty())
+            Log(Debug::Info) << "[mp] avatar swing found nothing: " << targets.size() << " in range,"
+                             << (rejected.empty() ? " none within 400" : rejected);
 
         // This hit position is currently used for spawning the blood effect.
         // Morrowind does this elsewhere, but roughly at the same time

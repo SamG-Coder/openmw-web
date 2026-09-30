@@ -118,7 +118,8 @@ export interface AdminDeps {
   setupToken: SetupToken;
 
   // --- the original moderation surface, unchanged ---
-  overview(): unknown | Promise<unknown>;
+  /** `role` is the caller's, for fields only some roles may see (the invite link). */
+  overview(role: DashboardRole): unknown | Promise<unknown>;
   reports(limit: number): Promise<unknown>;
   /** `by` is the signed-in operator's account name, so a ban row names who issued it. */
   action(kind: string, target: string, detail: string, by: string): Promise<{ ok: boolean; message: string }>;
@@ -574,8 +575,9 @@ export function adminRoutes(deps: AdminDeps) {
 
     // --- the original three, byte-compatible ----------------------------------------------
     if (method === 'GET' && path === '/admin/api/overview') {
-      if (!await gate(req, res, auth, 'viewer')) return true;
-      json(res, 200, await deps.overview());
+      const ctx = await gate(req, res, auth, 'viewer');
+      if (!ctx) return true;
+      json(res, 200, await deps.overview(ctx.role));
       return true;
     }
     if (method === 'GET' && path === '/admin/api/reports') {
@@ -779,7 +781,8 @@ export function adminRoutes(deps: AdminDeps) {
     if (method === 'GET' && path === '/admin/api/mods') {
       if (!await gate(req, res, auth, 'viewer')) return true;
       json(res, 200, {
-        ...(modsView(deps.gameDataDir, deps.dataDir, url.searchParams.get('profile') ?? undefined) as object),
+        ...(modsView(deps.gameDataDir, deps.dataDir, url.searchParams.get('profile') ?? undefined,
+          (deps.config() as { content?: { allowStockSwap?: boolean } }).content?.allowStockSwap === true) as object),
         writable: gameDataWritable(deps.gameDataDir),
       });
       return true;
@@ -804,7 +807,7 @@ export function adminRoutes(deps: AdminDeps) {
       if (!ctx) return true;
       const body = await readJson<{
         entries?: { file?: string; enabled?: boolean }[];
-        mods?: { slug?: unknown; enabled?: unknown; plugins?: unknown }[];
+        mods?: { slug?: unknown; enabled?: unknown; plugins?: unknown; replaces?: unknown }[];
       }>(req, res);
       if (body === undefined) return true;
       // Both halves of the same document, and either may be absent: the base-game table and the
@@ -814,7 +817,8 @@ export function adminRoutes(deps: AdminDeps) {
         if (!result.ok) { json(res, 400, { error: result.error }); return true; }
       }
       if (body.mods) {
-        const result = saveModOrder(deps.dataDir, body.mods);
+        const result = saveModOrder(deps.dataDir, body.mods,
+          (deps.config() as { content?: { allowStockSwap?: boolean } }).content?.allowStockSwap === true);
         if (!result.ok) { json(res, result.status, { error: result.error }); return true; }
       }
       log('info', 'admin.mods_changed', {

@@ -2028,7 +2028,10 @@ namespace MWMechanics
 
             osg::Vec3f rot = cls.getRotationVector(mPtr);
             osg::Vec3f vec(movementSettings.asVec3());
-            movementSettings.mSpeedFactor = std::min(vec.length(), 1.f);
+            // A remote body may go up to 25% over its top speed to close a gap on its owner
+            // (puppet.lua PUPPET_MAX_SPEED; s172 #161): at 1x a running target was never caught.
+            movementSettings.mSpeedFactor
+                = std::min(vec.length(), MWMP::isPuppet(mPtr.getCellRef().getRefNum()) ? 1.25f : 1.f);
             vec.normalize();
 
             const bool smoothMovement = Settings::game().mSmoothMovement;
@@ -2042,7 +2045,11 @@ namespace MWMechanics
                 float deltaLen = delta.length();
 
                 float maxDelta;
-                if (isFirstPersonPlayer)
+                // MULTIPLAYER: a PUPPET's motion was already smoothed by the engine that simulates
+                // it (the sim peer, or the remote player's own client). Smoothing it again here
+                // is a second third-of-a-second ramp at every start and stop, which puppet.lua's
+                // steering can only answer by trailing its target or overshooting it (s172).
+                if (isFirstPersonPlayer || MWMP::isPuppet(mPtr.getCellRef().getRefNum()))
                     maxDelta = 1;
                 else if (std::abs(speedDelta) < deltaLen / 2)
                     // Turning is smooth for player and less smooth for NPCs (otherwise NPC can miss a path point).

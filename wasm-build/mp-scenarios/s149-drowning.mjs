@@ -58,7 +58,7 @@ export default async function run(ctx) {
   // B GETS THE SAME BIGGER POOL: it kills from the seabed (the only spot a snap lands on in
   // that cell), and a vertical teleport up dropped it back in with fall momentum, sinking with
   // no swim-up input until it drowned and respawned in the village (#134: B in another cell,
-  // 'B's puppet of A' gone). At 95 hp the seabed is survivable for the half minute the kills
+  // 'B's puppet of A' gone). +60 (the server refuses a bigger raise, #154) is plenty now that the kills
   // take on a slow client; then straight back to land.
   { const b0 = await bars(b);
     await b.cmd(`sethpbase:${b0.b + 60}`);
@@ -67,9 +67,47 @@ export default async function run(ctx) {
     await b.waitFor(`Number(String(window.omw.state.selfStats||"0/0").split("/")[0]) >= ${b0.b + 50}`, STEP, "B's pool filled"); }
   await b.cmd(`snapto:${SEABED.x + 300},${SEABED.y},${SEABED.z}`);
   await b.waitFor('JSON.parse(window.omw.state.pose||"{}").z < -250', STEP, 'B is at the sea spot');
-  for (let i = 0; i < 4; i++) { await b.cmd('killnpc:slaughterfish'); await b.cmd('killnpc:slaughterfish_small'); await ctx.sleep(500); }
+  // ONE KILL A FRAME: a kill lands at the END of the frame, so six in one frame all went to the
+  // same nearest fish and a live one bit A (#158). On a client drawing 50 fps the eight commands
+  // are well under a second at the seabed (it was the 2 fps box that made them slow, #152).
+  // ...AND ONLY ONCE B CAN SEE THEM. Straight after the snap the sea spot's fish were not yet
+  // in B's world (the peer enabled them a moment later), and eight kills at 50 fps all found
+  // nothing -- a live fish bit A at t+7s (#159; the 2 fps box used to be slow enough).
+  const FISH = ['slaughterfish', 'slaughterfish_small'];
+  const fishSeen = async () => {
+    const pr = JSON.parse(await b.eval('window.omw.state.actorProbe||"{}"'));
+    return FISH.map((r) => [r, pr[r] ? pr[r].n || 1 : 0]);
+  };
+  let seen = [];
+  for (const until = Date.now() + 15_000; Date.now() < until;) {
+    seen = await fishSeen();
+    if (seen.some(([, n]) => n > 0)) break;
+    await ctx.sleep(500);
+  }
+  ctx.log(`fish B sees at the sea spot: ${seen.map(([r, n]) => `${r} x${n}`).join(', ')}`);
+  // THROUGH THE HOLDER: killnpc kills B's own copy only -- the peer holds these fish, and the
+  // six B killed in #161 went on biting A. hitn: strikes B's copy, whose intercept relays the
+  // blow to the peer (the testhost allows it: limits.harness); one kill a frame, live ones only.
+  const fwd0 = Number(await b.eval('window.omw.state.hitFwdCount||0'));
+  for (const [rec, n] of seen) {
+    for (let i = 0; i <= n; i++) { await b.cmd(`hitn:${rec}:500`); await ctx.sleep(700); } // a death takes a round trip to show on B
+  }
+  // WHAT THE HITS DID (#166: 5 fish seen, no hit on any of them at the peer, A bitten). The relay
+  // count and route on B, B's own narration of the hook, the server's drops, and which fish are
+  // still standing -- all before A dives, so a bite can no longer pass for drowning unexplained.
+  await ctx.sleep(2_000);
+  const fwd1 = Number(await b.eval('window.omw.state.hitFwdCount||0'));
+  const bSaid = (b.logTail ? b.logTail(600) : '').split(String.fromCharCode(10)).filter((l) => /mpTestHit|combat:/.test(l)).slice(-6);
+  const srvSaid = (ctx.serverLogTail ? ctx.serverLogTail(4000) : '').split(String.fromCharCode(10)).filter((l) => /combat\.(drop|held)|CombatHit/.test(l)).slice(-4);
+  const pr = JSON.parse(await b.eval('window.omw.state.actorProbe||"{}"'));
+  ctx.log(`the clearing: ${fwd1 - fwd0} hit(s) relayed (last route ${await b.eval('window.omw.state.hitFwd')}); probe now ${FISH.map((r) => `${r} ${pr[r] ? (pr[r].dead ? 'dead' : 'ALIVE') + ' x' + (pr[r].n || 1) : 'gone'}`).join(', ')}`);
+  if (bSaid.length) ctx.log('B said: ' + bSaid.join(' || '));
+  if (srvSaid.length) ctx.log('server said: ' + srvSaid.join(' || '));
+
   await b.cmd('snapto:-12288,-69632,87'); // back onto land (the retail start), as A does after the hold
   await b.waitFor('JSON.parse(window.omw.state.pose||"{}").z > 0', STEP, 'B is back on land');
+  { const bp = await pose(b); // ON LAND AT THE START, not respawned somewhere dry after dying
+    assert.ok(Math.hypot(bp.x + 12288, bp.y + 69632) < 1024, `B is not back at the start (${bp.x.toFixed(0)},${bp.y.toFixed(0)}): it died at the sea spot`); }
   await ctx.sleep(4_000); // the deaths travel client -> server -> peer
   const start = await bars(a);
   await a.cmd(`snapto:${SEABED.x},${SEABED.y},${SEABED.z}`);
@@ -82,28 +120,46 @@ export default async function run(ctx) {
   // Hold the depth: sneak is swim-down.
   await a.cmd(`walk:0,0,${HOLD_S * 1000}:sneak`);
 
+  // BITES ARE NOT DROWNING, AND THE SEA IS NOT EMPTY. The spot can be cleared, but a fish from
+  // further out swims in within the hold (#167: six killed, a seventh bit A at t+11s). The peer
+  // logs every blow the avatar takes with its damage, so what drowning cost is what the bars
+  // lost MINUS what the fish did -- and a loss no bite explains is the water.
+  const diveTs = new Date().toISOString();
+  const bitten = () => {
+    let sum = 0;
+    for (const l of (ctx.serverLogTail ? ctx.serverLogTail(8000) : '').split(String.fromCharCode(10))) {
+      if (!/hit on peer: .* by slaughterfish\S* ok=true health=/.test(l)) continue;
+      let ts = '', text = l;
+      try { const j = JSON.parse(l); ts = j.ts || ''; text = j.text || l; } catch { /* a bare line */ }
+      if (ts && ts < diveTs) continue;
+      const m = text.match(/health=([\d.]+)/);
+      if (m) sum += Number(m[1]);
+    }
+    return sum;
+  };
   // Hold there. Sample the peer's bars and the client's own bar every 5 s.
-  let cur = start, local = start.c, firstHurtAt = 0;
+  let cur = start, local = start.c, firstHurtAt = 0, bites = 0;
   while (Date.now() - t0 < HOLD_S * 1000) {
     await ctx.sleep(2_000);
     cur = (await bars(a)) || cur;
     local = Number(await a.eval('window.omw.state.hp'));
-    if (!firstHurtAt && cur.c < start.c - 1) firstHurtAt = Date.now() - t0;
+    bites = bitten();
+    if (!firstHurtAt && start.c - cur.c - bites > 1) firstHurtAt = Date.now() - t0;
     if (true) {
       const z = (await pose(a)).z, az = Number(JSON.parse(await b.eval(`JSON.stringify(${rowOf})`)).z);
       await a.eval("if (window.omw.state) window.omw.state.body = null; 'cleared';"); await a.cmd('body');
       await a.waitFor("typeof window.omw.state.body === 'string'", 5_000, 'body answered');
-      ctx.log(`t+${Math.round((Date.now() - t0) / 1000)}s peer ${cur.c}/${cur.b} client ${local}; A at z=${z.toFixed(0)}, avatar (as B sees it) z=${az.toFixed(0)}; engine says ${await a.eval('window.omw.state.body')}`);
+      ctx.log(`t+${Math.round((Date.now() - t0) / 1000)}s peer ${cur.c}/${cur.b} client ${local} (bites ${bites.toFixed(1)}); A at z=${z.toFixed(0)}, avatar (as B sees it) z=${az.toFixed(0)}; engine says ${await a.eval('window.omw.state.body')}`);
     }
     if (cur.c <= 25 || local <= 25) break; // never let the bot die; that is s22/s77's business
-    if (firstHurtAt) { await ctx.sleep(4_000); cur = (await bars(a)) || cur; local = Number(await a.eval('window.omw.state.hp')); break; }
+    if (firstHurtAt) { await ctx.sleep(4_000); cur = (await bars(a)) || cur; local = Number(await a.eval('window.omw.state.hp')); bites = bitten(); break; }
   }
-  assert.ok(cur.c < start.c - 1, `${HOLD_S} s under water cost nothing (${start.c} -> ${cur.c}): drowning never reached the ruling body`);
+  assert.ok(start.c - cur.c - bites > 1, `${HOLD_S} s under water cost nothing past the bites (${start.c} -> ${cur.c}, bites ${bites.toFixed(1)}): drowning never reached the ruling body`);
   assert.ok(cur.c > 0, 'the bot must not die here');
   // ONLY DROWNING COUNTS: fHoldBreathTime is 20 s, so a loss inside the first 15 s is a
   // slaughterfish, a fall on the snap, anything but the water (the s999 control's check).
   assert.ok(firstHurtAt >= 15_000, `hurt at t+${Math.round(firstHurtAt / 1000)}s, before the breath ran out -- that was not drowning`);
-  const lost = start.c - cur.c;
+  const lost = start.c - cur.c; // bites included: both sides took them
   assert.ok(Math.abs(local - cur.c) <= Math.max(3, lost * 0.5),
     `client ${local} vs peer ${cur.c} (lost ${lost}): one side drowned twice`);
 

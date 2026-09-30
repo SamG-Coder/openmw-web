@@ -45,12 +45,14 @@ local ACQUIRE_INTERVAL = 0.25
 local identity = {}
 
 local last = { appearance = nil, equipment = nil, dynamic = nil, progression = nil, spells = nil, inventory = nil, active = nil }
+local lastLook = nil -- the avatar-rebuilding part of the last appearance sent (identity.tick)
 local nextAt = { appearance = 0, equipment = 0, dynamic = 0, progression = 0, inventory = 0, acquire = 0, active = 0 }
 -- recordId -> count, as of the last acquisition pass. Separate from `last.inventory` because
 -- that one only advances on the slow cadence, and comparing against it would re-report the same
 -- gain every 0.25 s until the snapshot caught up.
 -- Acquisition baseline (count per record id) lives in `last.acquired` so a StateRefused can forget it (#400).
 local wasDead = false
+local deathSentAt = nil -- the last PlayerDeath sent (resent while still dead)
 local restoring = false -- suppress broadcasts while the rejoin record is being applied
 -- BASELINE GATE. Until this is true we do not know what this character IS yet, so the
 -- persistent halves of the sync stay silent.
@@ -248,8 +250,11 @@ local function snapProgression()
         -- DAMAGE RIDES ALONG, as "<id>_damage" in the same map (no new wire shape): a Damage
         -- Attribute that outlives its spell, and the Restore that heals it, are facts about
         -- the character the avatar and the next login must carry, and .base alone lost them.
-        local dmg = st.damage or 0
-        if dmg ~= 0 then attributes[id .. '_damage'] = dmg end
+        -- ALWAYS SENT, 0 included. It used to ride only while non-zero, and a cure removed the
+        -- key -- which the avatar (avatar.lua applies only keys it is given) read as "no news",
+        -- so a Damage Speed or Strength the owner had cured stayed on the avatar: it ran slower
+        -- or carried less than the owner, and every step was corrected back.
+        attributes[id .. '_damage'] = st.damage or 0
     end
     for _, id in ipairs(skillIds()) do
         skills[id] = NPC.stats.skills[id](self).base
@@ -310,11 +315,21 @@ local function snapActive()
                 if peerEffects[sp.id] then
                     peerNow[tostring(sp.activeSpellId)] = sp.id
                 else
-                    local idx = {}
+                    -- The ROLLED magnitude rides along (-1 = none), so the avatar gets this
+                    -- Fortify Speed 12, not its own roll of 5-15: a different roll is a
+                    -- different speed and reconciliation corrects us every step. An effect
+                    -- still at 0 with a floor above 0 is not rolled yet (added this frame):
+                    -- the instance waits for the next tick rather than go out unrolled.
+                    local idx, mags, rolled = {}, {}, true
                     for _, e in ipairs(sp.effects or {}) do
-                        if e.index ~= nil then idx[#idx + 1] = e.index end
+                        if e.index ~= nil then
+                            local m = e.magnitudeThisFrame
+                            if m == 0 and (e.minMagnitude or 0) > 0 then rolled = false end
+                            idx[#idx + 1] = e.index
+                            mags[#idx] = type(m) == 'number' and m or -1
+                        end
                     end
-                    if #idx > 0 then set[tostring(sp.activeSpellId)] = { id = sp.id, effects = idx } end
+                    if #idx > 0 and rolled then set[tostring(sp.activeSpellId)] = { id = sp.id, effects = idx, mags = mags } end
                 end
             end
         end
@@ -479,7 +494,20 @@ end
 function identity.tick(now)
     if restoring then return end
 
-    diffSend('appearance', 'PlayerAppearance', snapAppearance, now)
+    local app = diffSend('appearance', 'PlayerAppearance', snapAppearance, now)
+    if app then
+        -- A NEW LOOK REBUILDS THE AVATAR (global.lua MP_PlayerAppearance: destroy-and-respawn
+        -- on these same keys), and the new body carries none of our temporary effects -- a
+        -- Levitate running at the time dropped us out of the sky. Same cure as a peer
+        -- restart: re-send the active set, which goes out after this appearance.
+        local look = {}
+        for i, k in ipairs({ 'race', 'head', 'hair', 'isMale', 'class', 'birthsign', 'name' }) do look[i] = tostring(app[k]) end
+        look = table.concat(look, '|')
+        if look ~= lastLook then
+            lastLook = look
+            identity.resyncActive()
+        end
+    end
     local eq = diffSend('equipment', 'PlayerEquipment', snapEquipment, now, function(_, snap)
         core.sendGlobalEvent('mpEquipmentOut', snap)
     end)
@@ -501,6 +529,14 @@ function identity.tick(now)
         -- PlayerDeath too, so a corpse never keeps an NPC refused to everyone else.
         pcall(function() I.UI.removeMode('Dialogue') end)
     end
+    -- ...AND AGAIN EVERY 5 s WHILE DEAD. The edge fired once; a death the server refused or lost
+    -- (a heal racing it, a reconnect) left the player a corpse for good (s22 #172: hp 0 for five
+    -- minutes, never respawned). The respawn answers either message; alive, nothing is resent.
+    if dead and wasDead and now - (deathSentAt or 0) >= 5 then
+        mp.sendEvent('PlayerDeath', {})
+        deathSentAt = now
+    end
+    if dead and not wasDead then deathSentAt = now end
     wasDead = dead
 
     trackLocalChange()
@@ -612,6 +648,39 @@ function identity.tick(now)
         last.spells = spells
     end
 
+    -- Report COUNT INCREASES as they happen. Only increases: a decrease is a drop, a sale or a
+    -- use, and the server learns about those from the snapshot — this exists solely to stop the
+    -- server's picture being stale in the direction that matters for conservation.
+    -- BEFORE the declaration, and whenever it is due. The server clears its credit ledger on
+    -- each declaration (playerstate.ts handleInventory) and folds what is left into the doc at
+    -- logout. A credit sent AFTER a declaration that already counted the item survived that
+    -- clear and was granted a second time on relog: under load both passes land in one frame
+    -- and this one ran second (s153 #175: 2 of mp_armor_1); unloaded, the 2 s declaration
+    -- could see a gain the 0.25 s pass had not reported yet.
+    if baselineReady and (now >= nextAt.acquire or now >= nextAt.inventory) then
+        nextAt.acquire = now + ACQUIRE_INTERVAL
+        local counts = {}
+        for _, item in ipairs(Actor.inventory(self):getAll()) do
+            counts[item.recordId] = (counts[item.recordId] or 0) + item.count
+        end
+        -- The FIRST pass only seeds the baseline. Reporting everything a character already owns
+        -- as freshly acquired would credit their whole inventory twice over — once here and
+        -- again in the snapshot — and on a rejoin-restore that is the entire restored doc.
+        if last.acquired ~= nil then
+            for id, n in pairs(counts) do
+                local before = last.acquired[id] or 0
+                if n > before then
+                    -- Through global for the record registry, like the inventory itself: sent
+                    -- raw, a just-made item's LOCAL id sat in the server's credit ledger beside the
+                    -- declaration's net id, was folded into the doc at logout, and the relog
+                    -- granted it twice (s153 #148/#154).
+                    core.sendGlobalEvent('mpItemAcquiredOut', { id = id, n = n - before })
+                end
+            end
+        end
+        last.acquired = counts
+    end
+
     -- Through global for the record registry, like equipment and the spellbook: a brewed
     -- potion or a self-enchanted ring is a `Generated:` id that means nothing to the next
     -- engine, so an inventory sent raw came back on relog as nothing -- or as whatever
@@ -630,7 +699,7 @@ function identity.tick(now)
             for _, c in ipairs(cured or {}) do remove[#remove + 1] = c end
             for key, sp in pairs(active) do
                 if not (last.active and last.active[key]) then
-                    add[#add + 1] = { key = key, id = sp.id, effects = sp.effects }
+                    add[#add + 1] = { key = key, id = sp.id, effects = sp.effects, mags = sp.mags }
                 end
             end
             for key, sp in pairs(last.active or {}) do
@@ -644,28 +713,6 @@ function identity.tick(now)
         end
     end
 
-    -- Report COUNT INCREASES as they happen. Only increases: a decrease is a drop, a sale or a
-    -- use, and the server learns about those from the snapshot — this exists solely to stop the
-    -- server's picture being stale in the direction that matters for conservation.
-    if baselineReady and not restoring and now >= nextAt.acquire then
-        nextAt.acquire = now + ACQUIRE_INTERVAL
-        local counts = {}
-        for _, item in ipairs(Actor.inventory(self):getAll()) do
-            counts[item.recordId] = (counts[item.recordId] or 0) + item.count
-        end
-        -- The FIRST pass only seeds the baseline. Reporting everything a character already owns
-        -- as freshly acquired would credit their whole inventory twice over — once here and
-        -- again in the snapshot — and on a rejoin-restore that is the entire restored doc.
-        if last.acquired ~= nil then
-            for id, n in pairs(counts) do
-                local before = last.acquired[id] or 0
-                if n > before then
-                    mp.sendEvent('PlayerItemAcquired', { id = id, n = n - before })
-                end
-            end
-        end
-        last.acquired = counts
-    end
 end
 
 -- Rejoin: session ended -> everything must be re-sent on the next join (unless restored).

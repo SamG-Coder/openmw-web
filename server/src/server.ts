@@ -261,6 +261,9 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   // M8: /motd rewrites this at runtime; SessionWelcome and the motd plugin read it here.
   let motd = config.server.motd;
   const resume = new ResumeStore(config.login.resumeWindowSec);
+  // Tickets the previous process parked at a graceful shutdown (ResumeStore.save), read once.
+  const resumeFile = join(opts.dataDir, 'resume-tickets.json');
+  { const n = resume.load(resumeFile); if (n > 0) log('info', 'resume.restored', { tickets: n }); }
   const interest = interestFromLimits(config.limits);
   const world = new WorldState(roster, cellStore, interest);
   // Phase 4: scripted-spawn replay + the unstick tool. Built early because both the admin
@@ -360,6 +363,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
         const victim = roster.get(target);
         if (victim) {
           victim.resurrectedAt = Date.now();
+          victim.avatarDead = false; // the respawn's refill must flow (a corpse is not healed)
           victim.peerStatsAt = undefined;
           worldPeerImpl()?.peer.sendEvent('AvatarResurrect', { id: target, ...(body as object) });
         }
@@ -815,6 +819,9 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     content: contentGate,
     engine: new EngineGate(config.engine.enforce, config.engine.pin),
     loginLimiter: new IpRateLimiter(config.limits.loginPerMinPerIp),
+    // Tickets are server-minted and unguessable; this bounds a flood, not a guess (connection.ts
+    // checkAuthGate). 60 a minute covers a LAN party reconnecting after a restart.
+    ticketLimiter: new IpRateLimiter(60),
     chatCtx,
     hooks,
     players: playerStore,
@@ -1319,6 +1326,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       // Re-read per request, like the delivery answer above: enabling a mod in the dashboard
       // should reach the next player to load the page, not the next restart.
       modDoc: () => presentMods(gameDataDir(sharedDir), readModDoc(sharedDir)),
+      allowStockSwap: () => config.content.allowStockSwap,
     }),
     saveRoutes({
       storage: lockerStorage, sessions: lockerSessions, dataDir: sharedDir,
@@ -1351,8 +1359,12 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   log('info', 'gamedata.detect', { ok: gameData.ok, reason: gameData.reason });
   // Backlog 299: the peer's manifest is pinned with the server's own plugin hashes, so
   // 'strict' can tell a same-named, different-version plugin from the world's copy.
+  // Read per call, so a dashboard change to a swap lands without a restart.
+  const modStack = () => resolveMods(presentMods(gameDataDir(sharedDir), readModDoc(sharedDir)),
+    { allowStockSwap: config.content.allowStockSwap });
   contentGate.hashes = () =>
-    hashContentFiles(gameData, presentMods(gameDataDir(sharedDir), readModDoc(sharedDir)).mods);
+    hashContentFiles(gameData, presentMods(gameDataDir(sharedDir), readModDoc(sharedDir)).mods, modStack());
+  contentGate.swapped = () => new Map(modStack().swaps.map((s) => [s.file.toLowerCase(), s.name]));
 
   // THE SIM PEER IS NOT OPTIONAL. There is exactly one mode: the server runs its own headless
   // engine, and that engine is the only thing allowed to simulate NPCs. What used to be "tier
@@ -1487,7 +1499,8 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     // dashboard last saved.
     writeFileSync(join(cfgDir, 'openmw.cfg'),
       buildPeerCfg(gameData, resources,
-        resolveMods(presentMods(gameDataDir(sharedDir), readModDoc(sharedDir)))));
+        resolveMods(presentMods(gameDataDir(sharedDir), readModDoc(sharedDir)),
+          { allowStockSwap: config.content.allowStockSwap })));
     // Pace the peer. Headless means nothing else will.
     writeFileSync(join(cfgDir, 'settings.cfg'), buildPeerSettings());
     config.simPeer.configDir = cfgDir;
@@ -1546,9 +1559,23 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
   // Anchors held past occupancy (idle-decay): cellKey -> last known position + expiry.
   // Walking a cell border must not flap the peer's grid; dropping an anchor is cheap.
   const heldAnchors = new Map<string, { x: number; y: number; z: number; until: number }>();
+  // The exterior cells AROUND each player, held for their NPCs (cellKey -> expiry). Both
+  // engines load and run the 3x3 around a player; holding only the middle cell left each
+  // engine running its own AI for the eight around it, so NPCs across a cell border stood in
+  // different places on the peer and on the player's screen, and the player's avatar walked
+  // into NPCs they could not see (dev box, 2026-09-23). Held, the peer streams them and every
+  // client puppets them (actors.lua attaches on the first ActorMoveBatch for an actor).
+  const heldRing = new Map<string, number>();
+  world.peerHolds = (cellKey) => heldAnchors.has(cellKey) || heldRing.has(cellKey);
   // Cells the peer currently holds, so authority is DIFFED rather than re-entered every tick
   // (re-entering bumps the epoch and forces a full re-sync).
   const claimed = new Set<string>();
+  // The exterior ring around the anchors (worldstate hears): cellKey -> has the peer been sent
+  // its record yet. Tied to one peer id; a new peer starts from an empty ring.
+  const ring = new Map<string, boolean>();
+  let ringPeer: number | undefined;
+  // The peer id whose dummy has been placed. It is placed ONCE per peer and then left alone.
+  let placedPeer: number | undefined;
   let lastAnchorCells = ''; // log throttle: one simpeer.anchors line per change
   let warnedUnsimulated = ''; // throttle for simpeer.cells_unsimulated
   // Is the world actually being SIMULATED? Read live from the roster rather than kept as
@@ -1582,6 +1609,7 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     // the loading client spends that startup on time the player is already waiting through.
     if (roster.humanCount === 0) {
       heldAnchors.clear();
+      heldRing.clear();
       claimed.clear();
       simPeers.markIdle(WORLD_KEY);
       simPeers.sweep();
@@ -1606,9 +1634,16 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     const inChargenCells = new Set(humans.filter((p) => p.inChargen === true).map((p) => p.cellKey!));
     const now = Date.now();
     const idleMs = Math.max(0, config.simPeer.anchorIdleSec) * 1000;
+    // A JUST-JOINED PLAYER'S CELL IS NOT YET WHERE THEY ARE. The client reports 0,0 for a few
+    // dozen ms at join, before its restore places it (dev box, 2026-09-23: 0,0 at 19:01:12.580,
+    // -2,-9 76 ms later). A cell change triggers this pass, which anchored 0,0: the peer loaded
+    // and held the island's centre for the whole idle grace while the player was joining.
+    // Anchoring waits JOIN_SETTLE_MS past the join; the chargen sanctuary still sees everyone.
+    const JOIN_SETTLE_MS = 1_500;
+    const settled = humans.filter((p) => p.joinedWorldAt === undefined || now - p.joinedWorldAt >= JOIN_SETTLE_MS);
     // FRESH POSITIONS EVERY PASS. 32 players x 3 floats every 5 s is nothing, and a stale
     // anchor position is the one thing that reintroduces frozen NPCs.
-    for (const p of humans) {
+    for (const p of settled) {
       const ck = p.cellKey!;
       if (isChargenCell(ck) || inChargenCells.has(ck)) continue;
       const prev = heldAnchors.get(ck);
@@ -1629,20 +1664,67 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       if (a.until <= now || (!parseExterior(ck) && !occupied.has(ck))) heldAnchors.delete(ck);
     }
 
+    // THE RING AROUND EACH PLAYER. Safe now where it was not when this was narrowed to one
+    // cell: every player is an anchor at their OWN position (below), so every NPC a player's
+    // engine processes (within its processing range of that player) is within the same range
+    // of an anchor on the peer -- the peer simulates everything it holds that anyone can see.
+    // Never within one cell of someone still in character creation: the sanctuary around
+    // the opening (see inChargenCells above) must stay unheld, neighbours included.
+    const chargenNear = (ck: string): boolean => {
+      if (isChargenCell(ck) || inChargenCells.has(ck)) return true;
+      const e = parseExterior(ck);
+      if (!e) return false;
+      for (const c of inChargenCells) {
+        const f = parseExterior(c);
+        if (f && Math.abs(f.x - e.x) <= 1 && Math.abs(f.y - e.y) <= 1) return true;
+      }
+      return false;
+    };
+    for (const p of settled) {
+      if (p.inChargen === true) continue;
+      const e = parseExterior(p.cellKey!);
+      if (!e) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const n = `${e.x + dx},${e.y + dy}`;
+          if (!heldAnchors.has(n) && !chargenNear(n)) heldRing.set(n, now + idleMs);
+        }
+      }
+    }
+    for (const [ck, until] of [...heldRing]) {
+      if (until <= now || heldAnchors.has(ck) || chargenNear(ck)) heldRing.delete(ck);
+    }
+
     // EVERY held cell is covered, interior or exterior, by ONE peer. Exteriors anchor by
     // position; interiors anchor by NAME, because an interior has no coordinate. Both are
     // held without the peer standing in them, so players spread across the map are all
     // simulated from a single process. Before interiors could be anchored, an indoor quest
     // simply never advanced — chargen is entirely indoors, which is why it stalled at the
     // census office every time.
-    const cells = [...heldAnchors.keys()].sort();
+    const held = new Set<string>([...heldAnchors.keys(), ...heldRing.keys()]);
+    const cells = [...held].sort();
+    // ONE ANCHOR PER PLAYER, not per cell. Keyed by cell, the last player processed won, so
+    // two players at opposite edges of one cell (up to 11,585 u apart, past the 7168 u
+    // processing range) left the NPCs beside one of them held but unsimulated -- frozen
+    // puppets on that player's screen. A cell whose players have all gone keeps its last
+    // position until idle-decay, as before.
     const anchors: { x: number; y: number; z: number }[] = [];
     const interiors: string[] = [];
-    for (const ck of cells) {
-      const a = heldAnchors.get(ck)!;
-      if (parseExterior(ck)) anchors.push({ x: a.x, y: a.y, z: a.z });
-      else interiors.push(ck);
+    const anchoredByPlayer = new Set<string>();
+    for (const p of settled) {
+      const ck = p.cellKey!;
+      if (!heldAnchors.has(ck) || !parseExterior(ck) || !p.pose) continue;
+      anchors.push({ x: p.pose.x, y: p.pose.y, z: p.pose.z });
+      anchoredByPlayer.add(ck);
     }
+    for (const ck of [...heldAnchors.keys()].sort()) {
+      const a = heldAnchors.get(ck)!;
+      if (!parseExterior(ck)) interiors.push(ck);
+      else if (!anchoredByPlayer.has(ck)) anchors.push({ x: a.x, y: a.y, z: a.z });
+    }
+    // Stable order for an unchanged roster (the list is diffed and logged; roster order is not
+    // a property of the world).
+    anchors.sort((p, q) => p.x - q.x || p.y - q.y || p.z - q.z);
 
     // Where the peer's own avatar stands: a real player's position, so a cold boot lands on
     // ground that exists rather than a computed point inside terrain. Vestigial for
@@ -1685,12 +1767,21 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
 
     // Sent EVERY pass, deliberately: positions move, and the engine gates its own grid
     // rebuild on the derived cell set (Scene::setSimAnchors), so a resend is cheap there.
-    peerPlayer.peer.sendEvent('SimAnchors', { anchors, interiors, ...(place ? { place } : {}) });
+    // THE DUMMY IS PLACED ONCE, THEN LEFT ALONE. It used to follow the first player's cell, and
+    // every follow was a peer cell change: authority released and re-claimed around it, the
+    // actors' AI packages reset by the teleport. With the 3x3 around every player held, that
+    // flipped the creatures a player was fighting to local AI and back ("moving very slowly,
+    // everything is strange", dev box 2026-09-23). Nothing needs it to follow: what the peer
+    // simulates is the anchor list, the navmesh is built around every anchor (backlog 483),
+    // and its body no longer collides (mp.setSelfCollisionBody). A new peer is placed afresh.
+    const placeNow = place !== undefined && placedPeer !== peerPlayer.id;
+    if (placeNow) placedPeer = peerPlayer.id;
+    peerPlayer.peer.sendEvent('SimAnchors', { anchors, interiors, ...(placeNow ? { place } : {}) });
 
     // AUTHORITY FOR EVERY ANCHORED CELL, on the one peer. The old revoke loop ("authority
     // follows the peer that can actually simulate") is gone because after the engine fix it
     // can simulate all of them. Diffed so epochs are stable.
-    for (const gone of [...claimed].filter((c) => !heldAnchors.has(c))) {
+    for (const gone of [...claimed].filter((c) => !held.has(c))) {
       world.authorityLeave(peerPlayer.id, gone, true);
       claimed.delete(gone);
     }
@@ -1704,6 +1795,33 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       claimed.add(ck);
     }
 
+    // THE RING'S RECORD, ONE PASS LATE. From here on the peer hears every relay for the
+    // exteriors around its anchors (worldstate hears), but what happened there BEFORE -- the
+    // door opened an hour ago, the crate moved yesterday -- lives only in the cell doc. The
+    // anchored cell itself asks on its grant (actors.lua); nothing asks for its neighbours.
+    // Sent on the pass AFTER a cell joins the ring, not this one: SimAnchors above only
+    // REQUESTS the grid change (Scene::requestChangeCellGrid runs next frame), a record that
+    // lands first resolves no refs and is dropped, and a relay heard in the gap is in the doc
+    // by then anyway. Re-sent only when a cell leaves the ring and comes back.
+    if (ringPeer !== peerPlayer.id) { ring.clear(); ringPeer = peerPlayer.id; }
+    const inRing = new Set<string>();
+    for (const ck of cells) {
+      const e = parseExterior(ck);
+      if (!e) continue;
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const n = `${e.x + dx},${e.y + dy}`;
+          if (!held.has(n)) inRing.add(n);
+        }
+      }
+    }
+    for (const ck of [...ring.keys()]) if (!inRing.has(ck)) ring.delete(ck);
+    for (const ck of inRing) {
+      const sent = ring.get(ck);
+      if (sent === undefined) ring.set(ck, false);
+      else if (!sent) { world.sendCellState(peerPlayer, ck); ring.set(ck, true); }
+    }
+
     const anchorLine = cells.join(',');
     if (anchorLine !== lastAnchorCells) {
       lastAnchorCells = anchorLine;
@@ -1715,7 +1833,10 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       });
     }
   };
-  const simPeerTick = setInterval(simPeerPass, 5_000);
+  // Every 2 s (was 5): anchors are player positions, and a running player covers ~1000 u
+  // between passes at 5 s -- the edge of the peer's processing range trailing the edge of
+  // theirs. The pass is diffed (authority, ring, the log line), so a shorter one costs little.
+  const simPeerTick = setInterval(simPeerPass, 2_000);
   // A peer finishing its hello should not wait up to a full tick to be put to work —
   // that is 5s of the player holding a loading screen for no reason.
   ctx.onPeerJoined = () => simPeerPass();
@@ -1888,11 +2009,12 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
     // process.exit(1) — so one contended write ejected every player in this world. Presence is
     // a heartbeat: missing a beat is survivable, and the next one is 10 seconds away.
     try {
-      publishPresence();
-      broadcastServerRoster();
       // The friend and party panels are pushed on RELATIONSHIP changes, which never fire when a
       // member simply walks into another world — so they kept saying "Offline" about someone
-      // standing in plain sight. Presence moves on this heartbeat; the views follow it.
+      // standing in plain sight. Presence moves on this heartbeat; the views follow it. Its own
+      // try: it is also how a friend request reaches a player in another world, and a contended
+      // presence write must not skip it (s136 #175).
+      try { publishPresence(); broadcastServerRoster(); } catch (err) { log('warn', 'presence.publish_failed', { error: String(err) }); }
       social.refreshPresenceViews();
       // Expired friend requests and invites. Swept here rather than on their own timer:
       // this is already the once-per-10s social heartbeat, and sweepExpired had NO production
@@ -2045,6 +2167,9 @@ export async function startServer(opts: StartOptions): Promise<RunningServer> {
       await attio.close();
       await cellStore.close();
       await recordStore.close();
+      // The disconnects above parked every in-world session: hand them to the next process.
+      try { const n = resume.save(resumeFile); if (n > 0) log('info', 'resume.saved', { tickets: n }); }
+      catch (err) { log('warn', 'resume.save_failed', { error: String(err) }); }
       resume.clear();
       oidc.close();
       tickets.clear();

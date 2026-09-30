@@ -6,7 +6,17 @@
 // without the peer's own body inside -- and every relay addresses it by name. Two players walk
 // through the same door, both hit the same NPC, and it dies once, for both.
 import assert from 'node:assert/strict';
+import { focus, armMelee, swingUntil, probeOf as probeRec } from './_realfight.mjs';
 import { pickUntil } from './_probe.mjs';
+
+// WHERE YOU FELL, not the harness's Example Suite village (26,25): that point is open sea in
+// retail, and a player the mark killed respawned among slaughterfish and swung at nothing for
+// the rest of the fight (#159 s118: the mark 52 -> 32, then 'none within 400').
+export const serverRules = 'respawnCellKey = ""';
+
+// A shopkeeper behind his counter cannot be walked up to: the real fight stalled at the counter
+// and swung from where the snap landed (#157, Arrille). A customer on the shop floor is the mark.
+const BEHIND_COUNTER = /^arrille$/;
 
 // THE SERVER'S OWN PEER. A hand-spawned peer stands in one exterior cell and never anchors a
 // room; only the production lifecycle (server.ts simPeerPass -> SimAnchors interiors) holds an
@@ -38,20 +48,32 @@ export default async function run(ctx) {
     await c.waitFor('window.omw.state.isHolder === "false"', STEP, `${c.name} does not hold it (the peer does)`);
   }
 
+  // A BIGGER POOL, as s149 does: a level-1 character does not outlast a summoner (#172: Tolvise
+  // and her skeleton killed both players mid-fight). +60 is the largest raise the server allows.
+  for (const c of [a, b]) {
+    const b0 = String(await c.eval('window.omw.state.selfStats') || '0/0').split('/').map(Number);
+    await c.cmd(`sethpbase:${b0[1] + 60}`);
+    await c.waitFor(`Number(String(window.omw.state.selfStats||"0/0").split("/")[1]) >= ${b0[1] + 58}`, STEP, `${c.name}'s max rose`);
+    await c.cmd(`sethp:${b0[1] + 60}`);
+    await c.waitFor(`Number(String(window.omw.state.selfStats||"0/0").split("/")[0]) >= ${b0[1] + 50}`, STEP, `${c.name}'s pool filled`);
+  }
+
   let pa, pb, victim;
-  ({ found: victim, probes: [pa, pb] } = await pickUntil(ctx, () => Promise.all([probeOf(a), probeOf(b)]), (pa, pb) => Object.keys(pa).find((r) => r !== 'player' && pb[r] && !pa[r].dead && !pa[r].guard)));
+  // ON THE SAME FLOOR: an NPC upstairs is a walk up a staircase the fight helper does not path
+  // (#158: Hrisskar, 440 u short of him at every approach).
+  const floorZ = JSON.parse(await a.eval('window.omw.state.pose||"{}"')).z;
+  ({ found: victim, probes: [pa, pb] } = await pickUntil(ctx, () => Promise.all([probeOf(a), probeOf(b)]), (pa, pb) => Object.keys(pa).find((r) => r !== 'player' && pb[r] && !pa[r].dead && !pa[r].guard && !BEHIND_COUNTER.test(r)
+    && !(Number.isFinite(floorZ) && Math.abs(pa[r].z - floorZ) > 150))));
   assert.ok(victim, `need a living NPC inside visible to both: A=${JSON.stringify(Object.keys(pa))} B=${JSON.stringify(Object.keys(pb))}`);
   ctx.log(`both attacking "${victim}" indoors (holder=${await a.eval('window.omw.state.authorityHolder')})`);
 
   const deadExpr = `((JSON.parse(window.omw.state.actorProbe||"{}")[${JSON.stringify(victim)}]||{}).dead === true)`;
-  const deadline = Date.now() + 90_000;
-  let died = false;
-  while (Date.now() < deadline && !died) {
-    await a.cmd(`hitn:${victim}:40`);
-    await b.cmd(`hitn:${victim}:40`);
-    await ctx.sleep(600);
-    died = (await a.eval(deadExpr)) === true || (await b.eval(deadExpr)) === true;
-  }
+  // FOR REAL, both players at once: W to walk up, the mouse button to swing (_realfight.mjs).
+  for (const c of [a, b]) { await focus(c); await armMelee(c); }
+  const isDead = async () => (await a.eval(deadExpr)) === true || (await b.eval(deadExpr)) === true;
+  const fights = await Promise.all([a, b].map((c, i) => swingUntil(ctx, c, () => probeRec(c, victim), isDead, { budgetMs: 240_000, side: i * Math.PI })));
+  ctx.log(`real swings: A ${fights[0].swings}, B ${fights[1].swings}`);
+  const died = await isDead();
   ctx.log(`hitFwd A=${await a.eval('window.omw.state.hitFwd')} B=${await b.eval('window.omw.state.hitFwd')}`);
   assert.ok(died, `"${victim}" never died indoors: hits are not reaching the room's holder, or the peer does not simulate the room`);
   await a.waitFor(deadExpr, STEP, 'A sees it dead');

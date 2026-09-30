@@ -183,26 +183,34 @@ async function startGameServer(extraRules = '', extraEnv = {}, opts = {}) {
   // password means no peer can authenticate at all, which is what testhost shipped. Without a
   // peer nothing can hold cell authority (canSimulate is `p.system === true`), so no browser
   // scenario could exercise the M4/M5 layer.
-  const proc = spawn(process.execPath,
-    [dist, '--data', dataDir, '--port', String(port), '--server-password', SERVER_PASSWORD], {
-    cwd: join(ROOT, 'server'), stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...extraEnv },
-    // Its own process group, so the sim peers the SERVER spawns can be reaped with it. A
-    // SIGKILLed server leaves them orphaned (the engine ignores TERM), and six of them from
-    // earlier scenarios were still burning CPU an hour later -- the load that timed out
-    // s60b/s69 in run 12 (2026-09-04). kill()/stop() below take the whole group.
-    detached: true,
-  });
-  const killGroup = () => { try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* gone */ } };
   const out = [];
-  proc.stdout.on('data', (d) => out.push(String(d)));
-  proc.stderr.on('data', (d) => out.push(String(d)));
-  try {
-    await waitHttp(`http://127.0.0.1:${port}/healthz`, 45_000, 'omw-mp /healthz');
-  } catch (e) {
-    try { proc.kill('SIGKILL'); } catch {}
-    throw new Error(e.message + '\nserver output:\n' + out.join(''));
-  }
+  let proc;
+  // Spawned by a function so restart() can bring the SAME world back on the same port.
+  const spawnServer = async () => {
+    proc = spawn(process.execPath,
+      [dist, '--data', dataDir, '--port', String(port), '--server-password', SERVER_PASSWORD], {
+      cwd: join(ROOT, 'server'), stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...extraEnv },
+      // Its own process group, so the sim peers the SERVER spawns can be reaped with it. A
+      // SIGKILLed server leaves them orphaned (the engine ignores TERM), and six of them from
+      // earlier scenarios were still burning CPU an hour later -- the load that timed out
+      // s60b/s69 in run 12 (2026-09-04). kill()/stop() below take the whole group.
+      detached: true,
+    });
+    proc.stdout.on('data', (d) => out.push(String(d)));
+    proc.stderr.on('data', (d) => out.push(String(d)));
+    try {
+      // 300 s: on the shared LXC a neighbour's load starves the boot for tens of seconds at a time
+      // (#160 at load 112, #169 at 42: the log stopped after the locker migration and resumed
+      // too late). A server that truly hangs still fails here, with its output.
+      await waitHttp(`http://127.0.0.1:${port}/healthz`, 300_000, 'omw-mp /healthz');
+    } catch (e) {
+      try { proc.kill('SIGKILL'); } catch {}
+      throw new Error(e.message + '\nserver output:\n' + out.join(''));
+    }
+  };
+  const killGroup = () => { try { process.kill(-proc.pid, 'SIGKILL'); } catch { /* gone */ } };
+  await spawnServer();
   // THE PORT WE HAND OUT MUST BE THE PORT THIS SERVER IS ON.
   //
   // /healthz answering on `port` is not proof of that: a LEAKED server from an earlier
@@ -238,6 +246,16 @@ async function startGameServer(extraRules = '', extraEnv = {}, opts = {}) {
     logTail: (n = 40) => out.join('').split('\n').slice(-n).join('\n'),
     // Abrupt death (no SessionDisconnect, no clean close) — for connection-lost scenarios.
     kill: () => killGroup(),
+    // A SERVER RESTART, the world kept: TERM (drains and flushes, like a deploy) or KILL (a
+    // crash), then the same data dir back on the same port -- what a client redials.
+    restart: async ({ crash = false, downMs = 0 } = {}) => {
+      const gone = new Promise((r) => proc.once('exit', r));
+      if (crash) killGroup(); else try { proc.kill('SIGTERM'); } catch {}
+      const t = setTimeout(killGroup, 15_000);
+      await gone; clearTimeout(t); killGroup();
+      if (downMs) await sleep(downMs);
+      await spawnServer();
+    },
     stop: () => {
       // TERM the server itself so it drains (stores flushed, peers told to leave), then sweep
       // the group once it has exited -- or after a bound, so a wedged server cannot hold the
@@ -403,8 +421,11 @@ async function launchClient(name, mpPort, extraParams = '', opts = {}) {
   // it is a bare `RuntimeError: null function` in the middle of render setup. `angle-swiftshader`
   // runs ANGLE — the same translator the engine targets in a real browser — over SwiftShader's
   // Vulkan, so the GL surface is ANGLE's rather than SwiftShader's. On a GPU-less Linux box that
-  // is the one to reach for.
-  const glArgs = process.env.SMOKE_GL === 'swiftshader'
+  // is the one to reach for. `angle-gpu` is ANGLE on the box's real GPU through EGL (the
+  // builder's Tesla M40; ci/jenkins/run-harness.sh sets it when Docker has the nvidia runtime).
+  const glArgs = process.env.SMOKE_GL === 'angle-gpu'
+    ? ['--use-gl=angle', '--use-angle=gl-egl', '--ignore-gpu-blocklist']
+    : process.env.SMOKE_GL === 'swiftshader'
     ? ['--use-gl=swiftshader', '--enable-unsafe-swiftshader']
     : process.env.SMOKE_GL === 'angle-swiftshader'
     ? ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']
@@ -420,7 +441,12 @@ async function launchClient(name, mpPort, extraParams = '', opts = {}) {
   // only active actors are the player and MP puppets), so shared-NPC authority can only be
   // exercised against content that actually places actors. ?stream lazy-mounts the BSAs
   // (range reads) so the boot only pulls the bytes it touches.
-  const world = opts.retail
+  // opts.newGame: a FRESH SLOT the way the launcher boots one -- no ?start (which bypasses
+  // chargen: chargenstate -1) and #mpnew=1, i.e. --new-game: the prison ship and character
+  // creation. Every other boot skips chargen.
+  const world = opts.retail && opts.newGame
+    ? '?stream&novid&skipintro=1'
+    : opts.retail
     ? `?stream&novid&skipintro=1&start=${encodeURIComponent(opts.startCell ?? 'Seyda Neen')}`
     : `?nomw&skipintro=1&start=${encodeURIComponent(opts.startCell ?? 'Village')}`;
   // NOTE: a locker session is NOT passed here. #mplocker in the URL flips index.html into
@@ -433,7 +459,8 @@ async function launchClient(name, mpPort, extraParams = '', opts = {}) {
   // just landed -- go Solo from Public and it asks the PUBLIC world to turn private. The
   // launcher sets this in production and it rides every switch; a harness client had none.
   // Unlike #mplocker this does not flip the page into locker mode, so it is safe in the URL.
-  const frag = opts.homeUrl ? `#mphome=${encodeURIComponent(opts.homeUrl)}` : '';
+  const frag = [opts.homeUrl ? `mphome=${encodeURIComponent(opts.homeUrl)}` : '', opts.newGame ? 'mpnew=1' : '']
+    .filter(Boolean).map((f, i) => (i ? '&' : '#') + f).join('');
   // opts.url: a page that is NOT the game. The admin dashboard is served by the same
   // processes this harness drives, and nothing else in CI ever loaded it in a browser -- so
   // a scenario may point a client at it and use the same eval/waitFor/jsErrors machinery.
@@ -506,6 +533,8 @@ async function launchClient(name, mpPort, extraParams = '', opts = {}) {
     // two wrong hypotheses while the answer sat in the log the whole time. Surfaced per
     // client so it is never buried again.
     luaErrors: () => logs.filter((l) => l.includes('Lua error')),
+    // Every console line matching `re`, for scenarios that count engine prints (s172: snaps).
+    logMatches: (re) => logs.filter((l) => re.test(l)),
     // UNCAUGHT JS EXCEPTIONS, promoted to a first-class signal for the same reason Lua errors
     // were. A ReferenceError inside a setInterval callback kills the REST of that callback
     // forever while the page keeps running and every mirror this harness reads stays fresh
@@ -642,6 +671,36 @@ async function launchClient(name, mpPort, extraParams = '', opts = {}) {
       writeFileSync(path, Buffer.from(shot.data, 'base64'));
       return path;
     };
+    // WHAT A FRAME HOLDS, so a visual scenario can assert instead of only capturing. The page
+    // decodes its own screenshot (no PNG library here) and returns, for a region given as
+    // fractions of the viewport {x, y, w, h}: distinct colours (quantised to 4 bits a channel),
+    // the share of the most common one, and mean luminance. A flat fill -- the black frame, the
+    // solid white/blue minimap -- is a dominant share near 1 and a handful of colours.
+    handle.frameStats = async (region = { x: 0, y: 0, w: 1, h: 1 }, path = null) => {
+      const shot = await bsend('Page.captureScreenshot', { format: 'png' }, sessionId);
+      if (path) writeFileSync(path, Buffer.from(shot.data, 'base64'));
+      return handle.evalAsync(`(async () => {
+        const img = new Image();
+        img.src = 'data:image/png;base64,${shot.data}';
+        await img.decode();
+        const r = ${JSON.stringify(region)};
+        const x = Math.floor(img.width * r.x), y = Math.floor(img.height * r.y);
+        const w = Math.max(1, Math.floor(img.width * r.w)), h = Math.max(1, Math.floor(img.height * r.h));
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+        const g = cv.getContext('2d'); g.drawImage(img, x, y, w, h, 0, 0, w, h);
+        const d = g.getImageData(0, 0, w, h).data;
+        const counts = new Map(); let lum = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const k = (d[i] >> 4) << 8 | (d[i + 1] >> 4) << 4 | (d[i + 2] >> 4);
+          counts.set(k, (counts.get(k) || 0) + 1);
+          lum += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+        }
+        const n = d.length / 4;
+        let top = 0, topKey = 0; for (const [k, c] of counts) if (c > top) { top = c; topKey = k; }
+        return { width: w, height: h, colours: counts.size, dominant: top / n,
+          dominantRgb: [(topKey >> 8) * 17, ((topKey >> 4) & 15) * 17, (topKey & 15) * 17], meanLum: lum / n };
+      })()`);
+    };
     handle.eval = async (expr) => {
       const r = await bsend('Runtime.evaluate', { expression: expr, returnByValue: true }, sessionId);
       if (r.exceptionDetails) throw new Error(`eval(${expr}): ` + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
@@ -742,6 +801,14 @@ async function launchClient(name, mpPort, extraParams = '', opts = {}) {
       await bsend('Input.dispatchKeyEvent', { type: 'keyDown', text: def.text ?? def.key, ...base }, sessionId);
       await bsend('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, sessionId);
     };
+    // A REAL key HELD (W to walk, a strafe, sneak): keyDown, the hold, keyUp -- what a player's
+    // finger does. key(def) is a tap; walking needs the key down for the whole stride.
+    handle.keyHold = async (def, ms) => {
+      const base = { key: def.key, code: def.code, windowsVirtualKeyCode: def.keyCode, nativeVirtualKeyCode: def.keyCode };
+      await bsend('Input.dispatchKeyEvent', { type: 'keyDown', text: def.text ?? def.key, ...base }, sessionId);
+      await new Promise((r) => setTimeout(r, ms));
+      await bsend('Input.dispatchKeyEvent', { type: 'keyUp', ...base }, sessionId);
+    };
     // A RAW MOUSE BUTTON on the game canvas, which is how you attack.
     //
     // `handle.click(selector)` is for DOM elements — it hit-tests a CSS selector. The engine
@@ -761,6 +828,43 @@ async function launchClient(name, mpPort, extraParams = '', opts = {}) {
       await bsend('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 }, sessionId);
       await bsend('Input.dispatchMouseEvent', { type: 'mousePressed', ...base, buttons: 1 }, sessionId);
       await new Promise((r) => setTimeout(r, ms));
+      await bsend('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, buttons: 0 }, sessionId);
+    };
+    // A REAL left click at a point on the game canvas, as FRACTIONS of its size (fx, fy in
+    // 0..1), for the engine's own MyGUI widgets (the main menu's Exit, its confirm box) that
+    // no DOM selector reaches. Fractions, because the window size is a scenario variable.
+    handle.clickCanvas = async (fx, fy) => {
+      const box = await handle.eval(
+        `(function(){ var c = document.querySelector('canvas'); if (!c) return null;
+           var r = c.getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width*${Number(fx)}, y: r.top + r.height*${Number(fy)} }); })()`);
+      if (!box) throw new Error('clickCanvas: no canvas');
+      const { x, y } = JSON.parse(box);
+      await bsend('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 }, sessionId);
+      await bsend('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', clickCount: 1, buttons: 1 }, sessionId);
+      await new Promise((r) => setTimeout(r, 120));
+      await bsend('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', clickCount: 1, buttons: 0 }, sessionId);
+      return { x: Math.round(x), y: Math.round(y) };
+    };
+    // THE FIRST-JOIN TOUR ("You are in the world") covers the game on a fresh character, so a
+    // frame judged before closing it measures the tour (s65/s74, 2026-09-22). Closed the way
+    // a player does: its x button. Waits briefly for it, since it opens a moment after join.
+    handle.dismissTour = async (waitMs = 8000) => {
+      const up = () => handle.eval(`(function(){ var t = document.getElementById('omw-tour'); return !!t && t.classList.contains('show'); })()`);
+      const until = Date.now() + waitMs;
+      while (!(await up()) && Date.now() < until) await new Promise((r) => setTimeout(r, 500));
+      for (let i = 0; i < 3 && (await up()); i++) {
+        await handle.click('#omw-tour .x').catch(() => {});
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      if (await up()) throw new Error('the first-join tour would not close');
+    };
+    // A REAL click at page coordinates -- for MyGUI widgets, which live on the canvas and have
+    // no DOM element for click(selector) to find (a service window's rows, its buttons).
+    handle.clickAt = async (x, y) => {
+      const base = { x, y, button: 'left', clickCount: 1 };
+      await bsend('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y, buttons: 0 }, sessionId);
+      await bsend('Input.dispatchMouseEvent', { type: 'mousePressed', ...base, buttons: 1 }, sessionId);
+      await new Promise((r) => setTimeout(r, 80));
       await bsend('Input.dispatchMouseEvent', { type: 'mouseReleased', ...base, buttons: 0 }, sessionId);
     };
     // eval WITH transient user activation. Gesture-gated APIs (requestPointerLock, fullscreen)
@@ -913,7 +1017,17 @@ if (wanted.length === 0) {
 const play = await ensurePlayServer();
 let harnessLive = { chrome: 0, peers: 0 }; // processes alive after the previous scenario
 const results = [];
+// ONE RETRY PER FAILED SCENARIO (owner's decision, 2026-09-29 #182). A shared, loaded builder made a
+// handful of scenarios intermittent (a random target, a 0.5 s mirror, a timer), and every full sweep
+// failed on a different one. A scenario that fails and then PASSES on the immediate re-run is reported
+// FLAKY -- named in the summary with its first failure above it in the log, and it does not fail the
+// run; one that fails twice is a real failure. HARNESS_RETRY=0 turns it off.
+const RETRIES_ON = process.env.HARNESS_RETRY !== '0';
+const retried = new Set();
+let fileIdx = -1;
 for (const file of files) {
+  fileIdx++;
+  process.env.HARNESS_ATTEMPT = retried.has(file) ? '2' : '1'; // a scenario with state on disk can start clean on its retry
   const t0 = Date.now();
   const clients = []; // everything launched by this scenario, closed no matter what
   let torndown = false; // a client that finishes booting AFTER teardown must not leak
@@ -1025,6 +1139,7 @@ for (const file of files) {
       // The server's own stdout: the one place a death is undeniable (respawn.sent).
       serverLogTail: (n = 400) => server.logTail(n),
       serverKill: server.kill,
+      serverRestart: server.restart,
       sleep,
       log: (...a) => {
         const first = typeof a[0] === 'string' ? a[0] : '';
@@ -1143,7 +1258,13 @@ for (const file of files) {
   }
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   // A scenario that FAILED is a failure even if it logged a skip on the way out.
-  results.push({ file, ok: !err, secs, skip: err ? null : skipReason, critical: isCritical, diagnostic: isDiagnostic });
+  results.push({ file, ok: !err, secs, skip: err ? null : skipReason, critical: isCritical, diagnostic: isDiagnostic,
+    firstErr: err ? String(err.message || err).split(String.fromCharCode(10))[0].slice(0, 200) : undefined });
+  if (err && RETRIES_ON && !retried.has(file)) {
+    retried.add(file);
+    files.splice(fileIdx + 1, 0, file); // the array iterator picks it up next
+    console.log(`RETRY ${file}: failed once, running it again (a second failure is a real failure)`);
+  }
   // WHAT THE LAST SCENARIO LEFT BEHIND. A leaked browser or peer does not fail the scenario
   // that leaked it -- it fails the ones after, on timing, for no visible reason (sweep #107:
   // 1847 chrome processes and load 39 by the 80th scenario, and every convergence assertion
@@ -1161,6 +1282,17 @@ for (const file of files) {
     }
     harnessLive = live;
   } catch { /* pgrep is not everywhere; the count is a diagnostic, never a verdict */ }
+  // ...AND REAPED. Counting named the leak; it did not stop it: the gateway scenarios left their
+  // world servers running (s100 onward, ~20 testhosts and two peers by s130 in #174, some blocked
+  // on I/O), and s130's guest never finished booting -- the sweep hung for 35 minutes. Every
+  // scenario starts its own servers, peers and browsers, so none may outlive it. The play server
+  // (server.py) is the harness's own and stays.
+  try {
+    for (const pat of ['dist/testhost.mjs', 'dist/gateway.mjs', 'dist/server.mjs', '/usr/local/bin/openmw', 'chrome']) {
+      execSync(`pkill -9 -f ${JSON.stringify(pat)} || true`, { stdio: 'ignore' });
+    }
+    harnessLive = { chrome: 0, peers: 0 };
+  } catch { /* nothing to reap */ }
   if (err) {
     console.error(`FAIL ${file} (${secs}s):\n${err.stack || err}`);
     const srv = server?.logTail?.();
@@ -1194,16 +1326,27 @@ for (const file of files) {
 play.stop();
 
 console.log('\n=== mp-harness summary ===');
-const verdictOf = (r) => !r.ok ? 'FAIL' : (r.skip !== null ? 'SKIP' : (r.diagnostic ? 'DIAG' : 'PASS'));
+// A first attempt that failed is FLAKY when a later attempt at the same file passed.
+for (let i = 0; i < results.length; i++) {
+  const r = results[i];
+  if (!r.ok && results.slice(i + 1).some((n) => n.file === r.file && n.ok)) r.flaky = true;
+}
+const verdictOf = (r) => r.flaky ? 'FLAKY' : (!r.ok ? 'FAIL' : (r.skip !== null ? 'SKIP' : (r.diagnostic ? 'DIAG' : 'PASS')));
 for (const r of results) {
   console.log(`${verdictOf(r)}  ${r.file}  (${r.secs}s)` + (r.skip !== null ? `  -- ${r.skip}` : ''));
 }
 const passed = results.filter((r) => verdictOf(r) === 'PASS').length;
 const skipped = results.filter((r) => r.ok && r.skip !== null);
 const diagnostics = results.filter((r) => verdictOf(r) === 'DIAG');
-const failed = results.filter((r) => !r.ok).length;
+const failed = results.filter((r) => !r.ok && !r.flaky).length;
+const flaky = results.filter((r) => r.flaky);
 console.log(``);
 console.log(`${passed} passed, ${failed} failed, ${skipped.length} SKIPPED (did not run), ${diagnostics.length} diagnostic (ran, assert nothing)`);
+if (flaky.length) {
+  console.log(``);
+  console.log(`FLAKY -- failed once, passed on the immediate retry (counted green; each is a lead, not a clean pass):`);
+  for (const r of flaky) console.log(`  ${r.file}  -- first failure: ${r.firstErr}`);
+}
 if (diagnostics.length) console.log(`diagnostic: ${diagnostics.map((r) => r.file).join(' ')}`);
 if (skipped.length) {
   // Repeated at the very bottom, because a per-line SKIP scrolls past and a bare count reads
@@ -1234,4 +1377,4 @@ if (skipped.length && process.env.OMW_ALLOW_SKIP !== '1') {
   console.log(`exit 1: ${skipped.length} scenario(s) skipped (set OMW_ALLOW_SKIP=1 to accept a partial run)`);
   process.exit(1);
 }
-process.exit(results.every((r) => r.ok) ? 0 : 1);
+process.exit(results.every((r) => r.ok || r.flaky) ? 0 : 1);

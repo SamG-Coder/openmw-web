@@ -56,6 +56,11 @@ export default async function run(ctx) {
     assert.ok(dist2(far, hostAt) > 400, 'the guest must be well away from the host before leaving (walk hook / terrain)');
     guest.client.close(); // logout flushes the doc with that far spot
     await host.client.waitFor(`${guestRow}.id === undefined`, 120_000, 'the host sees the guest leave');
+    // A RETURN, NOT A RECONNECT. The server keeps the position of a guest back within
+    // GUEST_REBOOT_MS (60 s, server.ts guestSpawn: the auth rescue re-dials a crashed client and
+    // must not yank it to the host). A 50 fps client came back inside that window, so every run
+    // measured the crash path and the invite never came (#161: no invite line on the return).
+    await ctx.sleep(65_000);
 
     // Back, straight to the friend. The stored position is 'far'; the invite is the host.
     const ownUrl = `ws://127.0.0.1:${GW_PORT}/w/${guest.ownId}`;
@@ -73,7 +78,12 @@ export default async function run(ctx) {
       if (i === 11) ctx.log(`distance to the host's spot over 12 s: ${samples.join(' ')}; host row seen=${h.id !== undefined}`);
     }
     const last = Number(samples[samples.length - 1]);
-    assert.ok(last < 400, `the returning guest ended ${last} units from the host: the rejoin position hold pulled them back to where they logged out`);
+    // The RETURNING client's own narration: the restore, the invite and the hold, in the order
+    // they ran. The failure tail prints the first two clients only (#159: this was missing).
+    const said = (back.logTail ? back.logTail(400) : '').split(String.fromCharCode(10))
+      .filter((l) => /\[mp\] (rejoin|restore|invite|session state|follow|snap)/.test(l)).slice(-20).join(String.fromCharCode(10));
+    assert.ok(last < 400, `the returning guest ended ${last} units from the host: the rejoin position hold pulled them back to where they logged out
+${said}`);
     assert.equal(await host.client.eval(`${guestRow}.id !== undefined`), true, 'the host must see the returning guest');
     ctx.log('PASS: a returning guest joined straight to the host and stayed beside them');
   } finally {

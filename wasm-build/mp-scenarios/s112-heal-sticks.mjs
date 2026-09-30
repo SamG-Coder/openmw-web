@@ -9,6 +9,7 @@
 // get bitten, heal to full on the client, and the PEER-reported bars must follow up.
 import assert from 'node:assert/strict';
 import { pickUntil } from './_probe.mjs';
+import { focus, armMelee, provoke, probeOf as probeRec } from './_realfight.mjs';
 
 const BOOT = { retail: true, joinTimeoutMs: 420_000 };
 const SPOT = '-12500,-53100,512';
@@ -26,7 +27,7 @@ export default async function run(ctx) {
   await a.waitFor('Object.keys(JSON.parse(window.omw.state.netObjects||"{}")).length > 0', 120_000, 'A built a named creature');
   await a.waitFor('Number(window.omw.state.puppetedActors||0) > 0', 30_000, 'A puppeted the cell actors');
   let names, probe, victim;
-  ({ found: victim, probes: [names, probe] } = await pickUntil(ctx, async () => [Object.values(await netObjs(a)), await probeOf(a)], (names, probe) => names.find((r) => probe[r] && !probe[r].dead)));
+  ({ found: victim, probes: [names, probe] } = await pickUntil(ctx, async () => [Object.values(await netObjs(a)), await probeOf(a)], (names, probe) => names.find((r) => probe[r] && !probe[r].dead && !(probe[r].hp >= 0 && probe[r].hp < 20)) ?? names.find((r) => probe[r] && !probe[r].dead))); // one a provoking swing cannot kill before it bites (#172: a 8 hp scrib died to the second swing, and A was never hurt)
   assert.ok(victim, 'no living named creature');
   const p = probe[victim];
   await a.cmd(`snapto:${Math.round(p.x + 60)},${Math.round(p.y)},${Math.round(p.z + 8)}`);
@@ -36,13 +37,14 @@ export default async function run(ctx) {
   // BEFORE the poke, not the base: a landing scratch must not read as the bite.
   await a.waitFor('String(window.omw.state.selfStats||"").indexOf("/") > 0', 30_000, 'the peer reports the bars');
   const start = await bars(a);
-  let hurt = null, pokes = 0;
+  let hurt = null;
+  const isHurt = async () => { hurt = await bars(a); return !!hurt && hurt.c <= start.c - 1; };
+  // Provoked FOR REAL: up to three swings with the mouse button (_realfight.mjs).
+  // WEAKLY (longblade 40), swing then wait for the bite, again if needed (#157: one wound was not enough).
+  await focus(a); await armMelee(a, undefined, 40);
+  await provoke(ctx, a, () => probeRec(a, victim), isHurt);
   const deadline = Date.now() + 120_000;
-  while (Date.now() < deadline && !(hurt && hurt.c <= start.c - 1)) {
-    if (pokes < 3) { await a.cmd(`hitn:${victim}:1`); pokes++; }
-    await ctx.sleep(2_000);
-    hurt = await bars(a);
-  }
+  while (Date.now() < deadline && !(await isHurt())) await ctx.sleep(2_000);
   assert.ok(hurt && hurt.c <= start.c - 1, `never got hurt (selfStats ${start.c}/${start.b} -> ${JSON.stringify(hurt)}); s110 covers this`);
   await a.cmd(`snapto:${Math.round(p.x + 2500)},${Math.round(p.y)},${Math.round(p.z + 8)}`);
   await ctx.sleep(4_000);

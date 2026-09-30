@@ -2,6 +2,69 @@
 
 Notable changes to OpenMW-Web. Dates are release dates, newest first.
 
+## 1.5.0
+
+**What you carry stays what you carry.** Inventory changes in OpenMW land at the end of the frame,
+not when the script asks, and every place that brought a character's pack, a companion's gear or
+a chest in line with the server read counts that were about to change. So a stack of soul gems
+could split wrong, the equipment you spawn in could be granted three times, items restored on a
+relog could lose their charge and wear, two updates in one frame to the same chest could double
+it, and the peer's body could hold spells you never learned. All of it now goes through one
+reconciler that counts what is already on the way, tested against a model of the engine's own
+timing. The avatar's item layout no longer loops back onto your pack when the two disagree.
+
+**What you make comes back once.** A potion you brewed or an item you enchanted could come back twice after a relog: the moment it appeared was reported under a name only your own game knew, and the server counted it again beside the real one.
+
+**A heal heals in full.** A potion or a rest could reach the body the server simulates for you
+short -- a 50-point heal as 42 -- when it crossed that body's own report on the wire.
+
+**Friends move smoothly.** Your body on the server fell further behind the longer you ran, and you
+were pulled back to meet it; a friend's figure trailed them and froze whenever a message came
+late. Both now keep up: your own corrections dropped from up to 117 units to 12, and a friend's
+figure carries on through a late message and can catch up with them.
+
+**A crowd costs less.** Twenty players on screen now cost each frame less work.
+
+**Players at the start point can fight.** An unseen placeholder the server keeps at the starting
+spot took every blow aimed at a player standing there.
+
+**A returning friend lands beside you.** A guest who came back straight to their host could be put
+back where they last logged out when their connection was quick.
+
+**Skills you use on the peer's body count.** A skill raised by the body the server simulates for
+you -- blocking, armour, the weapon you swing -- now reaches your character sheet.
+
+**A server event with nothing in it cannot silence a subsystem.** Every multiplayer handler, all
+118 of them, is exercised with an empty and a missing body; four that threw on one now ignore it.
+
+**Sign-ins after a restart.** A household signing back in through the launcher after a server
+restart shares one address; launcher sign-ins now have their own allowance, apart from the
+password-guessing one, so nobody is locked out as flooding. And a server that *crashed* (rather
+than restarting cleanly) no longer strands players who sign in with a password: the client used
+to give up after its saved session was refused instead of simply signing in again.
+
+**On a LAN over plain http, the page says why it cannot start.** A friend on a second machine was
+told to find a desktop browser while sitting at one. The real cause is that `http://<address>` is
+not a secure page; the launcher and the game page now say to use the server's `https://` address.
+
+**Proven, not assumed.** New browser scenarios take a player through what nothing tested before:
+the server restarting (and crashing) under them, a guest pressing Leave, a silt strider picked in
+the Travel window, jail, a real new character through the creation windows, and a friend on the
+LAN. The visual checks assert what the frame holds instead of only saving a screenshot, and the
+peer's gates (internal errors, keeping occupied cells, clearing named creatures) have unit tests.
+
+**Community data files can replace the stock ones.** The mod manager can now use a community-made
+Morrowind.esm, Tribunal.esm, Bloodmoon.esm (or their .bsa archives) in place of the stock file.
+It is opt-in twice: the server admin sets `allowStockSwap = true` under `[content]`, then ticks
+"Use instead of the stock file" on the mod that ships it. Everyone on that world runs the
+replacement; a player whose own copy reports a different checksum is refused with a message naming
+the file and the mod, instead of playing a different world. With it off (the default) nothing
+changes, except that a mod shipping a stock-named file is now left out of the load order whole
+(before, it silently shadowed the stock file and was listed twice). Owner's call, safe default
+taken: a replacement that changes record ids can break saves made on stock data, and the dashboard
+says so where the tick is; a single player who picks their own Data Files folder already chooses
+their own files and needs nothing new.
+
 ## 1.4.1
 
 **Nobody can hide the world from everybody.** A client may toggle refs in cells it is nowhere

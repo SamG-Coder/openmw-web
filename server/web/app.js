@@ -1953,7 +1953,24 @@ function renderPlatformOverview(o, stat, upText) {
       </td></tr>`).join('')
     : html`<tr><td colspan="5" class="vt-empty">No games are running. One starts when somebody plays.</td></tr>`;
 
+  // THE LINK TO SEND PEOPLE. On an invite-only server it carries the passphrase, so a player
+  // just opens it and signs in; the server only hands owners the code.
+  const inviteLink = o.inviteCode
+    ? `${location.origin}/?invite=${encodeURIComponent(o.inviteCode)}` : location.origin;
+  const inviteCard = html`
+    <div class="card card-outline card-success mb-3">
+      <div class="card-header"><h3 class="card-title">${o.inviteCode ? 'Invite link' : 'Join link'}</h3></div>
+      <div class="card-body">
+        <p class="text-secondary small mb-2">${o.inviteCode
+          ? 'Send this to anyone you want to let in. It carries the invite, so they open it and sign in; nothing to type. Change the invite code in Settings to stop old links working.'
+          : 'Send this to players: they open it in a browser and sign in.'}</p>
+        <div class="d-flex gap-2 align-items-center">
+          <code class="vt-mono text-break flex-grow-1" id="inviteLink">${inviteLink}</code>
+          <button class="btn btn-sm btn-outline-secondary" id="copyInvite">Copy</button>
+        </div></div></div>`;
+
   view().innerHTML = html`
+    ${raw(inviteCard)}
     <div class="row">
       ${raw(stat('Playing now', `${players.length}`, 'bi-people', 'primary'))}
       ${raw(stat(h.capacity ? `Games running (of ${h.capacity})` : 'Games running', `${h.games ?? games.length}`, 'bi-collection-play', 'success'))}
@@ -1974,6 +1991,12 @@ function renderPlatformOverview(o, stat, upText) {
         <thead><tr><th>Game</th><th>Mode</th><th>Players</th><th>Status</th><th></th></tr></thead>
         <tbody>${raw(gameRows)}</tbody></table></div></div>
     ${raw(setupChecklist())}`;
+  $('#copyInvite').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLink);
+      toast('Link copied.');
+    } catch { toast('Could not copy, select the link and copy it yourself.', 'danger'); }
+  };
   wireChecklist();
   wireGameActions();
 }
@@ -3180,6 +3203,9 @@ function wireMods(m) {
         enabled: el.querySelector('[data-modon]').checked,
         plugins: [...el.querySelectorAll('[data-plug]')]
           .map((p) => ({ file: p.dataset.plug, enabled: p.checked })),
+        // Only cards that offer a swap send one; the rest leave the saved choice alone.
+        ...(el.querySelector('[data-replaces]') ? { replaces: [...el.querySelectorAll('[data-replaces]')]
+          .filter((r) => r.checked).map((r) => r.dataset.replaces) } : {}),
       }));
       try {
         await api('/mods', { method: 'PUT', body: { mods } });
@@ -3301,6 +3327,10 @@ function modsCard(m, editable) {
     return out;
   };
   const needs = group(m.missingMasters, 'mod');
+  // Files that carry a stock name: the mod can only be loaded by REPLACING that stock file, which
+  // is the operator's decision (and the server's [content] allowStockSwap), never a side effect.
+  const isStock = (f) => /^(morrowind|tribunal|bloodmoon)\.(esm|bsa)$/i.test(f);
+  const refusedBy = new Set((m.refused || []).map((r) => r.slug));
 
   const card = (mod, i) => {
     const missing = needs.get(mod.slug) || [];
@@ -3316,7 +3346,9 @@ function modsCard(m, editable) {
     const badges = [
       mod.present === false ? '<span class="badge text-bg-danger">folder missing</span>' : '',
       missing.length ? '<span class="badge text-bg-danger">missing master</span>' : '',
+      refusedBy.has(mod.slug) ? '<span class="badge text-bg-warning">not loaded: replaces a stock file</span>' : '',
     ].filter(Boolean).join(' ');
+    const stock = [...mod.plugins.map((p) => p.file), ...mod.archives].filter(isStock);
 
     const dlRow = (k, v) => (v ? html`<dt class="col-sm-3">${k}</dt><dd class="col-sm-9 mb-1">${v}</dd>` : '');
 
@@ -3345,6 +3377,20 @@ function modsCard(m, editable) {
               ${raw(dlRow('Installed', (mod.installedAt || '').slice(0, 10)))}
             </dl>
             <div data-ordernotes></div>
+            ${raw(stock.length ? html`
+              <h6 class="mt-3 mb-1">Replaces the stock game</h6>
+              <p class="small text-secondary mb-2">This mod carries a file with the same name as one
+                of Morrowind's own. Tick it to use this copy in place of the stock one for everyone on
+                this world. Players whose own copy differs are refused with a message naming the
+                file, and saves made on stock data may not match a copy that changes record ids.
+                ${raw(m.allowStockSwap ? '' : html`<strong>Switched off on this server:</strong> set
+                <code>allowStockSwap</code> to true under <code>[content]</code> in Settings, then
+                restart. Until then this mod is left out of the game.`)}</p>
+              ${raw(stock.map((f) => html`
+                <label class="me-3"><input type="checkbox" class="form-check-input me-1" data-replaces="${f}"
+                  ${raw((mod.replaces || []).some((r) => r.toLowerCase() === f.toLowerCase()) ? 'checked' : '')}
+                  ${raw(editable && m.allowStockSwap ? '' : 'disabled')}>
+                  Use instead of the stock <span class="vt-mono">${f}</span></label>`).join(''))}` : '')}
             ${raw(mod.plugins.length || mod.archives.length ? html`
               <h6 class="mt-3 mb-1">Plugins</h6>
               <p class="small text-secondary mb-2">Ticked plugins are added to the game's load

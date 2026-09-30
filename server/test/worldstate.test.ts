@@ -355,6 +355,44 @@ test("a human's far-cell disable persists and replays; a later enable persists a
   assert.deepEqual(second.enabled, ['c:4242:0'], 'the enable did not persist as a reveal');
 });
 
+// The budget is for cells that would be NEW. The client's Startup toggles refs in dozens of far
+// cells on every load, cells the peer's own Startup has already written; charging those spent
+// the whole budget in the first second, and a real quest enable into a new far cell was refused
+// (dev box, 2026-09-23: object.out_of_reach at session start).
+test('far toggles into cells that already have a doc cost nothing; a new far cell still gets through', async (t) => {
+  const dataDir = tmpDataDir();
+  {
+    const seed = new CellStore(dataDir);
+    for (let i = 0; i < 70; i++) {
+      const doc = await seed.get(`known interior ${i}`);
+      (doc.enabled ??= {})['c:1:0'] = false;
+      seed.markDirty(`known interior ${i}`);
+    }
+    await seed.flushAll();
+    seed.close();
+  }
+  const server = await startServer({ requireGameData: false, dataDir, port: 0, host: '127.0.0.1' });
+  t.after(() => server.close());
+  const host = await TestClient.connect(server.port);
+  t.after(() => host.close());
+  await host.joinAsNew('Host');
+  host.sendCellChange('0,0', 0, 0, 0);
+  await host.waitEvent('PlayerCellChange');
+  const ref = { __refnum: { index: 4242, contentFile: 0 } };
+  for (let i = 0; i < 35; i++) host.sendEvent('ObjectEnabled', { ref, cellKey: `known interior ${i}`, enabled: true });
+  await new Promise((r) => setTimeout(r, 1100));
+  for (let i = 35; i < 70; i++) host.sendEvent('ObjectEnabled', { ref, cellKey: `known interior ${i}`, enabled: true });
+  await new Promise((r) => setTimeout(r, 1100));
+  host.sendEvent('ObjectEnabled', { ref, cellKey: 'a quest cave nobody has seen', enabled: true });
+  await new Promise((r) => setTimeout(r, 300));
+  await server.flush();
+  const store = new CellStore(dataDir);
+  t.after(() => store.close());
+  assert.equal((await store.get('known interior 69')).enabled?.['c:4242:0'], true, 'a toggle into an existing far cell lands');
+  assert.equal((await store.get('a quest cave nobody has seen')).enabled?.['c:4242:0'], true,
+    'seventy writes into existing cells must not have spent the new-cell budget');
+});
+
 // Backlog 337/384: a far enable creates a cell doc for whatever key it names, so a far exterior
 // has to be a real one inside the world; an interior needs no visit, and the per-session
 // distinct-cell cap is what bounds the doc count.
@@ -393,7 +431,7 @@ test('a far enable persists for a real exterior, is refused past the world bound
 // -- the quest reveal -- is never capped, even from the same session in the same breath.
 test('a far disable stream is capped past the free burst; far enables never are', async (t) => {
   const dataDir = tmpDataDir();
-  const server = await startServer({ requireGameData: false, dataDir, port: 0, host: '127.0.0.1' });
+  const server = await startServer({ requireGameData: false, dataDir, port: 0, host: '127.0.0.1', configOverride: { admin: { dashboardToken: 'far-dash' } } });
   t.after(() => server.close());
   const host = await TestClient.connect(server.port);
   t.after(() => host.close());
@@ -422,6 +460,8 @@ test('a far disable stream is capped past the free burst; far enables never are'
   assert.ok(off >= 256, `the free burst must land in full, got ${off}`);
   assert.ok(off < 300, `the stream past the burst must be capped, got ${off} of 300`);
   assert.equal(enabled['c:14999:0'], true, 'a far enable was refused by the disable cap');
+  const o = await (await fetch(`http://127.0.0.1:${server.port}/admin/api/overview`, { headers: { authorization: 'Bearer far-dash' } })).json() as { players: { account: string; anomalies: Record<string, number> }[] };
+  assert.ok((o.players.find((p) => p.account === 'host')?.anomalies.far_disable ?? 0) >= 1, 'the capped disables are recorded for moderation');
 });
 
 // Backlog 338: a human's actor spawn is placed beside the asker, a few at a time.

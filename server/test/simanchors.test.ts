@@ -24,18 +24,18 @@ type Pose = { x: number; y: number; z: number };
 function anchorsFor(players: { cellKey: string; pose: Pose }[]): {
   anchors: Pose[]; interiors: string[];
 } {
-  const byCell = new Map<string, Pose>();
+  // Mirrors server.ts simPeerPass: ONE ANCHOR PER PLAYER outdoors (keyed by cell, the last
+  // player won and two at opposite edges of a cell left one of them unsimulated), interiors by
+  // name, once each.
+  const anchors: Pose[] = [];
+  const interiors = new Set<string>();
   for (const p of players) {
     if (isChargenCell(p.cellKey)) continue;
-    if (!byCell.has(p.cellKey)) byCell.set(p.cellKey, p.pose);
+    if (parseExterior(p.cellKey)) anchors.push(p.pose);
+    else interiors.add(p.cellKey);
   }
-  const anchors: Pose[] = [];
-  const interiors: string[] = [];
-  for (const ck of [...byCell.keys()].sort()) {
-    if (parseExterior(ck)) anchors.push(byCell.get(ck)!);
-    else interiors.push(ck);
-  }
-  return { anchors, interiors };
+  anchors.sort((p, q) => p.x - q.x || p.y - q.y || p.z - q.z);
+  return { anchors, interiors: [...interiors].sort() };
 }
 
 const at = (cellKey: string, x: number, y: number, z = 0) => ({ cellKey, pose: { x, y, z } });
@@ -82,7 +82,7 @@ test('on the wire: two occupied interiors both anchor; one emptied is gone next 
   a = await nextPass((v) => !v.interiors.includes(shop), 'the emptied interior lingered past a pass');
   assert.ok(Date.now() - t0 < 12_000, 'dropped within the pass after the exit, not after anchorIdleSec');
   assert.deepEqual(a.interiors, [club], 'the still-occupied interior is kept');
-  assert.equal(a.place?.cellKey, '-3,-2');
+  assert.equal(a.place, undefined, 'the dummy is placed once and never moved again');
 
   // Everyone indoors: the street empties into the club. The exterior anchor lingers (idle
   // grace) but nobody stands there, so the dummy is placed nowhere rather than inside the
@@ -97,10 +97,10 @@ test('on the wire: two occupied interiors both anchor; one emptied is gone next 
   assert.equal(last.place, undefined, `the dummy stood indoors: ${last.place?.cellKey}`);
 });
 
-test('players in the same cell produce one anchor, at a real player position', () => {
+test('players in the same cell each anchor where they stand, at real player positions', () => {
   const r = anchorsFor([at('-2,-9', -10350, -71235, 167), at('-2,-9', -10000, -71000, 167)]);
-  assert.deepEqual(r.anchors, [{ x: -10350, y: -71235, z: 167 }],
-    'the anchor is a live pose, never a computed cell centre');
+  assert.deepEqual(r.anchors, [{ x: -10350, y: -71235, z: 167 }, { x: -10000, y: -71000, z: 167 }],
+    'each anchor is a live pose, never a computed cell centre, and nobody shares one');
 });
 
 test('players spread across the world each anchor their own region, in ONE list', () => {
@@ -109,12 +109,12 @@ test('players spread across the world each anchor their own region, in ONE list'
   assert.equal(r.anchors.length, 3, 'one anchor per region, in one list for one process');
 });
 
-test('200 players in 40 places is 40 anchors, in ONE peer', () => {
+test('200 players in 40 places is 200 anchors, in ONE peer', () => {
   const players: { cellKey: string; pose: Pose }[] = [];
   for (let i = 0; i < 40; i++)
     for (let p = 0; p < 5; p++) players.push(at(`${i},0`, i * 8192 + p, 0));
   const r = anchorsFor(players);
-  assert.equal(r.anchors.length, 40, 'one anchor per region, not one per player');
+  assert.equal(r.anchors.length, 200, 'one anchor per player: a region wider than the processing range needs each');
 });
 
 test('interiors ride separately, by NAME — they have no coordinate to anchor on', () => {
@@ -135,4 +135,146 @@ test('the cell list is stable for an unchanged roster', () => {
   const a = anchorsFor([at('3,4', 1, 1), at('-2,-9', 2, 2)]);
   const b = anchorsFor([at('-2,-9', 2, 2), at('3,4', 1, 1)]);
   assert.deepEqual(a, b, 'roster order must not change the anchor list');
+});
+
+// ONE ANCHOR PER PLAYER, on the wire. Two players at opposite edges of one cell are further
+// apart than the 7168 u processing range; keyed by cell, the peer simulated around only one.
+test('on the wire: two players at opposite edges of one cell are two anchors', async (t) => {
+  const PEER_PASS = 'peer-secret-2';
+  const server = await startServer({ requireGameData: false, dataDir: tmpDataDir(), port: 0, host: '127.0.0.1',
+    configOverride: { server: { password: PEER_PASS }, limits: { maxConnsPerIp: 16 } } });
+  t.after(() => server.close());
+  server.config.simPeer.enabled = true;
+  const peer = await TestClient.simPeer(server.port, PEER_PASS);
+  t.after(() => peer.close());
+  for (const [name, x, y] of [['West', 100, 100], ['East', 8000, 8000]] as const) {
+    const c = await TestClient.connect(server.port);
+    t.after(() => c.close());
+    await c.joinAsNew(name);
+    await c.waitEvent('PlayerList');
+    c.sendCellChange('0,0', x, y, 0);
+  }
+  type Anchors = { anchors: { x: number; y: number }[] };
+  const a = (await peer.waitEvent('SimAnchors', (v) => (v as Anchors).anchors.length === 2, 12_000)
+    .catch(() => assert.fail('one anchor for two players far apart in one cell'))).value as Anchors;
+  const xs = a.anchors.map((p) => Math.round(p.x)).sort((p, q) => p - q);
+  assert.deepEqual(xs, [100, 8000], 'each anchor stands where its player stands');
+});
+
+// THE 3x3 IS HELD, AND THE OPENING STAYS UNHELD. A player's neighbour cells go to the peer (so
+// their NPCs are simulated once and puppeted on every screen); nothing within one cell of
+// someone still creating a character does.
+test('on the wire: the peer holds the 3x3 around a player, but nothing next to a player in chargen', async (t) => {
+  const PEER_PASS = 'peer-secret-3';
+  const server = await startServer({ requireGameData: false, dataDir: tmpDataDir(), port: 0, host: '127.0.0.1',
+    configOverride: { server: { password: PEER_PASS }, limits: { maxConnsPerIp: 16 } } });
+  t.after(() => server.close());
+  server.config.simPeer.enabled = true;
+  const peer = await TestClient.simPeer(server.port, PEER_PASS);
+  t.after(() => peer.close());
+  const join = async (name: string, cell: string) => {
+    const c = await TestClient.connect(server.port);
+    t.after(() => c.close());
+    const w = await c.joinAsNew(name);
+    await c.waitEvent('PlayerList');
+    c.sendCellChange(cell, 10, 10, 0);
+    return w['playerId'] as number;
+  };
+  const newbie = await join('Newbie', '-2,-9');
+  server.roster.get(newbie)!.inChargen = true;
+  await join('Veteran', '5,5');
+  const granted = new Set<string>();
+  const until = Date.now() + 12_000;
+  while (Date.now() < until && granted.size < 9) {
+    for (const e of peer.inbox.events) if (e.name === 'ActorAuthorityGrant') granted.add((e.value as { cellKey: string }).cellKey);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    assert.ok(granted.has(`${5 + dx},${5 + dy}`), `the veteran's neighbour ${5 + dx},${5 + dy} was not held`);
+  }
+  for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+    assert.ok(!granted.has(`${-2 + dx},${-9 + dy}`), `held next to a player in chargen: ${-2 + dx},${-9 + dy}`);
+  }
+});
+
+// The peer's dummy follows the first player's cell. Walking out of a cell nobody STANDS in used
+// to release it, but with the 3x3 held that cell is a player's neighbour: revoked, then
+// re-granted at a new epoch a pass later, and every creature in it flipped to the client's
+// local AI and back mid-fight (dev box, 2026-09-23).
+test('on the wire: the peer walking out of a held neighbour cell does not revoke it', async (t) => {
+  const PEER_PASS = 'peer-secret-4';
+  const server = await startServer({ requireGameData: false, dataDir: tmpDataDir(), port: 0, host: '127.0.0.1',
+    configOverride: { server: { password: PEER_PASS }, limits: { maxConnsPerIp: 16 } } });
+  t.after(() => server.close());
+  server.config.simPeer.enabled = true;
+  const peer = await TestClient.simPeer(server.port, PEER_PASS);
+  t.after(() => peer.close());
+  const c = await TestClient.connect(server.port);
+  t.after(() => c.close());
+  await c.joinAsNew('Walker');
+  await c.waitEvent('PlayerList');
+  c.sendCellChange('0,0', 10, 10, 0);
+  await peer.waitEvent('ActorAuthorityGrant', (v) => (v as { cellKey: string }).cellKey === '1,1', 12_000)
+    .catch(() => assert.fail('the neighbour 1,1 was never held'));
+
+  peer.sendCellChange('1,1', 8300, 8300, 0); // the dummy stands in the neighbour...
+  await new Promise((r) => setTimeout(r, 300));
+  peer.inbox.events.length = 0;
+  peer.sendCellChange('0,0', 20, 20, 0); // ...and follows the player back
+  await new Promise((r) => setTimeout(r, 1_000)); // inside one pass: a revoke would show here
+  const revoked = peer.inbox.events.filter((e) => e.name === 'ActorAuthorityRevoke'
+    && (e.value as { cellKey: string }).cellKey === '1,1');
+  assert.equal(revoked.length, 0, 'the held neighbour was revoked because the dummy walked out of it');
+});
+
+// The dummy follows nobody. Every follow was a peer cell change (authority churn around it, the
+// teleport resetting actors' AI) for no simulation benefit: the anchors decide what is simulated.
+test('on the wire: the dummy is placed once per peer and never moved after', async (t) => {
+  const PEER_PASS = 'peer-secret-5';
+  const server = await startServer({ requireGameData: false, dataDir: tmpDataDir(), port: 0, host: '127.0.0.1',
+    configOverride: { server: { password: PEER_PASS }, limits: { maxConnsPerIp: 16 } } });
+  t.after(() => server.close());
+  server.config.simPeer.enabled = true;
+  const peer = await TestClient.simPeer(server.port, PEER_PASS);
+  t.after(() => peer.close());
+  const c = await TestClient.connect(server.port);
+  t.after(() => c.close());
+  await c.joinAsNew('Traveller');
+  await c.waitEvent('PlayerList');
+  c.sendCellChange('0,0', 10, 10, 0);
+  type Anchors = { place?: { cellKey: string } };
+  await peer.waitEvent('SimAnchors', (v) => (v as Anchors).place?.cellKey === '0,0', 12_000)
+    .catch(() => assert.fail('the dummy was never placed'));
+  peer.inbox.events.length = 0;
+  c.sendCellChange('4,4', 32800, 32800, 0); // far away, a different region
+  await peer.waitEvent('SimAnchors', (v) => JSON.stringify(v).includes('32800'), 12_000); // a pass after the move
+  await new Promise((r) => setTimeout(r, 2_500)); // and the one after
+  const moves = peer.inbox.events.filter((e) => e.name === 'SimAnchors' && (e.value as Anchors).place !== undefined);
+  assert.equal(moves.length, 0, `the dummy was moved: ${JSON.stringify(moves.map((m) => (m.value as Anchors).place))}`);
+});
+
+// The client reports 0,0 for a few dozen ms at join, before its restore places it. That blip
+// used to become an anchor: the peer loaded and held the island's centre for the whole idle
+// grace, right while the player was joining (dev box, 2026-09-23).
+test('on the wire: the cell a player reports in the instant after joining is not anchored', async (t) => {
+  const PEER_PASS = 'peer-secret-6';
+  const server = await startServer({ requireGameData: false, dataDir: tmpDataDir(), port: 0, host: '127.0.0.1',
+    configOverride: { server: { password: PEER_PASS }, limits: { maxConnsPerIp: 16 } } });
+  t.after(() => server.close());
+  server.config.simPeer.enabled = true;
+  const peer = await TestClient.simPeer(server.port, PEER_PASS);
+  t.after(() => peer.close());
+  const c = await TestClient.connect(server.port);
+  t.after(() => c.close());
+  await c.joinAsNew('Restorer');
+  await c.waitEvent('PlayerList');
+  c.sendCellChange('0,0', 4096, 4096, 0); // the pre-restore blip
+  await new Promise((r) => setTimeout(r, 80));
+  c.sendCellChange('-2,-9', -15000, -67000, 0); // where the character really is
+  await peer.waitEvent('ActorAuthorityGrant', (v) => (v as { cellKey: string }).cellKey === '-2,-9', 12_000)
+    .catch(() => assert.fail('the real cell was never held'));
+  await new Promise((r) => setTimeout(r, 2_500)); // another pass
+  const blip = peer.inbox.events.filter((e) => e.name === 'ActorAuthorityGrant'
+    && ['0,0', '1,1', '-1,-1'].includes((e.value as { cellKey: string }).cellKey));
+  assert.equal(blip.length, 0, `held around the join blip: ${blip.map((e) => (e.value as { cellKey: string }).cellKey)}`);
 });
