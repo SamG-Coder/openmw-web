@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: finish remaining CPU vertex/GUI construction and reduce capture, validation/transfers and GPU frame cost. Ordinary particles now send raw state once and construct corners/texture coordinates/attributes in authored CUDA. Seventy-five captured fixtures and 2130 vertices match the preceding expanded records exactly in WASM and on the RTX 5080; captured particle payload is 89 percent smaller. Rebuilt engine 1a3221f88df6 reaches 285 exterior presentations without errors and releases all 120 sampled completed packets. Median submission interval is 225.665 ms in a streaming debug run, not a matched performance comparison. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: finish remaining CPU vertex conversions and reduce capture, validation/transfers and GPU frame cost. GUI vertex construction and color normalization now run in authored CUDA. Twenty-seven real producer fixtures match 9733 expanded vertices exactly in WASM and on the RTX 5080 with native fast-math; GUI input payload is 80.8 percent smaller. Eleven WASM suites, 67 host checks and 77 WebGPU checks pass. Engine 35dec663f2e7 is built and staged. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete. The rebuilt WebGPU exterior run records 226 presentations with no renderer errors, aborts or legacy draws; all 120 sampled completed frames release packets.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Ordinary particle construction now runs in CUDA. Inspect the remaining GUI construction in appendGui: each source MyGUI vertex is expanded on the CPU into position/color/UV, default attributes and secondary color before upload. Move that construction into authored CUDA while preserving packed color order, alpha, viewport and clipping behavior, and test the actual producer through the full pipeline. Continue auditing topology/deformation transport and GPU raster cost. Preserve input validation, triangle ordering and native resource ownership; retain separate native-browser gameplay and 60-180 Hz acceptance gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. GUI construction now runs in CUDA. Inspect VertexArrayReader::read in geometrypacket.cpp: normalized byte colors are still divided by 255 on the CPU before compact ordinary streams reach vertex-input.cu. Move that normalization into authored CUDA while retaining exact byte conversion, source binding and cache identity behavior; verify actual OSG producers and downstream consumers. Continue auditing topology/deformation transport and GPU raster cost. Preserve validation, triangle order and native resource ownership, with separate native-browser gameplay and physical 60-180 Hz acceptance gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1663,5 +1663,134 @@
       "D:/OpenMW-local/webcuda-seyda-neen-particle-input-2026-10-07-summary.json"
     ],
     "limits": "Connected ribbons retain their prior CUDA construction path. The dense particle producer remains an independent reference path; the game Viewer uses compact capture. Controlled native GPU and WebGPU checks do not establish current native-browser gameplay, broad game correctness or smooth physical 60-180 Hz presentation."
+  },
+  "guiInputCuda": {
+    "engine": "35dec663f2e7",
+    "sourceFinding": "appendGui expanded each 24-byte MyGUI source vertex into 188 bytes of shader records on the CPU. Compact capture now sends raw XYZ, RGBA byte values and UVs; authored vertex-input.cu normalizes bytes and builds W, attributes and secondary-color records on the GPU.",
+    "packet": "Kind3 in the existing 32-word layout: source count equals vertex count, word6 points to raw9 and word7 to shared secondary3. Both offsets relocate during commit. Kernel parameters and bridge ABI are unchanged; JavaScript only validates and uploads.",
+    "precisionFix": "The original CUDA divide differed by one ULP under native fast-math at 254/255. Integer byte replication with midpoint handling and exact power-of-two scaling matches all 256 levels in all channels.",
+    "validation": {
+      "wasm64IntegrationSuites": 11,
+      "hostChecks": 67,
+      "realProducerFixtures": 27,
+      "realProducerVertices": 9733,
+      "realGuiVertices": 9663,
+      "wasmAndNativeGpuExactFieldsAndGuards": "passed",
+      "realProducerHostValidation": "27 passed",
+      "browserRuntimePipelines": 90,
+      "browserGpuChecks": 77,
+      "browserProductionPipelineChecks": 50,
+      "newGuiGpuChecks": 10,
+      "nativePagedKernelCompile": "passed",
+      "generatedFiles": 379,
+      "repeatGeneration": "byte-identical",
+      "changedGeneratedArtifacts": 4,
+      "trackedSdkChanges": false,
+      "fullEngineBuildAndHttpStaging": "passed"
+    },
+    "payload": {
+      "oldWords": 454161,
+      "newWords": 87069,
+      "oldBytes": 1816644,
+      "newBytes": 348276,
+      "reductionPercent": 80.82860483396857,
+      "limits": "Captured GUI input words only; matrix/topology metadata, textures and GPU working buffers excluded."
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-gui-input-validation.json",
+      "D:/OpenMW-local/webcuda-gui-input-integration.log",
+      "D:/OpenMW-local/webcuda-gui-input-producer.log",
+      "D:/OpenMW-local/webcuda-gui-input-host.log",
+      "D:/OpenMW-local/webcuda-gui-input-gpu.log",
+      "D:/OpenMW-local/webcuda-gui-input-native-compile.json",
+      "D:/OpenMW-local/webcuda-gui-input-artifacts.json",
+      "D:/OpenMW-local/webcuda-gui-input-stage.json",
+      "D:/OpenMW-local/webcuda-gui-input-host-producer.json"
+    ],
+    "limits": "The game Viewer uses compact GUI capture; dense capture remains an independent reference. Native browser gameplay, broad game correctness and smooth physical 60-180 Hz presentation remain unverified.",
+    "exteriorWebgpu": {
+      "observedAt": "2026-10-06T15:19:03.228Z",
+      "backend": "webgpu",
+      "engine": "35dec663f2e7",
+      "rasterWgslSha256": "004484aef19c71e4b8b14ae4eeed67a06e3e5df0f49b4da800dd17f0d59392fc",
+      "savedPresentations": 226,
+      "rendererError": null,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 1798055200,
+      "medians": {
+        "packetCaptureMs": 67.7950000166893,
+        "frameWallMs": 128.02749997377396,
+        "presentationSubmitIntervalMs": 203.5,
+        "uploadedBytesDuringFrame": 19856808.0,
+        "capturedSceneBytes": 98321978.0
+      },
+      "engineCaptureMedians": {
+        "materialEncodeMs": 36.34803200000033,
+        "geometryEncodeMs": 16.61503999999999
+      },
+      "passes": [
+        {
+          "width": 1024,
+          "height": 1024,
+          "triangleCount": 494,
+          "clearAndRasterGpuMs": 2.031616,
+          "error": null
+        },
+        {
+          "width": 2048,
+          "height": 2048,
+          "triangleCount": 8973,
+          "clearAndRasterGpuMs": 1.179648,
+          "error": null
+        },
+        {
+          "width": 512,
+          "height": 256,
+          "triangleCount": 494,
+          "clearAndRasterGpuMs": 0.589824,
+          "error": null
+        },
+        {
+          "width": 1024,
+          "height": 1024,
+          "triangleCount": 162388,
+          "clearAndRasterGpuMs": 24.182784,
+          "error": null
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "triangleCount": 362740,
+          "clearAndRasterGpuMs": 49.545216,
+          "error": null
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "triangleCount": 3484,
+          "clearAndRasterGpuMs": 0.851968,
+          "error": null
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "triangleCount": 3410,
+          "clearAndRasterGpuMs": 0.720896,
+          "error": null
+        },
+        {
+          "width": 1280,
+          "height": 720,
+          "triangleCount": 184,
+          "clearAndRasterGpuMs": 0.131072,
+          "error": null
+        }
+      ],
+      "report": "D:\\OpenMW-local\\webcuda-seyda-neen-gui-input-2026-10-07.json",
+      "limits": "Debug WebGPU scene with streaming, not a matched benchmark or native-browser acceptance. Buffer capacity does not measure physical VRAM or process RSS."
+    }
   }
 }

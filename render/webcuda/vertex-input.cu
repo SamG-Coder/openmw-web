@@ -12,6 +12,28 @@ __global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* lay
         return;
     }
     for(unsigned int k=0;k<34;k++)attributes[a+k]=0.0f;
+    if(layouts[d+3u]==3u) {
+        // MyGUI supplies XYZ, RGBA bytes and UV. Keep byte normalization and
+        // all expanded shader defaults on the GPU, in the original RGBA order.
+        unsigned int p=layouts[d+6u]+j*9u,c=layouts[d+7u];
+        for(unsigned int k=0;k<3;k++) {
+            vertices[v+k]=inputs[p+k];secondary_colors[i*3u+k]=inputs[c+k];
+        }
+        vertices[v+3u]=1.0f;
+        for(unsigned int k=0;k<4;k++) {
+            unsigned int byte=(unsigned int)inputs[p+3u+k];
+            // Replicate the byte into Q0.32. For 1..254 the truncated value
+            // lies at or above a float midpoint; +1 resolves the midpoint
+            // upward. Exact power-of-two scaling avoids a fast-math reciprocal
+            // and gives the same correctly rounded UNORM8 on both backends.
+            unsigned int repeated=(byte<<24u)|(byte<<16u)|(byte<<8u)|byte;
+            if(byte>0u&&byte<255u)repeated+=1u;
+            vertices[v+4u+k]=(float)repeated*0.00000000023283064365386962890625f;
+        }
+        for(unsigned int k=0;k<2;k++){vertices[v+8u+k]=inputs[p+7u+k];attributes[a+16u+k]=inputs[p+7u+k];}
+        for(unsigned int unit=0;unit<4;unit++)attributes[a+27u+unit*2u]=1.0f;
+        return;
+    }
     if(layouts[d+3u]==2u) {
         // Raw particle state is captured once; authored CUDA constructs each
         // corner, texture coordinate and shared attribute before deformation.

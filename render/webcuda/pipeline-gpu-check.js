@@ -2,6 +2,7 @@
 // and analytical readback expectations are test data, not a JS renderer.
 import { MaterialPipeline } from './pipeline.js';
 import { particleInputReference } from './particle-input-gpu-check.js';
+import { guiInputReference } from './gui-input-gpu-check.js';
 
 export async function checkPipelineGpu(runtime,kernels) {
   const pipeline=new MaterialPipeline(runtime,kernels),owned=[];
@@ -186,6 +187,34 @@ export async function checkPipelineGpu(runtime,kernels) {
       const green=expected.slice();for(let i=0;i<pixels;i++){green[i*9+1]=green[i*9];green[i*9]=0;}
       runtime.write(target,initial);
       equal(`Pipeline raw particle mode ${mode} observes the next captured color`,await render(compact),green);
+    }
+    // MyGUI's six source vertices must retain texture orientation, byte alpha,
+    // clipping, viewport/scissor restrictions and blending in the real pipeline.
+    for(const alpha of [0,73,128,255]) {
+      const records=[[-1,1,0,255,191,73,alpha,0,0],[1,1,0,255,191,73,alpha,1,0],
+        [-1,-1,0,255,191,73,alpha,0,1],[-1,-1,0,255,191,73,alpha,0,1],
+        [1,1,0,255,191,73,alpha,1,0],[1,-1,0,255,191,73,alpha,1,1]];
+      const secondary=[.125,.25,.375],reference=guiInputReference(records,secondary),dense=scene();
+      dense.vertices=reference.vertices;dense.attributes=reference.attributes;dense.secondaryColors=reference.secondary;
+      dense.matrixIds=new Uint32Array(6);dense.triangles=new Uint32Array([0,1,2,0,3,4,5,0]);
+      dense.matrices[12]=.5;
+      dense.texels=new Uint32Array([0xff0000ff,0xff00ff00,0xffff0000,0xffffffff]);
+      dense.materials.set([0,2,2,1|2|4|8,0,1,1,6,4,0,0,0]);
+      const pass={viewport:[1,1,6,4]};
+      runtime.write(target,initial);const expected=await render(dense,pass);
+      if(alpha&&!expected.some((value,index)=>index<pixels*9&&index%9<3&&value!==initial[index]))
+        throw Error(`GUI alpha ${alpha} reference rendered no color`);
+      const compact={...dense,vertexEncoding:1,vertices:new Float32Array(),attributes:new Float32Array(),secondaryColors:new Float32Array(),
+        vertexLayouts:new Uint32Array(32),vertexInputs:new Float32Array([...secondary,...records.flat()])};
+      compact.vertexLayouts.set([0,6,6,3,0,0,3,0]);
+      runtime.write(target,initial);
+      equal(`Pipeline raw GUI alpha ${alpha} matches textured, blended, transformed and clipped dense output`,await render(compact,pass),expected);
+      // A new capture may reuse the same upload allocation without reusing old data.
+      for(let i=0;i<6;i++){compact.vertexInputs[3+i*9+3]=31;compact.vertexInputs[3+i*9+4]=255;}
+      for(let i=0;i<6;i++){dense.vertices[i*10+4]=31/255;dense.vertices[i*10+5]=1;}
+      runtime.write(target,initial);const changed=await render(dense,pass);
+      runtime.write(target,initial);
+      equal(`Pipeline raw GUI alpha ${alpha} observes changed source colors`,await render(compact,pass),changed);
     }
     // Trigger the production compaction threshold with mostly offscreen draws.
     // The two visible triangles straddle a prefix-block boundary; compare with

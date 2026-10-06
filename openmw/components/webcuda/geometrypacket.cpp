@@ -414,7 +414,7 @@ namespace WebCuda
                     throw std::runtime_error("Combined vertex input stream exceeds index range");
                 if(draw.compactVertices) {
                     std::copy(draw.vertexLayouts.begin(),draw.vertexLayouts.end(),layout.begin());
-                    if(layout[3]==2u) {
+                    if(layout[3]==2u||layout[3]==3u) {
                         layout[6]+=static_cast<std::uint32_t>(inputBase);
                         layout[7]+=static_cast<std::uint32_t>(inputBase);
                         packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertexInputs.begin(),draw.vertexInputs.end());
@@ -1077,9 +1077,21 @@ namespace WebCuda
         CaptureScope captureScope(CapturePhase::GeometryEncode);
         if (count%3 || count>array.getTotalDataSize()/24 || (count && !array.getDataPointer()))
             throw std::runtime_error("Invalid MyGUI WebCuda batch");
-        GeometryPacket draw;
+        GeometryPacket draw(packet.compactVertices);
         const auto state=resolveState(context);
         matrices(draw,context,*state,true);
+        if(draw.compactVertices) {
+            if(count>(std::numeric_limits<std::uint32_t>::max()-3u)/9u)
+                throw std::runtime_error("MyGUI vertex inputs exceed packet range");
+            // Preserve the source bytes as exact values. CUDA normalizes the
+            // color and constructs W, UV attributes and per-draw defaults.
+            draw.vertexLayouts.resize(32);
+            draw.vertexLayouts[2]=draw.capturedVertexCount=static_cast<std::uint32_t>(count);
+            draw.vertexLayouts[3]=3u;draw.vertexLayouts[6]=3u;
+            draw.vertexInputs.reserve(3+count*9);
+            draw.vertexInputs.resize(3);
+            for(unsigned int k=0;k<3;k++)std::memcpy(&draw.vertexInputs[k],&draw.fixedLighting[42+k],4);
+        }
         const auto* bytes=static_cast<const unsigned char*>(array.getDataPointer());
         for (std::size_t i=0;i<count;++i)
         {
@@ -1087,12 +1099,17 @@ namespace WebCuda
             std::memcpy(position,bytes+i*24,12);
             std::memcpy(uv,bytes+i*24+16,8);
             const auto* color=bytes+i*24+12;
-            draw.vertices.insert(draw.vertices.end(),{position[0],position[1],position[2],1,
-                color[0]/255.f,color[1]/255.f,color[2]/255.f,color[3]/255.f,uv[0],uv[1]});
-            const auto attributeBase=draw.attributes.size();
-            draw.attributes.insert(draw.attributes.end(),34,0.f);
-            draw.attributes[attributeBase+16]=uv[0];draw.attributes[attributeBase+17]=uv[1];
-            for(unsigned int unit=0;unit<4;unit++)draw.attributes[attributeBase+27+unit*2]=1.f;
+            if(draw.compactVertices) {
+                draw.vertexInputs.insert(draw.vertexInputs.end(),{position[0],position[1],position[2],
+                    float(color[0]),float(color[1]),float(color[2]),float(color[3]),uv[0],uv[1]});
+            } else {
+                draw.vertices.insert(draw.vertices.end(),{position[0],position[1],position[2],1,
+                    color[0]/255.f,color[1]/255.f,color[2]/255.f,color[3]/255.f,uv[0],uv[1]});
+                const auto attributeBase=draw.attributes.size();
+                draw.attributes.insert(draw.attributes.end(),34,0.f);
+                draw.attributes[attributeBase+16]=uv[0];draw.attributes[attributeBase+17]=uv[1];
+                for(unsigned int unit=0;unit<4;unit++)draw.attributes[attributeBase+27+unit*2]=1.f;
+            }
             if (i%3==0) draw.triangles.insert(draw.triangles.end(),{
                 static_cast<std::uint32_t>(i),static_cast<std::uint32_t>(i+1),static_cast<std::uint32_t>(i+2),material});
         }

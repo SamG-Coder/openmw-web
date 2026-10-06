@@ -72,6 +72,59 @@ fn main(
       }
     }
   }
+  if ((b_layouts[(v_d + 3u)] == 3u)) {
+    var v_p: u32 = (b_layouts[(v_d + 6u)] + (v_j * 9u));
+    var v_c: u32 = b_layouts[(v_d + 7u)];
+    {
+      var v_k: u32 = u32(0i);
+      loop {
+        if (!(v_k < u32(3i))) { break; }
+        b_vertices[(v_v + v_k)] = b_inputs[(v_p + v_k)];
+        b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[(v_c + v_k)];
+        continuing {
+          v_k += u32(1);
+        }
+      }
+    }
+    b_vertices[(v_v + 3u)] = 1.0f;
+    {
+      var v_k: u32 = u32(0i);
+      loop {
+        if (!(v_k < u32(4i))) { break; }
+        var v_byte: u32 = u32(b_inputs[((v_p + 3u) + v_k)]);
+        var v_repeated: u32 = ((((v_byte << 24u) | (v_byte << 16u)) | (v_byte << 8u)) | v_byte);
+        if (((v_byte > 0u) && (v_byte < 255u))) {
+          v_repeated = (v_repeated + 1u);
+        }
+        b_vertices[((v_v + 4u) + v_k)] = (f32(v_repeated) * 2.3283064365386963e-10f);
+        continuing {
+          v_k += u32(1);
+        }
+      }
+    }
+    {
+      var v_k: u32 = u32(0i);
+      loop {
+        if (!(v_k < u32(2i))) { break; }
+        b_vertices[((v_v + 8u) + v_k)] = b_inputs[((v_p + 7u) + v_k)];
+        b_attributes[((v_a + 16u) + v_k)] = b_inputs[((v_p + 7u) + v_k)];
+        continuing {
+          v_k += u32(1);
+        }
+      }
+    }
+    {
+      var v_unit: u32 = u32(0i);
+      loop {
+        if (!(v_unit < u32(4i))) { break; }
+        b_attributes[((v_a + 27u) + (v_unit * 2u))] = 1.0f;
+        continuing {
+          v_unit += u32(1);
+        }
+      }
+    }
+    return;
+  }
   if ((b_layouts[(v_d + 3u)] == 2u)) {
     var v_p: u32 = (b_layouts[(v_d + 6u)] + ((v_j / 4u) * 17u));
     var v_c: u32 = b_layouts[(v_d + 7u)];

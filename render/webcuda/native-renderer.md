@@ -843,8 +843,9 @@ The full engine builds and stages as `1a3221f88df6`. Reports use
 `D:/OpenMW-local/webcuda-particle-input-*`; the consolidated result is
 `D:/OpenMW-local/webcuda-particle-input-validation.json`. To reproduce the
 producer/native comparison, set `WEBCUDA_VERTEX_FIXTURES` to an output `.bin`
-path and run `wasm-build/test-webcuda-submission.ps1`; its final particle suite
-writes these fixtures. Compile `render/webcuda/vertex-input.test.cpp` using
+path and run `wasm-build/test-webcuda-submission.ps1`; each producer suite
+overwrites that path, so run the compiled `particle-input.js` test separately
+to retain its fixtures when later suites exist. Compile `render/webcuda/vertex-input.test.cpp` using
 NVCC `-x cu -std=c++17 -O2 --use_fast_math -arch=sm_120`, then pass the fixture
 path to the executable. Standalone native checks do not prove native-browser
 gameplay or physical 60-180 Hz presentation.
@@ -858,6 +859,68 @@ content differs from the prior run, so these are health observations rather
 than a matched performance comparison. Reported buffer capacity is
 1,981,629,984 bytes, not physical VRAM or process RSS. The report and summary
 use `D:/OpenMW-local/webcuda-seyda-neen-particle-input-2026-10-07`.
+
+## GUI vertex construction in CUDA
+
+`appendGui` now captures the MyGUI source position, four color bytes and UVs
+without constructing expanded shader attributes on the CPU. Kind3 of the
+existing 32-word descriptor points to nine floats per vertex and three shared
+secondary-color values per draw. CUDA constructs homogeneous W, normalized
+RGBA, UV attributes and all attribute defaults in `vertex-input.cu`. GUI keeps
+its existing unlit behavior; inherited secondary color remains disabled.
+The compact game Viewer uses this path, and the dense producer remains an
+independent reference for tests. Kernel bindings and scene bridge ABI are
+unchanged. JavaScript validates finite values, byte ranges, reserved fields,
+triangle counts, offsets and draw coverage without expanding vertex records.
+
+The initial native fast-math test caught a one-ULP color difference at 254/255.
+Byte replication into a 32-bit fixed-point fraction, with midpoint handling
+and exact power-of-two scaling, now produces correctly rounded UNORM8 in the
+authored CUDA source. All 256 values in every channel match the dense producer
+exactly in WASM, native CUDA with fast-math and the WebGPU kernel checks.
+
+Eleven WASM64 integration suites pass. The new MyGUI suite contributes 27
+fixtures and 9,733 vertices, including 9,663 GUI vertices. It uses the actual
+`MyGUI::Vertex` layout and checks partial batches, unused buffer capacity,
+neighboring ordinary geometry/particles, relocated draws, source edits without
+dirty notifications, retained capture ownership, empty batches and invalid
+inputs. Every expanded vertex/attribute/secondary word and output guard
+matches the dense reference, both in WASM and on the RTX 5080. All 27 real
+producer packets also pass the production host validator; 67 host tests pass.
+
+The captured GUI payload falls from 454,161 to 87,069 words (1,816,644 to
+348,276 bytes), 80.8% less across the fixtures. Each vertex uses 36 bytes plus
+12 per draw instead of 188 bytes per vertex. Matrices, topology, texture
+storage and the expanded GPU working buffers are outside this comparison.
+This does not establish a whole-game FPS gain or physical VRAM reduction.
+
+All 90 WebGPU runtime pipelines compile and 77 GPU checks pass, including 50
+production-pipeline checks. Ten new GUI checks cover exact byte conversion,
+relocation, two-dimensional dispatch, guards, changed inputs, texture sampling,
+alpha 0/73/128/255, blending, transform, viewport/scissor and clipping. The
+browser's bundled NVRTC compiles the modified paged-native kernel. All 379
+generated artifacts reproduce byte-for-byte; only the four
+`unpack_vertex_inputs` outputs change and tracked SDK files remain unchanged.
+The current unpack WGSL SHA-256 is
+`7e9994c73b89a5fc6050546147c1a52f46831e7945c02d99776771c712b68de4`.
+
+The full engine builds and stages as `35dec663f2e7`. Reports use
+`D:/OpenMW-local/webcuda-gui-input-*`; the consolidated result is
+`D:/OpenMW-local/webcuda-gui-input-validation.json`. Set
+`WEBCUDA_VERTEX_FIXTURES` to an output `.bin` path and run
+`wasm-build/test-webcuda-submission.ps1`; its final GUI suite writes the
+fixtures. Compile and run `vertex-input.test.cpp` with the NVCC flags described
+above, passing the fixture path. Native browser gameplay and physical
+60-180 Hz presentation remain separate acceptance checks.
+
+The rebuilt Seyda Neen WebGPU run records 226 presentations with no renderer
+or pass errors, aborted captures or legacy draws. All 120 sampled completed
+scene frames release their packets. Median capture is 67.795 ms, material
+encoding 36.348 ms, geometry encoding 16.615 ms, renderer wall time 128.027 ms
+and presentation submission interval 203.5 ms. Reported buffer capacity is
+1,798,055,200 bytes. These are streaming debug-run observations, not a matched
+performance benchmark or physical VRAM measurement. The report and summary
+use `D:/OpenMW-local/webcuda-seyda-neen-gui-input-2026-10-07`.
 
 ## Running
 

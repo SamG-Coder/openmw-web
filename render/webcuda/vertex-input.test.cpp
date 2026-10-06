@@ -56,7 +56,10 @@ int main(int argc,char** argv) {
 #endif
         Buffer<float>* outputs[]={&vertices,&attributes,&secondary};
         for(unsigned int k=0;k<3;k++) {
-            assert(std::memcmp(outputs[k]->data,expected[k].data(),expected[k].size()*4)==0);
+            for(std::size_t word=0;word<expected[k].size();word++)if(std::memcmp(outputs[k]->data+word,expected[k].data()+word,4)) {
+                std::fprintf(stderr,"Fixture %u output %u word %zu: %.9g != %.9g\n",fixture,k,word,outputs[k]->data[word],expected[k][word]);
+                std::abort();
+            }
             for(auto i=expected[k].size();i<outputs[k]->size;i++)assert(outputs[k]->data[i]==12345.f);
         }
         verticesChecked+=sizes[2];

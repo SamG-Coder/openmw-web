@@ -67,3 +67,30 @@ test('raw particle validation bounds every source, mode, size, flag and reserved
   scene.vertexInputs=scene.vertexInputs.slice(0,23);
   assert.deepEqual(validateVertexInputs(scene),{projectedParticles:false,lineParticles:false});
 });
+
+function gui() {
+  const scene=streams();scene.matrixIds=new Uint32Array(6);scene.vertexLayouts.fill(0);
+  scene.vertexLayouts.set([0,6,6,3,0,0,3,0]);scene.vertexInputs=new Float32Array(3+6*9);
+  scene.vertexInputs.set([.125,.25,.375]);
+  for(let i=0;i<6;i++)scene.vertexInputs.set([i*.125,-1,0,0,255,73,128,-.25,1.25],3+i*9);
+  return scene;
+}
+
+test('raw GUI inputs preserve byte-valued colors and empty batches without host expansion',()=>{
+  const scene=gui();assert.deepEqual(validateVertexInputs(scene),{projectedParticles:false,lineParticles:false});
+  scene.vertexInputs[6]=255;scene.vertexInputs[0]=-.5;
+  assert.deepEqual(validateVertexInputs(scene),{projectedParticles:false,lineParticles:false});
+  assert.equal(scene.vertices.length,0);assert.equal(scene.attributes.length,0);
+  scene.vertexLayouts[1]=scene.vertexLayouts[2]=0;scene.matrixIds=new Uint32Array();
+  scene.vertexInputs=scene.vertexInputs.slice(0,3);
+  assert.deepEqual(validateVertexInputs(scene),{projectedParticles:false,lineParticles:false});
+});
+
+test('raw GUI validation rejects malformed triangles, color bytes, offsets and unused descriptor fields',()=>{
+  const invalid=[s=>s.vertexLayouts[2]=3,s=>{s.vertexLayouts[1]=s.vertexLayouts[2]=5;s.matrixIds=new Uint32Array(5);},
+    s=>s.vertexLayouts[4]=1,s=>s.vertexLayouts[5]=1,s=>s.vertexLayouts[6]++,s=>s.vertexLayouts[7]=s.vertexInputs.length-2,
+    s=>s.vertexLayouts[8]=1,s=>s.vertexLayouts[31]=1,s=>s.vertexInputs[6]=256,s=>s.vertexInputs[7]=-.5,
+    s=>s.vertexInputs[8]=1.5,s=>s.vertexInputs[9]=Infinity,s=>s.vertexInputs[3]=NaN,s=>s.vertexInputs[10]=Infinity,
+    s=>s.vertexInputs[1]=NaN,s=>s.matrixIds[5]=1,s=>s.vertexLayouts[3]=4];
+  for(const mutate of invalid){const scene=gui();mutate(scene);assert.throws(()=>validateVertexInputs(scene),RangeError);}
+});

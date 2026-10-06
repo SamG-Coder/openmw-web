@@ -15,7 +15,7 @@ export function validateVertexInputs(scene) {
   };
   for(let d=0;d<layouts.length;d+=32) {
     const [first,count,source,kind,mode,fallback]=layouts.subarray(d,d+6);
-    if(first!==end||first+count>matrixIds.length||source>count||kind>2||mode>2)
+    if(first!==end||first+count>matrixIds.length||source>count||kind>3||mode>2)
       throw RangeError('Invalid compact vertex draw range');
     end=first+count;
     for(let i=first;i<end;i++)if(matrixIds[i]!==d/32)throw RangeError('Compact vertex draw does not match matrix IDs');
@@ -25,6 +25,15 @@ export function validateVertexInputs(scene) {
       const flags=validateVertexAttributes(inputs.subarray(layouts[d+7],layouts[d+7]+count*34),count);
       projectedParticles||=flags.projectedParticles;lineParticles||=flags.lineParticles;
       for(let k=9;k<32;k++)if(layouts[d+k])throw RangeError('Invalid dense vertex input reserved word');
+    } else if(kind===3) {
+      if(source!==count||count%3||mode||fallback)throw RangeError('Invalid GUI input descriptor');
+      const vertices=layouts[d+6],shared=layouts[d+7];
+      range(vertices,count*9);range(shared,3);
+      for(let k=8;k<32;k++)if(layouts[d+k])throw RangeError('Invalid GUI input reserved word');
+      for(let p=vertices;p<vertices+count*9;p+=9)for(let k=3;k<7;k++) {
+        const color=inputs[p+k];
+        if(!Number.isInteger(color)||color<0||color>255)throw RangeError('Invalid GUI color byte');
+      }
     } else if(kind===2) {
       if(source*4!==count||mode||fallback)throw RangeError('Invalid particle input descriptor');
       const particles=layouts[d+6],shared=layouts[d+7];
