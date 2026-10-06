@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce remaining capture, geometry validation/transfers and GPU frame cost. Repeated inherited state merges now share one synchronous draw scope while preserving callbacks and variant stacks. Identical 640-draw WASM64 fixtures retain matching packet checksums and cut CPU capture time by 54-62 percent. Rebuilt engine 0e6ae74dd863 reaches 251 exterior presentations without errors and releases all 120 sampled completed packets. Median submission interval is 212.565 ms in this streaming debug run, not a matched performance comparison. Broad gameplay, native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: finish remaining CPU vertex/GUI construction and reduce capture, validation/transfers and GPU frame cost. Ordinary particles now send raw state once and construct corners/texture coordinates/attributes in authored CUDA. Seventy-five captured fixtures and 2130 vertices match the preceding expanded records exactly in WASM and on the RTX 5080; captured particle payload is 89 percent smaller. Rebuilt engine 1a3221f88df6 reaches 285 exterior presentations without errors and releases all 120 sampled completed packets. Median submission interval is 225.665 ms in a streaming debug run, not a matched performance comparison. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Repeated draw-state merges are now scoped and verified, including custom-draw mutation boundaries. Continue auditing remaining geometry validation, material descriptors, topology/deformation transport and GPU raster cost; isolate the next repeated work without weakening input checks or ordering. Keep numerical rendering in authored CUDA and preserve native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Ordinary particle construction now runs in CUDA. Inspect the remaining GUI construction in appendGui: each source MyGUI vertex is expanded on the CPU into position/color/UV, default attributes and secondary color before upload. Move that construction into authored CUDA while preserving packed color order, alpha, viewport and clipping behavior, and test the actual producer through the full pipeline. Continue auditing topology/deformation transport and GPU raster cost. Preserve input validation, triangle ordering and native resource ownership; retain separate native-browser gameplay and 60-180 Hz acceptance gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1606,5 +1606,62 @@
       "D:/OpenMW-local/webcuda-seyda-neen-draw-state-2026-10-07-summary.json"
     ],
     "limits": "Source StateSet map structure must remain immutable within a scope. This removes repeated CPU bookkeeping; rendering kernels are unchanged. Whole-game native-browser performance and physical 60-180 Hz presentation remain unverified."
+  },
+  "particleInputCuda": {
+    "engine": "1a3221f88df6",
+    "sourceFinding": "appendParticles constructed four position/color/attribute records and corner UVs on the CPU. The compact game path now sends raw17 per particle plus shared23 per draw; authored unpack_vertex_inputs constructs all corners before existing CUDA deformation, projection and rasterization.",
+    "packet": "Kind2 in the existing 32-word layout: source count is particles, word6 points to raw17 and word7 to shared23. Commit relocates both offsets. Kernel arguments and the bridge ABI are unchanged.",
+    "validation": {
+      "wasm64IntegrationSuites": 10,
+      "hostChecks": 65,
+      "realProducerFixtures": 75,
+      "realProducerVertices": 2130,
+      "realParticles": 468,
+      "wasmAndNativeGpuExactFieldsAndGuards": "passed",
+      "realProducerHostValidation": "75 passed",
+      "browserRuntimePipelines": 90,
+      "browserGpuChecks": 67,
+      "browserProductionPipelineChecks": 42,
+      "newParticleGpuChecks": 14,
+      "nativePagedKernelCompile": "passed",
+      "generatedFiles": 379,
+      "repeatGeneration": "byte-identical",
+      "changedGeneratedArtifacts": 4,
+      "trackedSdkChanges": false,
+      "fullEngineBuildAndHttpStaging": "passed"
+    },
+    "payload": {
+      "oldWords": 87984,
+      "newWords": 9681,
+      "oldBytes": 351936,
+      "newBytes": 38724,
+      "limits": "Captured particle inputs only, across 75 fixture draws with 468 particles. Matrices/topology and expanded GPU working buffers excluded; no whole-game FPS or physical VRAM claim."
+    },
+    "exteriorWebgpu": {
+      "savedPresentations": 285,
+      "rendererErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 1981629984,
+      "medianCaptureMs": 70.015,
+      "medianMaterialEncodeMs": 36.876672,
+      "medianGeometryEncodeMs": 16.914432,
+      "medianRendererWallMs": 146.9975,
+      "medianPresentationSubmitIntervalMs": 225.665,
+      "limits": "Debug WebGPU scene with streaming, not a matched benchmark or native-browser acceptance. Buffer capacity does not measure physical VRAM or process RSS."
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-particle-input-validation.json",
+      "D:/OpenMW-local/webcuda-particle-input-producer.log",
+      "D:/OpenMW-local/webcuda-particle-input-host-producer.json",
+      "D:/OpenMW-local/webcuda-particle-input-gpu.log",
+      "D:/OpenMW-local/webcuda-particle-input-native-compile.json",
+      "D:/OpenMW-local/webcuda-particle-input-artifacts.json",
+      "D:/OpenMW-local/webcuda-particle-input-stage.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-particle-input-2026-10-07-summary.json"
+    ],
+    "limits": "Connected ribbons retain their prior CUDA construction path. The dense particle producer remains an independent reference path; the game Viewer uses compact capture. Controlled native GPU and WebGPU checks do not establish current native-browser gameplay, broad game correctness or smooth physical 60-180 Hz presentation."
   }
 }

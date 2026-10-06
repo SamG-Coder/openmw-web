@@ -8,6 +8,7 @@ import { checkNativeStorageGpu } from './native-storage-gpu-check.js';
 import { checkPipelineGpu } from './pipeline-gpu-check.js';
 import { checkPooledTextureResidencyGpu } from './texture-residency-gpu-check.js';
 import { checkPositionedStateGpu } from './positioned-state-gpu-check.js';
+import { checkParticleInputsGpu } from './particle-input-gpu-check.js';
 
 const run=document.querySelector('#run'),save=document.querySelector('#save');
 const availability=document.querySelector('#availability'),status=document.querySelector('#status');
@@ -74,6 +75,7 @@ run.addEventListener('click',async()=>{
         setStage('Native positioned state checks');await checks((runtime,kernel)=>checkPositionedStateGpu(runtime,kernel,entry),kernel);
       }
       if(entry==='raster_material'){setStage('Native raster output checks');await checks(checkRasterGpu,kernel);}
+      if(entry==='unpack_vertex_inputs'){setStage('Native particle input checks');await checks(checkParticleInputsGpu,kernel);}
       if(entry==='decode_float_image'){setStage('Native depth image checks');await checks(checkDepthImageGpu,kernel);}
       if(entry==='compact_depth_to_texture'){setStage('Native depth layout checks');await checks(checkCompactDepthGpu,kernel);}
     }

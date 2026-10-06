@@ -7,6 +7,7 @@ import { checkBoundedBatchGpu } from './bounded-batch-gpu-check.js';
 import { checkPipelineGpu } from './pipeline-gpu-check.js';
 import { checkPooledTextureResidencyGpu } from './texture-residency-gpu-check.js';
 import { checkPositionedStateGpu } from './positioned-state-gpu-check.js';
+import { checkParticleInputsGpu } from './particle-input-gpu-check.js';
 const button=document.querySelector('#run'),status=document.querySelector('#status'),results=document.querySelector('#results');
 button.addEventListener('click',async()=>{
   button.disabled=true;results.textContent='';
@@ -47,6 +48,10 @@ button.addEventListener('click',async()=>{
       const kernel=await runtime.kernel(artifact);
       kernels[entry]=kernel;
       report(`${entry}: runtime pipeline created in ${((performance.now()-started)/1000).toFixed(2)} s`);
+      if(entry==='unpack_vertex_inputs') {
+        setStage(`${entry}: GPU particle input checks`);
+        for(const check of await checkParticleInputsGpu(runtime,kernel))report(`PASS: ${check}`);
+      }
       if(entry==='prepare_fixed_matrices'||entry==='prepare_texgen_matrices') {
         setStage(`${entry}: GPU output checks`);
         for(const check of await checkPositionedStateGpu(runtime,kernel,entry))report(`PASS: ${check}`);

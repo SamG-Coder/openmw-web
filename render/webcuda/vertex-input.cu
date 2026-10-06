@@ -12,6 +12,34 @@ __global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* lay
         return;
     }
     for(unsigned int k=0;k<34;k++)attributes[a+k]=0.0f;
+    if(layouts[d+3u]==2u) {
+        // Raw particle state is captured once; authored CUDA constructs each
+        // corner, texture coordinate and shared attribute before deformation.
+        unsigned int p=layouts[d+6u]+(j/4u)*17u,c=layouts[d+7u],corner=j%4u;
+        float u=corner==1u||corner==2u?1.0f:0.0f,t=corner>=2u?1.0f:0.0f,mode=inputs[p+16u];
+        for(unsigned int k=0;k<3;k++)vertices[v+k]=inputs[p+k];vertices[v+3u]=1.0f;
+        for(unsigned int k=0;k<4;k++)vertices[v+4u+k]=inputs[p+3u+k];
+        float s=inputs[p+7u]+u*inputs[p+9u],r=inputs[p+8u]+t*inputs[p+10u];
+        if(mode==5.0f){s=0.5f;r=0.5f;}
+        if(mode==6.0f){s=u;r=u;}
+        if(mode==8.0f){s=u;r=1.0f-t;attributes[a+24u]=inputs[c+15u];}
+        vertices[v+8u]=s;vertices[v+9u]=r;
+        attributes[a]=mode;attributes[a+1u]=u*2.0f-1.0f;attributes[a+2u]=t*2.0f-1.0f;
+        for(unsigned int k=0;k<3;k++) {
+            attributes[a+3u+k]=inputs[c+k];attributes[a+6u+k]=inputs[c+3u+k];
+            attributes[a+10u+k]=inputs[p+13u+k];attributes[a+21u+k]=inputs[c+17u+k];
+            secondary_colors[i*3u+k]=inputs[c+20u+k];
+        }
+        attributes[a+9u]=inputs[p+11u];attributes[a+13u]=inputs[p+12u];attributes[a+14u]=inputs[c+6u];
+        if(mode==5.0f||mode==6.0f||mode==8.0f) {
+            attributes[a+15u]=inputs[c+(mode==6.0f?8u:7u)];
+            if(mode!=6.0f)for(unsigned int k=0;k<3;k++)attributes[a+10u+k]=inputs[c+9u+k];
+            for(unsigned int k=0;k<3;k++)attributes[a+18u+k]=inputs[c+12u+k];
+        }
+        attributes[a+16u]=s;attributes[a+17u]=r;attributes[a+25u]=inputs[c+16u];
+        for(unsigned int unit=0;unit<4;unit++)attributes[a+27u+unit*2u]=1.0f;
+        return;
+    }
     if(j>=layouts[d+2u]) {
         // Space reserved for CUDA-generated screen primitives has the same
         // initial state as a dense packet, including its current color input.

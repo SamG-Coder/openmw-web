@@ -414,26 +414,32 @@ namespace WebCuda
                     throw std::runtime_error("Combined vertex input stream exceeds index range");
                 if(draw.compactVertices) {
                     std::copy(draw.vertexLayouts.begin(),draw.vertexLayouts.end(),layout.begin());
-                    const auto appendInput=[&](std::uint32_t offset,std::uint32_t length) {
-                        std::uint32_t version=0;
-                        for(std::size_t i=0;i<draw.vertexResources.size();i+=3)
-                            if(draw.vertexResources[i+1]==offset){version=draw.vertexResources[i];break;}
-                        if(version) {
-                            const auto found=packet.vertexResourceOffsets.find(version);
-                            if(found!=packet.vertexResourceOffsets.end())return found->second;
-                        }
-                        const auto destination=static_cast<std::uint32_t>(packet.vertexInputs.size());
-                        packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertexInputs.begin()+offset,draw.vertexInputs.begin()+offset+length);
-                        if(version) {
-                            packet.vertexResources.insert(packet.vertexResources.end(),{version,destination,length});
-                            packet.vertexResourceOffsets.emplace(version,destination);
-                        }
-                        return destination;
-                    };
-                    layout[5]=appendInput(layout[5],3);
-                    const unsigned int widths[]={4,4,3,3,4,1,4,4,4,4};
-                    for(unsigned int stream=0;stream<10;stream++)
-                        layout[8+stream*2]=appendInput(layout[8+stream*2],layout[9+stream*2]?layout[2]*widths[stream]:widths[stream]);
+                    if(layout[3]==2u) {
+                        layout[6]+=static_cast<std::uint32_t>(inputBase);
+                        layout[7]+=static_cast<std::uint32_t>(inputBase);
+                        packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertexInputs.begin(),draw.vertexInputs.end());
+                    } else {
+                        const auto appendInput=[&](std::uint32_t offset,std::uint32_t length) {
+                            std::uint32_t version=0;
+                            for(std::size_t i=0;i<draw.vertexResources.size();i+=3)
+                                if(draw.vertexResources[i+1]==offset){version=draw.vertexResources[i];break;}
+                            if(version) {
+                                const auto found=packet.vertexResourceOffsets.find(version);
+                                if(found!=packet.vertexResourceOffsets.end())return found->second;
+                            }
+                            const auto destination=static_cast<std::uint32_t>(packet.vertexInputs.size());
+                            packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertexInputs.begin()+offset,draw.vertexInputs.begin()+offset+length);
+                            if(version) {
+                                packet.vertexResources.insert(packet.vertexResources.end(),{version,destination,length});
+                                packet.vertexResourceOffsets.emplace(version,destination);
+                            }
+                            return destination;
+                        };
+                        layout[5]=appendInput(layout[5],3);
+                        const unsigned int widths[]={4,4,3,3,4,1,4,4,4,4};
+                        for(unsigned int stream=0;stream<10;stream++)
+                            layout[8+stream*2]=appendInput(layout[8+stream*2],layout[9+stream*2]?layout[2]*widths[stream]:widths[stream]);
+                    }
                 } else {
                     layout[2]=static_cast<std::uint32_t>(count);
                     layout[6]=static_cast<std::uint32_t>(inputBase);
@@ -954,7 +960,7 @@ namespace WebCuda
             if(!program||!isBuiltinParticleProgram(*program)||!system.getUseVertexArray())
                 throw std::runtime_error("Custom particle shaders require their own WebCuda implementation");
         }
-        GeometryPacket draw;
+        GeometryPacket draw(packet.compactVertices);
         matrices(draw,context,*state);
         const int detail=system.getLevelOfDetail();
         if (detail<=0) throw std::runtime_error("Invalid particle level of detail");
@@ -964,6 +970,18 @@ namespace WebCuda
         const auto& axisY=system.getAlignVectorY();
         const float mode=system.getParticleAlignment()==osgParticle::ParticleSystem::BILLBOARD
             ? (system.getParticleScaleReferenceFrame()==osgParticle::ParticleSystem::LOCAL_COORDINATES?2.f:3.f):4.f;
+        if(draw.compactVertices) {
+            draw.vertexLayouts.resize(32);draw.vertexLayouts[3]=2u;draw.vertexLayouts[6]=23u;
+            // Shared23: alignment axes6, detail, point/line sizes2, attenuation3,
+            // point min/max/fade3, visibility, flags, normal3, secondary3.
+            draw.vertexInputs.resize(23);
+            draw.vertexInputs[6]=static_cast<float>(detail);
+            draw.vertexInputs[16]=((state->getMode(0x864F)&osg::StateAttribute::ON)!=0?1.f:0.f)
+                +(usesZeroToOneDepth(*state)?16.f:0.f)
+                +((state->getMode(0x809D)&(osg::StateAttribute::ON|osg::StateAttribute::INHERIT))!=0?2.f:0.f)
+                +((state->getMode(GL_POINT_SMOOTH)&osg::StateAttribute::ON)!=0?4.f:0.f)
+                +((state->getMode(GL_POINT_SPRITE_ARB)&osg::StateAttribute::ON)!=0?8.f:0.f);
+        }
         for(int i=0;i<system.numParticles();i+=detail)
         {
             const auto& particle=*system.getParticle(i);
@@ -974,8 +992,41 @@ namespace WebCuda
             const bool isLine=!shaderParticles&&particle.getShape()==osgParticle::Particle::LINE;
             const auto& p=particle.getPosition(); const auto& color=particle.getCurrentColor();
             const auto& angle=particle.getAngle();
-            const auto base=static_cast<std::uint32_t>(draw.vertices.size()/10);
-            for(unsigned int corner=0;corner<4;++corner)
+            const auto base=static_cast<std::uint32_t>(draw.vertexCount());
+            if(draw.compactVertices) {
+                if(base>std::numeric_limits<std::uint32_t>::max()-4u)
+                    throw std::runtime_error("Particle vertices exceed packet range");
+                if(!draw.vertexLayouts[2])for(unsigned int k=0;k<3;k++) {
+                    draw.vertexInputs[k]=axisX[k];draw.vertexInputs[3+k]=axisY[k];
+                    draw.vertexInputs[17+k]=context.particleNormal[k];
+                    std::memcpy(&draw.vertexInputs[20+k],&draw.fixedLighting[42+k],4);
+                }
+                if(isPoint||isLine) {
+                    auto& shared=draw.vertexInputs;
+                    const float size=isPoint?(point?point->getSize():1.f):(line?line->getWidth():1.f);
+                    const float minimum=point?point->getMinSize():1.f,maximum=point?point->getMaxSize():64.f;
+                    const float fade=point?point->getFadeThresholdSize():1.f;
+                    if(!std::isfinite(size)||size<=0.f||!std::isfinite(minimum)||!std::isfinite(maximum)
+                        ||minimum<0.f||maximum<minimum||!std::isfinite(fade)||fade<0.f)
+                        throw std::runtime_error("Invalid point/line particle raster size");
+                    shared[isPoint?7:8]=size;shared[12]=minimum;shared[13]=maximum;shared[14]=fade;
+                    if(isPoint)for(unsigned int k=0;k<3;k++)shared[9+k]=point?point->getDistanceAttenuation()[k]:(k==0?1.f:0.f);
+                }
+                if(shaderParticles) {
+                    auto& visibility=draw.vertexInputs[15];visibility=system.getVisibilityDistance();
+                    if(const auto* uniform=state->getUniform("visibilityDistance"))
+                        if(!uniform->get(visibility))throw std::runtime_error("Invalid particle visibility distance");
+                }
+                // Raw17: position3, color4, texture origin2/tile2, alpha, size,
+                // angle or velocity3, mode. Unused source values stay absent.
+                const auto rotation=isLine?particle.getVelocity():(isPoint?osg::Vec3():angle);
+                draw.vertexInputs.insert(draw.vertexInputs.end(),{p.x(),p.y(),p.z(),color.r(),color.g(),color.b(),color.a(),
+                    isPoint||isLine?0.f:particle.getSTexCoord(),isPoint||isLine?0.f:particle.getTTexCoord(),
+                    isPoint||isLine?0.f:particle.getSTexTile(),isPoint||isLine?0.f:particle.getTTexTile(),
+                    particle.getCurrentAlpha(),particle.getCurrentSize(),rotation.x(),rotation.y(),rotation.z(),
+                    shaderParticles?8.f:(isPoint?5.f:(isLine?6.f:mode))});
+                draw.capturedVertexCount+=4u;draw.vertexLayouts[2]++;
+            } else for(unsigned int corner=0;corner<4;++corner)
             {
                 const float u=(corner==1||corner==2)?1.f:0.f, v=corner>=2?1.f:0.f;
                 draw.vertices.insert(draw.vertices.end(),{p.x(),p.y(),p.z(),1.f,

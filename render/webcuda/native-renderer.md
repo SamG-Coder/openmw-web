@@ -791,6 +791,74 @@ CUDA sources, generated artifacts, browser host modules and the tracked SDK
 remain unchanged. Smooth 60-180 Hz play and current native-browser gameplay
 remain unverified.
 
+## Particle vertex construction in CUDA
+
+Ordinary particle capture previously built four copies of position, color and
+attributes, and calculated each corner's texture coordinates on the CPU.
+The game's compact capture path now transports raw particle inputs once.
+`unpack_vertex_inputs` in `vertex-input.cu` constructs all four corners before
+the existing CUDA particle deformation, projection, clipping and rasterization.
+Billboards in local/world coordinates, fixed particles, points, lines and the
+built-in shader sprite route all use this path. Connected ribbons retain their
+existing CUDA construction route.
+
+The 32-word draw descriptor adds kind2. Its source count is the particle count;
+word6 points to raw17 records (position, color, texture tile, alpha, size,
+angle/velocity and mode), and word7 points to shared23 inputs (axes, detail,
+point/line sizes, attenuation, limits, visibility, flags, normal and secondary
+color). Packet assembly relocates both offsets. The host checks bounds,
+finite values, modes, reserved words, size controls, flags and matrix-ID
+coverage before allocating or dispatching. It classifies projected/line
+particles directly from raw records without expanding them in JavaScript.
+Kernel bindings and the scene bridge ABI are unchanged.
+
+All ten WASM64 integration suites pass. Seventy-five producer fixtures compare
+the new path with the preceding dense capture, including neighboring ordinary
+geometry, input relocation, LOD, visibility, dead particles, inherited state
+edits, empty systems, invalid inputs and ignored values. The authored CUDA
+kernel reproduces every expanded position/color/attribute/secondary word and
+trailing guard, both in WASM and on the RTX 5080 with NVCC fast-math: 2,130
+vertices including 468 particles. All 75 real producer packets also pass the
+production host validator. The host test suite passes 65 checks.
+
+Particle payload across these fixtures falls from 87,984 to 9,681 words
+(351,936 to 38,724 bytes), a reduction of 89.0%. The representation uses 17
+words per particle plus 23 per draw, replacing 188 words per particle. This
+reduces capture/upload data; matrices, topology and the GPU's expanded working
+buffers are outside this comparison. It does not establish a frame-rate gain
+or a reduction in physical VRAM usage.
+
+The browser validates and compiles all 90 runtime kernels and passes 67 GPU
+checks, including 42 production-pipeline checks. Two new construction checks
+cover all six modes, texture tiles, relocated draws, a two-dimensional grid,
+guards and changed inputs. Twelve downstream checks compare dense reference
+and raw-particle rendering for every mode, then change the next captured color.
+The browser's bundled NVRTC also compiles the modified paged-native kernel.
+All 379 generated files reproduce byte-for-byte; only the four
+`unpack_vertex_inputs` artifacts change, and the tracked SDK remains unchanged.
+The new WGSL SHA-256 is
+`d5951526ce524c5049f5a41a607d853d9289e8ab65c16ead2e7e3ebef8f2218a`.
+
+The full engine builds and stages as `1a3221f88df6`. Reports use
+`D:/OpenMW-local/webcuda-particle-input-*`; the consolidated result is
+`D:/OpenMW-local/webcuda-particle-input-validation.json`. To reproduce the
+producer/native comparison, set `WEBCUDA_VERTEX_FIXTURES` to an output `.bin`
+path and run `wasm-build/test-webcuda-submission.ps1`; its final particle suite
+writes these fixtures. Compile `render/webcuda/vertex-input.test.cpp` using
+NVCC `-x cu -std=c++17 -O2 --use_fast_math -arch=sm_120`, then pass the fixture
+path to the executable. Standalone native checks do not prove native-browser
+gameplay or physical 60-180 Hz presentation.
+
+The rebuilt Seyda Neen WebGPU run completes 285 presentations with no renderer
+or pass errors, aborted captures or legacy draw attempts. All 120 sampled
+completed scene frames release their packets. Median capture is 70.015 ms,
+material encoding 36.877 ms, geometry encoding 16.914 ms, renderer wall time
+146.998 ms and presentation submission interval 225.665 ms. Streaming scene
+content differs from the prior run, so these are health observations rather
+than a matched performance comparison. Reported buffer capacity is
+1,981,629,984 bytes, not physical VRAM or process RSS. The report and summary
+use `D:/OpenMW-local/webcuda-seyda-neen-particle-input-2026-10-07`.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

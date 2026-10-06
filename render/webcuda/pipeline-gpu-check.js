@@ -1,6 +1,7 @@
 // Exercise the production host and its CUDA kernels together. Fixture inputs
 // and analytical readback expectations are test data, not a JS renderer.
 import { MaterialPipeline } from './pipeline.js';
+import { particleInputReference } from './particle-input-gpu-check.js';
 
 export async function checkPipelineGpu(runtime,kernels) {
   const pipeline=new MaterialPipeline(runtime,kernels),owned=[];
@@ -165,6 +166,26 @@ export async function checkPipelineGpu(runtime,kernels) {
       runtime.write(target,initial);
       equal(`Pipeline CUDA ${compactKind} resident vertex inputs restore after scratch overwrite and relocation`,
         await render(relocated),translatedExpected);
+    }
+    // Compare complete particle deformation/projection/clip/raster consumption
+    // against independently specified dense inputs, then mutate the next draw.
+    for(const mode of [2,3,4,5,6,8]) {
+      const common=[1,0,0,0,1,0,1,5,2,1,0,0,1,64,1,0,0,0,0,1,0,0,0];
+      const particle=[mode===6?-.75:0,0,0,1,0,0,.75,.125,.25,.5,.5,.5,mode===6?1.5:.6,mode===6?1:0,0,0,mode];
+      const reference=particleInputReference([particle],common),dense=scene();
+      dense.vertices=reference.vertices;dense.attributes=reference.attributes;dense.secondaryColors=reference.secondary;
+      if(mode>=5)dense.materials[3]|=4194304;
+      runtime.write(target,initial);const expected=await render(dense);
+      if(!expected.some((value,index)=>index<pixels*9&&value!==initial[index]))throw Error(`Particle mode ${mode} reference rendered nothing`);
+      const compact={...dense,vertexEncoding:1,vertices:new Float32Array(),attributes:new Float32Array(),secondaryColors:new Float32Array(),
+        vertexLayouts:new Uint32Array(32),vertexInputs:new Float32Array([...common,...particle])};
+      compact.vertexLayouts.set([0,4,1,2,0,0,23,0]);
+      runtime.write(target,initial);
+      equal(`Pipeline raw particle mode ${mode} matches dense deformation, projection and raster output`,await render(compact),expected);
+      compact.vertexInputs[26]=0;compact.vertexInputs[27]=1;
+      const green=expected.slice();for(let i=0;i<pixels;i++){green[i*9+1]=green[i*9];green[i*9]=0;}
+      runtime.write(target,initial);
+      equal(`Pipeline raw particle mode ${mode} observes the next captured color`,await render(compact),green);
     }
     // Trigger the production compaction threshold with mostly offscreen draws.
     // The two visible triangles straddle a prefix-block boundary; compare with

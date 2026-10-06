@@ -15,7 +15,7 @@ export function validateVertexInputs(scene) {
   };
   for(let d=0;d<layouts.length;d+=32) {
     const [first,count,source,kind,mode,fallback]=layouts.subarray(d,d+6);
-    if(first!==end||first+count>matrixIds.length||source>count||kind>1||mode>2)
+    if(first!==end||first+count>matrixIds.length||source>count||kind>2||mode>2)
       throw RangeError('Invalid compact vertex draw range');
     end=first+count;
     for(let i=first;i<end;i++)if(matrixIds[i]!==d/32)throw RangeError('Compact vertex draw does not match matrix IDs');
@@ -25,6 +25,23 @@ export function validateVertexInputs(scene) {
       const flags=validateVertexAttributes(inputs.subarray(layouts[d+7],layouts[d+7]+count*34),count);
       projectedParticles||=flags.projectedParticles;lineParticles||=flags.lineParticles;
       for(let k=9;k<32;k++)if(layouts[d+k])throw RangeError('Invalid dense vertex input reserved word');
+    } else if(kind===2) {
+      if(source*4!==count||mode||fallback)throw RangeError('Invalid particle input descriptor');
+      const particles=layouts[d+6],shared=layouts[d+7];
+      range(particles,source*17);range(shared,23);
+      for(let k=8;k<32;k++)if(layouts[d+k])throw RangeError('Invalid particle input reserved word');
+      const detail=inputs[shared+6],flags=inputs[shared+16];
+      if(!Number.isInteger(detail)||detail<=0||!Number.isInteger(flags)||flags<0||flags>31)
+        throw RangeError('Invalid particle detail or flags');
+      for(let p=particles;p<particles+source*17;p+=17) {
+        const particleMode=inputs[p+16];
+        if(![2,3,4,5,6,8].includes(particleMode))throw RangeError('Invalid particle input mode');
+        if(particleMode>=5) {
+          const size=inputs[shared+(particleMode===6?8:7)],minimum=inputs[shared+12],maximum=inputs[shared+13],fade=inputs[shared+14];
+          if(size<=0||minimum<0||maximum<minimum||fade<0)throw RangeError('Invalid particle raster size');
+          projectedParticles=true;lineParticles||=particleMode===6;
+        }
+      }
     } else {
       range(fallback,3);
       if(layouts[d+6]||layouts[d+7])throw RangeError('Invalid vertex input reserved word');
