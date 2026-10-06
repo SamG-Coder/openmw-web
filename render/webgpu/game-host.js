@@ -488,7 +488,12 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     try {
       readbacks=new FrameReadbacks(runtime,bytes=>pipeline.buffer('frameReadback',bytes));
       const readback=(...args)=>readbacks.read(...args);
-      let result;const depthStack=[], completedQueries=new Map(),queryCompletions=[],passDiagnostics=[];
+      let result;
+      const markScreenWritten=(targetId,attachment,rendered=null)=>{
+        if(targetId!==0||!attachment)return;
+        result=rendered??{width:attachment.width,height:attachment.height,row_pixels:Math.ceil(attachment.width/64)*64};
+      };
+      const depthStack=[], completedQueries=new Map(),queryCompletions=[],passDiagnostics=[];
       for(let passIndex=0;passIndex<passes.length;passIndex++) {
         const pass=passes[passIndex];
         if(pass.kind==='frame-snapshot') {
@@ -539,6 +544,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
             {width:pass.width,height:pass.height,plane:pass.plane,color_channels:color.channels,color_storage:color.storage,depth_bits:depth,
              viewport_x:v[0],viewport_y:v[1],viewport_width:v[2],viewport_height:v[3],source_compact:source.compactDepth?1:0,target_compact:destination.compactDepth?1:0}),
             dispatchGroups(pass.width*pass.height,runtime.device.limits)).submit();
+          if(pass.plane===0||pass.plane===2)markScreenWritten(pass.targetId,destination);
           stats.passes++;continue;
         }
         if(pass.kind==='depth-capture') {
@@ -616,6 +622,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
             {width:destination.width,height:destination.height,sample_count:destination.sampleCount,
              viewport_x,viewport_y,viewport_width,viewport_height}),
             dispatchGroups(destination.width*destination.height*destination.sampleCount,runtime.device.limits)).submit();
+          markScreenWritten(pass.targetId,destination);
           continue;
         }
         if(['scene-adjustments','scene-distortion','scene-bloom','scene-debug'].includes(pass.kind))throw Error('Postprocess stage without scene resolve');
@@ -686,7 +693,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         }
         storeAttachments(attachment,pass);
         queryCompletions.push(rendered.queryCompletion);
-        if(id===0)result=rendered;
+        markScreenWritten(id,attachment,rendered);
         stats.passes++;
       }
       if(depthStack.length)throw Error('Unclosed depth isolation');
