@@ -14,6 +14,15 @@ struct CWParams {
 @group(0) @binding(6) var<uniform> cw_params: CWParams;
 const cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);
 
+fn f_vertex_unorm8(cw_arg_value: f32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {
+  var v_value: f32 = cw_arg_value;
+  var v_byte: u32 = u32(v_value);
+  var v_repeated: u32 = ((((v_byte << 24u) | (v_byte << 16u)) | (v_byte << 8u)) | v_byte);
+  if (((v_byte > 0u) && (v_byte < 255u))) {
+    v_repeated = (v_repeated + 1u);
+  }
+  return (f32(v_repeated) * 2.3283064365386963e-10f);
+}
 
 @compute @workgroup_size(64, 1, 1)
 fn main(
@@ -54,7 +63,14 @@ fn main(
       var v_k: u32 = u32(0i);
       loop {
         if (!(v_k < u32(3i))) { break; }
-        b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[((b_layouts[(v_d + 8u)] + (v_j * 3u)) + v_k)];
+        var v_value: f32 = b_inputs[((b_layouts[(v_d + 8u)] + (v_j * 3u)) + v_k)];
+        var cw_tmp_0: f32;
+        if ((b_layouts[(v_d + 29u)] != 0u)) {
+          cw_tmp_0 = f_vertex_unorm8(v_value, cw_thread, cw_block, cw_grid);
+        } else {
+          cw_tmp_0 = v_value;
+        }
+        b_secondary_colors[((v_i * 3u) + v_k)] = cw_tmp_0;
         continuing {
           v_k += u32(1);
         }
@@ -91,12 +107,8 @@ fn main(
       var v_k: u32 = u32(0i);
       loop {
         if (!(v_k < u32(4i))) { break; }
-        var v_byte: u32 = u32(b_inputs[((v_p + 3u) + v_k)]);
-        var v_repeated: u32 = ((((v_byte << 24u) | (v_byte << 16u)) | (v_byte << 8u)) | v_byte);
-        if (((v_byte > 0u) && (v_byte < 255u))) {
-          v_repeated = (v_repeated + 1u);
-        }
-        b_vertices[((v_v + 4u) + v_k)] = (f32(v_repeated) * 2.3283064365386963e-10f);
+        let cw_argument_index_1 = ((v_p + 3u) + v_k);
+        b_vertices[((v_v + 4u) + v_k)] = f_vertex_unorm8(b_inputs[cw_argument_index_1], cw_thread, cw_block, cw_grid);
         continuing {
           v_k += u32(1);
         }
@@ -129,20 +141,20 @@ fn main(
     var v_p: u32 = (b_layouts[(v_d + 6u)] + ((v_j / 4u) * 17u));
     var v_c: u32 = b_layouts[(v_d + 7u)];
     var v_corner: u32 = (v_j % 4u);
-    var cw_tmp_0: f32;
+    var cw_tmp_2: f32;
     if (((v_corner == 1u) || (v_corner == 2u))) {
-      cw_tmp_0 = 1.0f;
+      cw_tmp_2 = 1.0f;
     } else {
-      cw_tmp_0 = 0.0f;
+      cw_tmp_2 = 0.0f;
     }
-    var v_u: f32 = cw_tmp_0;
-    var cw_tmp_1: f32;
+    var v_u: f32 = cw_tmp_2;
+    var cw_tmp_3: f32;
     if ((v_corner >= 2u)) {
-      cw_tmp_1 = 1.0f;
+      cw_tmp_3 = 1.0f;
     } else {
-      cw_tmp_1 = 0.0f;
+      cw_tmp_3 = 0.0f;
     }
-    var v_t: f32 = cw_tmp_1;
+    var v_t: f32 = cw_tmp_3;
     var v_mode: f32 = b_inputs[(v_p + 16u)];
     {
       var v_k: u32 = u32(0i);
@@ -193,7 +205,14 @@ fn main(
         b_attributes[((v_a + 6u) + v_k)] = b_inputs[((v_c + 3u) + v_k)];
         b_attributes[((v_a + 10u) + v_k)] = b_inputs[((v_p + 13u) + v_k)];
         b_attributes[((v_a + 21u) + v_k)] = b_inputs[((v_c + 17u) + v_k)];
-        b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[((v_c + 20u) + v_k)];
+        var v_value: f32 = b_inputs[((v_c + 20u) + v_k)];
+        var cw_tmp_4: f32;
+        if ((b_layouts[(v_d + 29u)] != 0u)) {
+          cw_tmp_4 = f_vertex_unorm8(v_value, cw_thread, cw_block, cw_grid);
+        } else {
+          cw_tmp_4 = v_value;
+        }
+        b_secondary_colors[((v_i * 3u) + v_k)] = cw_tmp_4;
         continuing {
           v_k += u32(1);
         }
@@ -203,13 +222,13 @@ fn main(
     b_attributes[(v_a + 13u)] = b_inputs[(v_p + 12u)];
     b_attributes[(v_a + 14u)] = b_inputs[(v_c + 6u)];
     if ((((v_mode == 5.0f) || (v_mode == 6.0f)) || (v_mode == 8.0f))) {
-      var cw_tmp_2: u32;
+      var cw_tmp_5: u32;
       if ((v_mode == 6.0f)) {
-        cw_tmp_2 = 8u;
+        cw_tmp_5 = 8u;
       } else {
-        cw_tmp_2 = 7u;
+        cw_tmp_5 = 7u;
       }
-      b_attributes[(v_a + 15u)] = b_inputs[(v_c + cw_tmp_2)];
+      b_attributes[(v_a + 15u)] = b_inputs[(v_c + cw_tmp_5)];
       if ((v_mode != 6.0f)) {
         {
           var v_k: u32 = u32(0i);
@@ -263,7 +282,14 @@ fn main(
       var v_k: u32 = u32(0i);
       loop {
         if (!(v_k < u32(3i))) { break; }
-        b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[(b_layouts[(v_d + 5u)] + v_k)];
+        var v_value: f32 = b_inputs[(b_layouts[(v_d + 5u)] + v_k)];
+        var cw_tmp_6: f32;
+        if ((b_layouts[(v_d + 30u)] != 0u)) {
+          cw_tmp_6 = f_vertex_unorm8(v_value, cw_thread, cw_block, cw_grid);
+        } else {
+          cw_tmp_6 = v_value;
+        }
+        b_secondary_colors[((v_i * 3u) + v_k)] = cw_tmp_6;
         continuing {
           v_k += u32(1);
         }
@@ -282,8 +308,15 @@ fn main(
     loop {
       if (!(v_k < u32(4i))) { break; }
       b_vertices[(v_v + v_k)] = b_inputs[(v_position + v_k)];
-      b_vertices[((v_v + 4u) + v_k)] = b_inputs[(v_color + v_k)];
       b_attributes[((v_a + 6u) + v_k)] = b_inputs[(v_tangent + v_k)];
+      var v_value: f32 = b_inputs[(v_color + v_k)];
+      var cw_tmp_7: f32;
+      if ((v_k < b_layouts[(v_d + 28u)])) {
+        cw_tmp_7 = f_vertex_unorm8(v_value, cw_thread, cw_block, cw_grid);
+      } else {
+        cw_tmp_7 = v_value;
+      }
+      b_vertices[((v_v + 4u) + v_k)] = cw_tmp_7;
       continuing {
         v_k += u32(1);
       }
@@ -293,26 +326,33 @@ fn main(
     var v_k: u32 = u32(0i);
     loop {
       if (!(v_k < u32(3i))) { break; }
-      b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[(v_secondary + v_k)];
+      var v_value: f32 = b_inputs[(v_secondary + v_k)];
+      var cw_tmp_8: f32;
+      if ((b_layouts[(v_d + 29u)] != 0u)) {
+        cw_tmp_8 = f_vertex_unorm8(v_value, cw_thread, cw_block, cw_grid);
+      } else {
+        cw_tmp_8 = v_value;
+      }
+      b_secondary_colors[((v_i * 3u) + v_k)] = cw_tmp_8;
       b_attributes[((v_a + 3u) + v_k)] = b_inputs[(v_normal + v_k)];
       continuing {
         v_k += u32(1);
       }
     }
   }
-  var cw_tmp_4: f32;
+  var cw_tmp_10: f32;
   if ((b_layouts[(v_d + 4u)] == 2u)) {
-    cw_tmp_4 = (-1.0f);
+    cw_tmp_10 = (-1.0f);
   } else {
-    var cw_tmp_3: f32;
+    var cw_tmp_9: f32;
     if ((b_layouts[(v_d + 4u)] == 1u)) {
-      cw_tmp_3 = 1.0f;
+      cw_tmp_9 = 1.0f;
     } else {
-      cw_tmp_3 = 0.0f;
+      cw_tmp_9 = 0.0f;
     }
-    cw_tmp_4 = cw_tmp_3;
+    cw_tmp_10 = cw_tmp_9;
   }
-  b_attributes[v_a] = cw_tmp_4;
+  b_attributes[v_a] = cw_tmp_10;
   if ((b_layouts[(v_d + 4u)] == 2u)) {
     b_attributes[(v_a + 2u)] = b_inputs[v_fog];
   }
@@ -321,13 +361,13 @@ fn main(
     loop {
       if (!(v_unit < u32(4i))) { break; }
       var v_coordinate: u32 = (b_layouts[((v_d + 20u) + (v_unit * 2u))] + (v_j * b_layouts[((v_d + 21u) + (v_unit * 2u))]));
-      var cw_tmp_5: u32;
+      var cw_tmp_11: u32;
       if ((v_unit == 0u)) {
-        cw_tmp_5 = 16u;
+        cw_tmp_11 = 16u;
       } else {
-        cw_tmp_5 = (8u + (v_unit * 2u));
+        cw_tmp_11 = (8u + (v_unit * 2u));
       }
-      var v_uv: u32 = cw_tmp_5;
+      var v_uv: u32 = cw_tmp_11;
       b_attributes[(v_a + v_uv)] = b_inputs[v_coordinate];
       b_attributes[((v_a + v_uv) + 1u)] = b_inputs[(v_coordinate + 1u)];
       b_attributes[((v_a + 26u) + (v_unit * 2u))] = b_inputs[(v_coordinate + 2u)];

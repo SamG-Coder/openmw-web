@@ -908,8 +908,9 @@ The full engine builds and stages as `35dec663f2e7`. Reports use
 `D:/OpenMW-local/webcuda-gui-input-*`; the consolidated result is
 `D:/OpenMW-local/webcuda-gui-input-validation.json`. Set
 `WEBCUDA_VERTEX_FIXTURES` to an output `.bin` path and run
-`wasm-build/test-webcuda-submission.ps1`; its final GUI suite writes the
-fixtures. Compile and run `vertex-input.test.cpp` with the NVCC flags described
+`wasm-build/test-webcuda-submission.ps1`; run the compiled `gui-input.js`
+separately to retain its fixtures when later suites exist. Compile and run
+`vertex-input.test.cpp` with the NVCC flags described
 above, passing the fixture path. Native browser gameplay and physical
 60-180 Hz presentation remain separate acceptance checks.
 
@@ -921,6 +922,74 @@ and presentation submission interval 203.5 ms. Reported buffer capacity is
 1,798,055,200 bytes. These are streaming debug-run observations, not a matched
 performance benchmark or physical VRAM measurement. The report and summary
 use `D:/OpenMW-local/webcuda-seyda-neen-gui-input-2026-10-07`.
+
+## Ordinary and retained color conversion in CUDA
+
+The compact ordinary vertex capture now transports byte-valued colors without
+normalizing them on the CPU. `VertexArrayReader` reads raw RGB/RGBA and
+secondary-color values; `vertex-input.cu` applies the same exact UNORM8
+conversion as GUI. Float/double source colors keep their existing float input
+representation. Three-channel byte colors retain their separate float alpha.
+The dense accessor retains its previous division as an independent reference.
+
+Current colors retained between draws also remain raw, with channel-format
+tags in `CurrentAttributes` and `DrawContext`. These tags survive missing or
+disabled arrays, primitive-set bindings and pass/frame boundaries. Applying a
+material resets the primary color to its floating input format. Secondary
+color remains independent and reaches ordinary geometry, generated point/line
+slots, particles and ribbons without CPU normalization. GUI remains unlit and
+does not inherit secondary color.
+
+The existing 32-word layout uses words28/29/30 for primary, secondary and
+generated-tail fallback byte-channel counts. Primary accepts 0/3/4 for kind1;
+secondary accepts 0/3 for kinds0/1/2; fallback accepts 0/3 for kind1. Word31
+stays reserved. JavaScript rejects invalid tags and non-byte values before
+allocation/dispatch. Source cache keys and immutable version ownership remain
+unchanged: cached stream values are raw, and the per-draw descriptor controls
+their interpretation. Native kernel parameters and the scene bridge ABI are
+unchanged.
+
+All twelve WASM64 integration suites pass. The new color suite supplies 59
+actual producer fixtures and 55,998 vertices. Every expanded output word and
+guard matches the independent dense producer in WASM and on the RTX 5080 with
+NVCC fast-math. Cases cover all byte levels, RGB/RGBA, primary/secondary colors,
+all supported bindings, in-place edits without dirty notifications, cache
+reuse/invalidation, retained draw state, material resets, float alpha,
+generated vertices and particle/ribbon fallback. Its replay fixtures need a
+bounded 64 MiB test heap; the other suites retain their 16 MiB default.
+All 59 producer packets also pass production host validation; 70 host tests
+pass.
+
+All 90 WebGPU runtime pipelines compile and 91 GPU checks pass, including 62
+production-pipeline checks. Fourteen new checks cover direct byte conversion,
+guards and edits, followed by constant/per-vertex color formats, real
+secondary-color addition, blending and transitions back to floating colors.
+The paged-native kernel compiles with the browser's bundled NVRTC. All 379
+generated artifacts reproduce byte-for-byte, only the four unpack artifacts
+change, and tracked SDK files remain unchanged. The unpack WGSL SHA-256 is
+`b3a256fa154cf58d4acdb35f5e45277fa00a01858ac2c5fba303b0b1bfeceafe`.
+
+The full engine builds and stages as `7cafe0e295d6`. Reports use
+`D:/OpenMW-local/webcuda-color-input-*`; the consolidated result is
+`D:/OpenMW-local/webcuda-color-input-validation.json`. Set
+`WEBCUDA_VERTEX_FIXTURES` to an output `.bin` path before running
+`wasm-build/test-webcuda-submission.ps1`; the final color suite writes these
+fixtures. Replay them with the NVCC-built `vertex-input.test.cpp` executable
+and flags above. This change moves rendering calculations to CUDA; it does
+not reduce the size of ordinary vertex input records or establish an FPS gain.
+Native browser gameplay and physical 60-180 Hz presentation remain unverified.
+
+The rebuilt WebGPU engine completed a Seyda Neen smoke run with 345 saved
+presentations, zero renderer errors, aborted captures or legacy draw attempts.
+All 120 sampled completed scene frames released their captured packets.
+Median capture was 74.21 ms, renderer wall time 150.58 ms, and presentation
+submission interval 234.68 ms. Median material encoding was 36.50 ms and
+geometry encoding 19.92 ms. The run uploaded a median 25,321,934 bytes per
+scene frame; the final runtime buffer capacity was 1,995,420,960 bytes.
+These observations include streaming and debug overhead; they are not a
+matched performance comparison, physical VRAM measurement or refresh-rate
+acceptance. Reports use
+`D:/OpenMW-local/webcuda-seyda-neen-color-input-2026-10-07`.
 
 ## Running
 

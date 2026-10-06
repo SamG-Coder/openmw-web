@@ -12,12 +12,16 @@ namespace WebCuda
         GeometryPacket(bool compact = false) : compactVertices(compact) {}
         bool compactVertices = false;
         std::uint32_t capturedVertexCount = 0;
+        unsigned int currentSecondaryByteComponents = 0; // Capture-only format for current secondary color.
         // 32 words per draw: first/count/source count/kind/mode/fallback.
         // Kind0: dense offsets6..8. Kind1: ten {offset,stride} streams8..27.
         // Kind2: source count is particles; offset6 holds raw17 per particle,
         // offset7 holds shared23. CUDA builds four corners per particle.
         // Kind3: source count is GUI vertices; offset6 holds raw9 (XYZ,
         // RGBA bytes as floats, UV), offset7 holds shared secondary color3.
+        // Words28/29/30: byte channel counts for primary/secondary/fallback.
+        // Primary is kind1 only (0/3/4); secondary is 0/3 for all kinds except
+        // GUI; fallback is kind1 only (0/3). Word31 stays reserved.
         // Streams: position4, color4, secondary3, normal3, tangent4, fog1, UV0..3 each4.
         std::vector<std::uint32_t> vertexLayouts;
         std::vector<float> vertexInputs;

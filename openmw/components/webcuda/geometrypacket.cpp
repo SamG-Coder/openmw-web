@@ -64,15 +64,19 @@ namespace WebCuda
         }
         // Borrowed only during one synchronous geometry capture. Resolve types,
         // bindings and bounds once, not for every vertex (or color channel).
-        // These readers unpack source data; they perform no rendering math.
+        // Compact capture keeps source values raw; only the dense reference
+        // accessor normalizes colors on the CPU.
         class VertexArrayReader
         {
         public:
             enum class Role { Vector, Color, SecondaryColor, Normal, Fog, Tangent };
 
             VertexArrayReader(const osg::Array* array, unsigned int count, unsigned int primitiveSet,
-                Role role, const osg::Vec4& fallback = osg::Vec4(0,0,0,1)) : mArray(array),mConstant(fallback)
+                Role role, const osg::Vec4& fallback = osg::Vec4(0,0,0,1),unsigned int fallbackByteComponents=0)
+                : mArray(array),mConstant(fallback),mByteComponents(fallbackByteComponents)
             {
+                if(mByteComponents && !((role==Role::Color&&(mByteComponents==3||mByteComponents==4))
+                    ||(role==Role::SecondaryColor&&mByteComponents==3)))throw std::runtime_error("Invalid current color format");
                 const bool perVertex = role==Role::Vector || role==Role::Tangent;
                 if(!array || !count || (!perVertex && array->getBinding()==osg::Array::BIND_OFF))return;
                 bool supported=false;
@@ -115,7 +119,12 @@ namespace WebCuda
                 }
             }
 
-            osg::Vec4 operator[](unsigned int vertex) const { return mRead?mRead(mData,vertex):mConstant; }
+            osg::Vec4 operator[](unsigned int vertex) const {
+                auto value=raw(vertex);
+                for(unsigned int k=0;k<mByteComponents;k++)value[k]/=255.f;
+                return value;
+            }
+            unsigned int byteComponents() const { return mByteComponents; }
             std::size_t inputWords(unsigned int count,unsigned int components) const { return std::size_t(mRead?count:1u)*components; }
 
             void capture(GeometryPacket& draw, std::uint32_t* descriptor,
@@ -128,29 +137,32 @@ namespace WebCuda
                 descriptor[0]=static_cast<std::uint32_t>(inputs.size());descriptor[1]=mRead?components:0u;
                 if(mRead) {
                     static thread_local VertexStreamCache cache;
-                    if(const auto* entry=cache.capture(mArray,count,components,[&](unsigned int i){return (*this)[i];})) {
+                    if(const auto* entry=cache.capture(mArray,count,components,[&](unsigned int i){return raw(i);})) {
                         draw.vertexResources.insert(draw.vertexResources.end(),{entry->version,descriptor[0],static_cast<std::uint32_t>(entry->values.size())});
                         inputs.insert(inputs.end(),entry->values.begin(),entry->values.end());
                         return;
                     }
                 }
                 for(unsigned int i=0;i<records;i++) {
-                    const auto value=(*this)[i];
+                    const auto value=raw(i);
                     for(unsigned int k=0;k<components;k++)inputs.push_back(value[k]);
                 }
             }
 
         private:
-            template<class Value, unsigned int Components, bool Normalized>
+            osg::Vec4 raw(unsigned int vertex) const {
+                const auto value=mRead?mRead(mData,vertex):mConstant;
+                for(unsigned int k=0;!mRead&&k<mByteComponents;k++)if(!std::isfinite(value[k])||value[k]<0||value[k]>255||std::floor(value[k])!=value[k])
+                    throw std::runtime_error("Invalid vertex color byte");
+                return value;
+            }
+            template<class Value, unsigned int Components>
             static osg::Vec4 read(const void* data, unsigned int vertex)
             {
                 const auto& value=static_cast<const Value*>(data)[vertex];
                 osg::Vec4 result(0,0,0,1);
                 if constexpr(Components==1)result.x()=static_cast<float>(value);
-                else for(unsigned int k=0;k<Components;k++) {
-                    if constexpr(Normalized)result[k]=value[k]/255.f;
-                    else result[k]=static_cast<float>(value[k]);
-                }
+                else for(unsigned int k=0;k<Components;k++)result[k]=static_cast<float>(value[k]);
                 return result;
             }
             template<class Array, unsigned int Components, bool Normalized=false>
@@ -159,7 +171,8 @@ namespace WebCuda
                 const auto* values=dynamic_cast<const Array*>(array);
                 if(!values)return false;
                 mData=values->empty()?nullptr:&(*values)[0];
-                mRead=&read<typename Array::value_type,Components,Normalized>;
+                mRead=&read<typename Array::value_type,Components>;
+                mByteComponents=Normalized?Components:0u;
                 return true;
             }
             static const char* name(Role role)
@@ -178,6 +191,7 @@ namespace WebCuda
             const osg::Array* mArray=nullptr;
             osg::Vec4 (*mRead)(const void*,unsigned int)=nullptr;
             osg::Vec4 mConstant;
+            unsigned int mByteComponents=0;
         };
         std::uint32_t capturePostMatrix(GeometryPacket& draw,const osg::Matrixd& matrix)
         {
@@ -194,6 +208,9 @@ namespace WebCuda
         void fixedLighting(GeometryPacket& draw,const DrawContext& context,const osg::StateSet& state)
         {
             std::array<std::uint32_t,368> data{};
+            if(context.currentSecondaryByteComponents!=0&&context.currentSecondaryByteComponents!=3)
+                throw std::runtime_error("Invalid current secondary color format");
+            draw.currentSecondaryByteComponents=context.currentSecondaryByteComponents;
             if(!state.getAttribute(osg::StateAttribute::PROGRAM)&&(state.getMode(GL_LIGHTING)&osg::StateAttribute::ON)!=0) {
                 auto scalar=[&](unsigned int offset,float value) {
                     if(!std::isfinite(value))throw std::runtime_error("Non-finite fixed lighting input");
@@ -264,6 +281,8 @@ namespace WebCuda
             for(unsigned int k=0;k<3;k++) {
                 const float value=context.currentSecondaryColor[k];
                 if(!std::isfinite(value))throw std::runtime_error("Non-finite current secondary color");
+                if(draw.currentSecondaryByteComponents&&(value<0||value>255||std::floor(value)!=value))
+                    throw std::runtime_error("Invalid current secondary color byte");
                 std::memcpy(&data[42+k],&value,4);
             }
             draw.fixedLighting.insert(draw.fixedLighting.end(),data.begin(),data.end());
@@ -402,8 +421,10 @@ namespace WebCuda
             if(!draw.compactVertices) {
                 const auto explicitSecondary=draw.secondaryColors.size();
                 draw.secondaryColors.resize(count*3);
-                for(std::size_t i=explicitSecondary;i<draw.secondaryColors.size();i++)
+                for(std::size_t i=explicitSecondary;i<draw.secondaryColors.size();i++) {
                     std::memcpy(&draw.secondaryColors[i],&draw.fixedLighting[42+i%3],4);
+                    if(!packet.compactVertices&&draw.currentSecondaryByteComponents)draw.secondaryColors[i]/=255.f;
+                }
                 for(float value:draw.secondaryColors)if(!std::isfinite(value))throw std::runtime_error("Non-finite secondary color");
             }
             if(packet.compactVertices) {
@@ -442,6 +463,7 @@ namespace WebCuda
                     }
                 } else {
                     layout[2]=static_cast<std::uint32_t>(count);
+                    layout[29]=draw.currentSecondaryByteComponents;
                     layout[6]=static_cast<std::uint32_t>(inputBase);
                     layout[7]=layout[6]+static_cast<std::uint32_t>(draw.vertices.size());
                     layout[8]=layout[7]+static_cast<std::uint32_t>(draw.attributes.size());
@@ -561,11 +583,13 @@ namespace WebCuda
         const auto* shade=dynamic_cast<const osg::ShadeModel*>(geometryState->getAttribute(osg::StateAttribute::SHADEMODEL));
         const bool flatColor=!geometryState->getAttribute(osg::StateAttribute::PROGRAM)&&shade&&shade->getMode()==osg::ShadeModel::FLAT;
         osg::Vec4 defaultColor(context.currentColor[0],context.currentColor[1],context.currentColor[2],context.currentColor[3]);
+        unsigned int defaultColorByteComponents=context.currentColorByteComponents;
 #if !defined(OSG_GL_FIXED_FUNCTION_AVAILABLE) || defined(OSG_GL1_AVAILABLE)
         if(!context.hasCurrentColor)
             if(const auto* material=dynamic_cast<const osg::Material*>(geometryState->getAttribute(osg::StateAttribute::MATERIAL))) {
                 // Direct packet callers do not have submission's retained state.
                 defaultColor=material->getDiffuse(osg::Material::FRONT);
+                defaultColorByteComponents=0;
 #if defined(OSG_GL_FIXED_FUNCTION_AVAILABLE) && defined(OSG_GL1_AVAILABLE)
                 switch(material->getColorMode()) {
                     case osg::Material::AMBIENT:defaultColor=material->getAmbient(osg::Material::FRONT);break;
@@ -633,9 +657,9 @@ namespace WebCuda
         using Role=VertexArrayReader::Role;
         const auto inputVertexCount=positions->getNumElements();
         const VertexArrayReader positionValues(positions,inputVertexCount,primitiveFirst,Role::Vector);
-        const VertexArrayReader colorValues(arrays.getColorArray(),inputVertexCount,primitiveFirst,Role::Color,defaultColor);
+        const VertexArrayReader colorValues(arrays.getColorArray(),inputVertexCount,primitiveFirst,Role::Color,defaultColor,defaultColorByteComponents);
         const VertexArrayReader secondaryValues(arrays.getSecondaryColorArray(),inputVertexCount,primitiveFirst,Role::SecondaryColor,
-            osg::Vec4(context.currentSecondaryColor[0],context.currentSecondaryColor[1],context.currentSecondaryColor[2],1));
+            osg::Vec4(context.currentSecondaryColor[0],context.currentSecondaryColor[1],context.currentSecondaryColor[2],1),context.currentSecondaryByteComponents);
         const VertexArrayReader normalValues(arrays.getNormalArray(),inputVertexCount,primitiveFirst,Role::Normal,
             osg::Vec4(context.currentNormal[0],context.currentNormal[1],context.currentNormal[2],1));
         const VertexArrayReader tangentValues(arrays.getTexCoordArray(7),inputVertexCount,primitiveFirst,Role::Tangent,osg::Vec4(0,0,0,0));
@@ -650,6 +674,8 @@ namespace WebCuda
             draw.compactVertices=true;draw.capturedVertexCount=inputVertexCount;
             draw.vertexLayouts.resize(32);auto* layout=draw.vertexLayouts.data();
             layout[2]=inputVertexCount;layout[3]=1;layout[4]=explicitFog?2u:(terrain?1u:0u);
+            layout[28]=colorValues.byteComponents();layout[29]=secondaryValues.byteComponents();
+            layout[30]=context.currentSecondaryByteComponents;
             std::size_t words=3+positionValues.inputWords(inputVertexCount,4)+colorValues.inputWords(inputVertexCount,4)
                 +secondaryValues.inputWords(inputVertexCount,3)+normalValues.inputWords(inputVertexCount,3)
                 +tangentValues.inputWords(inputVertexCount,4)+fogValues.inputWords(inputVertexCount,1);
@@ -972,6 +998,7 @@ namespace WebCuda
             ? (system.getParticleScaleReferenceFrame()==osgParticle::ParticleSystem::LOCAL_COORDINATES?2.f:3.f):4.f;
         if(draw.compactVertices) {
             draw.vertexLayouts.resize(32);draw.vertexLayouts[3]=2u;draw.vertexLayouts[6]=23u;
+            draw.vertexLayouts[29]=draw.currentSecondaryByteComponents;
             // Shared23: alignment axes6, detail, point/line sizes2, attenuation3,
             // point min/max/fade3, visibility, flags, normal3, secondary3.
             draw.vertexInputs.resize(23);

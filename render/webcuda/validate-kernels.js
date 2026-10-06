@@ -9,6 +9,7 @@ import { checkPooledTextureResidencyGpu } from './texture-residency-gpu-check.js
 import { checkPositionedStateGpu } from './positioned-state-gpu-check.js';
 import { checkParticleInputsGpu } from './particle-input-gpu-check.js';
 import { checkGuiInputsGpu } from './gui-input-gpu-check.js';
+import { checkColorInputsGpu } from './color-input-gpu-check.js';
 const button=document.querySelector('#run'),status=document.querySelector('#status'),results=document.querySelector('#results');
 button.addEventListener('click',async()=>{
   button.disabled=true;results.textContent='';
@@ -54,6 +55,8 @@ button.addEventListener('click',async()=>{
         for(const check of await checkParticleInputsGpu(runtime,kernel))report(`PASS: ${check}`);
         setStage(`${entry}: GPU GUI input checks`);
         for(const check of await checkGuiInputsGpu(runtime,kernel))report(`PASS: ${check}`);
+        setStage(`${entry}: GPU byte-color input checks`);
+        for(const check of await checkColorInputsGpu(runtime,kernel))report(`PASS: ${check}`);
       }
       if(entry==='prepare_fixed_matrices'||entry==='prepare_texgen_matrices') {
         setStage(`${entry}: GPU output checks`);

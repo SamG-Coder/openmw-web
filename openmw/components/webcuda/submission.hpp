@@ -41,6 +41,8 @@ namespace WebCuda
         float simulationTime=0.f;
         float currentSecondaryColor[3]={0.f,0.f,0.f};
         float currentColor[4]={1.f,1.f,1.f,1.f};
+        unsigned int currentColorByteComponents=0; // 0, 3 or 4 raw UNORM8 channels; converted in CUDA.
+        unsigned int currentSecondaryByteComponents=0; // 0 or 3 raw UNORM8 channels.
         bool hasCurrentColor=false;
         float currentNormal[3]={0.f,0.f,1.f};
         float currentFogCoordinate=0.f;
@@ -76,6 +78,7 @@ namespace WebCuda
         struct CurrentAttributes {
             float secondaryColor[3]={0.f,0.f,0.f};
             float color[4]={1.f,1.f,1.f,1.f};
+            unsigned int colorByteComponents=0,secondaryByteComponents=0;
             float normal[3]={0.f,0.f,1.f};
             float fogCoordinate=0.f;
             osg::ref_ptr<const osg::Material> material;

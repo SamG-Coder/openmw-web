@@ -94,3 +94,45 @@ test('raw GUI validation rejects malformed triangles, color bytes, offsets and u
     s=>s.vertexInputs[1]=NaN,s=>s.matrixIds[5]=1,s=>s.vertexLayouts[3]=4];
   for(const mutate of invalid){const scene=gui();mutate(scene);assert.throws(()=>validateVertexInputs(scene),RangeError);}
 });
+
+function byteStreams(channels=4) {
+  const scene=streams(),layout=scene.vertexLayouts;layout[28]=channels;layout[29]=layout[30]=3;
+  scene.vertexInputs.set([254,128,1]);
+  scene.vertexInputs.set([254,128,73,channels===4?191:.375],layout[10]);
+  for(let i=0;i<9;i++)scene.vertexInputs[layout[12]+i]=(i*37)&255;
+  return scene;
+}
+
+test('byte stream formats preserve RGB float alpha, constant bindings and generated-tail defaults',()=>{
+  for(const channels of [3,4]) {
+    const scene=byteStreams(channels),before=scene.vertexInputs.slice();
+    assert.deepEqual(validateVertexInputs(scene),{projectedParticles:false,lineParticles:false});
+    assert.deepEqual(scene.vertexInputs,before);
+    if(channels===3)assert.equal(scene.vertexInputs[scene.vertexLayouts[10]+3],.375);
+  }
+  const scene=byteStreams();scene.vertexLayouts[28]=scene.vertexLayouts[29]=scene.vertexLayouts[30]=0;
+  scene.vertexInputs[scene.vertexLayouts[10]]=1.25;scene.vertexInputs[scene.vertexLayouts[12]]=-.5;
+  assert.doesNotThrow(()=>validateVertexInputs(scene));
+});
+
+test('color format validation rejects malformed tags and non-byte values in every normalized source',()=>{
+  const invalid=[s=>s.vertexLayouts[28]=1,s=>s.vertexLayouts[28]=5,s=>s.vertexLayouts[29]=4,
+    s=>s.vertexLayouts[30]=4,s=>s.vertexLayouts[31]=1,s=>s.vertexInputs[s.vertexLayouts[10]]=255.5,
+    s=>s.vertexInputs[s.vertexLayouts[10]+3]=256,s=>s.vertexInputs[s.vertexLayouts[12]+8]=-1,
+    s=>s.vertexInputs[1]=.125,s=>s.vertexInputs[s.vertexLayouts[12]]=NaN];
+  for(const mutate of invalid){const scene=byteStreams();mutate(scene);assert.throws(()=>validateVertexInputs(scene),RangeError);}
+});
+
+test('dense ribbon and particle shared secondary formats validate their own source blocks',()=>{
+  const dense=streams();dense.matrixIds=new Uint32Array(2);dense.vertexLayouts.fill(0);
+  dense.vertexLayouts.set([0,2,2,0,0,0,0,20,88]);dense.vertexLayouts[29]=3;
+  dense.vertexInputs=new Float32Array(94);dense.vertexInputs.set([0,128,254,255,73,191],88);
+  assert.doesNotThrow(()=>validateVertexInputs(dense));
+  dense.vertexInputs[93]=.5;assert.throws(()=>validateVertexInputs(dense),/color byte/);
+  const particle=particles();particle.vertexLayouts[29]=3;particle.vertexInputs.set([254,128,1],20);
+  assert.doesNotThrow(()=>validateVertexInputs(particle));
+  particle.vertexInputs[22]=256;assert.throws(()=>validateVertexInputs(particle),/color byte/);
+  for(const make of [gui,particles])for(const field of [28,30]) {
+    const scene=make();scene.vertexLayouts[field]=3;assert.throws(()=>validateVertexInputs(scene),/color format/);
+  }
+});

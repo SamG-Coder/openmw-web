@@ -13,6 +13,7 @@ static void checked(cudaError_t result) {
 }
 #else
 #define __global__
+#define __device__
 struct Dim {unsigned int x=0,y=0;} blockIdx,threadIdx,blockDim{1,0},gridDim{1,0};
 #endif
 #include "vertex-input.cu"

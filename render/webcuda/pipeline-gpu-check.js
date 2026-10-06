@@ -216,6 +216,44 @@ export async function checkPipelineGpu(runtime,kernels) {
       runtime.write(target,initial);
       equal(`Pipeline raw GUI alpha ${alpha} observes changed source colors`,await render(compact,pass),changed);
     }
+    for(const channels of [0,3,4])for(const constant of [false,true]) {
+      const dense=scene(),inputs=[0,0,0],layout=new Uint32Array(32),colors=[],secondary=[];
+      dense.attributes=new Float32Array(4*34);dense.secondaryColors=new Float32Array(12);
+      dense.fixedLighting=new Uint32Array(368);dense.fixedLighting[1]=32; // Unlit primary + secondary color.
+      for(let i=0;i<4;i++) {
+        const source=constant?0:i,raw=channels?[254-source*31,73+source*17,128,channels===4?191:1]:[1.25,-.125,.5,.625];
+        const extra=[1+source*17,128-source*31,73];
+        colors.push(...raw);secondary.push(...extra);
+        dense.vertices.set(raw.map((value,k)=>k<channels?value/255:value),i*10+4);
+        dense.secondaryColors.set(extra.map(value=>value/255),i*3);
+        for(let unit=0;unit<4;unit++)dense.attributes[i*34+27+unit*2]=1;
+      }
+      const position=[];for(let i=0;i<4;i++)position.push(...dense.vertices.slice(i*10,i*10+4));
+      const streams=[position,constant?colors.slice(0,4):colors,constant?secondary.slice(0,3):secondary,
+        [0,0,0],[0,0,0,0],[0],[0,0,0,1],[0,0,0,1],[0,0,0,1],[0,0,0,1]];
+      layout.set([0,4,4,1,0,0]);layout[28]=channels;layout[29]=3;
+      for(const [index,stream] of streams.entries()) {
+        layout.set([inputs.length,index===0?4:index===1&&!constant?4:index===2&&!constant?3:0],8+index*2);
+        inputs.push(...stream);
+      }
+      const compact={...dense,vertexEncoding:1,vertices:new Float32Array(),attributes:new Float32Array(),secondaryColors:new Float32Array(),
+        vertexLayouts:layout,vertexInputs:new Float32Array(inputs)};
+      runtime.write(target,initial);const expected=await render(dense);
+      const primaryOnly={...dense,fixedLighting:new Uint32Array(368)};
+      runtime.write(target,initial);const withoutSecondary=await render(primaryOnly);
+      if(expected.every((value,i)=>Math.abs(value-withoutSecondary[i])<1e-6))throw Error('Byte-color fixture did not exercise secondary-color addition');
+      runtime.write(target,initial);
+      equal(`Pipeline color format ${channels}, ${constant?'constant':'per-vertex'} binding, secondary addition and blending`,await render(compact),expected);
+      layout[28]=layout[29]=0;
+      for(let i=0;i<4;i++) {
+        dense.vertices.set([.125,.25,.5,.5],i*10+4);dense.secondaryColors.set([.25,.125,.0625],i*3);
+        compact.vertexInputs.set([.125,.25,.5,.5],layout[10]+(constant?0:i)*4);
+        compact.vertexInputs.set([.25,.125,.0625],layout[12]+(constant?0:i)*3);
+      }
+      runtime.write(target,initial);const changed=await render(dense);
+      runtime.write(target,initial);
+      equal(`Pipeline color format ${channels}, ${constant?'constant':'per-vertex'} binding resets to floating source values`,await render(compact),changed);
+    }
     // Trigger the production compaction threshold with mostly offscreen draws.
     // The two visible triangles straddle a prefix-block boundary; compare with
     // the identical small-camera result, including a partially clipped edge.

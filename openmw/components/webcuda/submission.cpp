@@ -117,10 +117,12 @@ namespace WebCuda
                     if(!std::isfinite(color[k]))throw std::runtime_error("Non-finite material current color");
                     current.color[k]=color[k];
                 }
+                current.colorByteComponents=0;
 #endif
                 current.material=material;
             }
             std::copy(current.color,current.color+4,context.currentColor);
+            context.currentColorByteComponents=current.colorByteComponents;
             context.hasCurrentColor=true;
         }
         void retainCurrentAttributes(const osg::Geometry& geometry,SubmissionSink& sink)
@@ -144,7 +146,7 @@ namespace WebCuda
                 const int i=index(array);
                 if(i>=0) {
                     if(static_cast<unsigned int>(i)>=array->getNumElements())throw std::runtime_error("Short current color array");
-                    osg::Vec4 color(1,1,1,1);
+                    osg::Vec4 color(1,1,1,1);unsigned int byteComponents=0;
                     if(const auto* values=dynamic_cast<const osg::Vec4Array*>(array))color=(*values)[i];
                     else if(const auto* values=dynamic_cast<const osg::Vec3Array*>(array))
                         for(unsigned int k=0;k<3;k++)color[k]=(*values)[i][k];
@@ -152,15 +154,17 @@ namespace WebCuda
                         for(unsigned int k=0;k<4;k++)color[k]=static_cast<float>((*values)[i][k]);
                     else if(const auto* values=dynamic_cast<const osg::Vec3dArray*>(array))
                         for(unsigned int k=0;k<3;k++)color[k]=static_cast<float>((*values)[i][k]);
-                    else if(const auto* values=dynamic_cast<const osg::Vec4ubArray*>(array))
-                        for(unsigned int k=0;k<4;k++)color[k]=(*values)[i][k]/255.f;
-                    else if(const auto* values=dynamic_cast<const osg::Vec3ubArray*>(array))
-                        for(unsigned int k=0;k<3;k++)color[k]=(*values)[i][k]/255.f;
+                    else if(const auto* values=dynamic_cast<const osg::Vec4ubArray*>(array)) {
+                        byteComponents=4;for(unsigned int k=0;k<4;k++)color[k]=(*values)[i][k];
+                    } else if(const auto* values=dynamic_cast<const osg::Vec3ubArray*>(array)) {
+                        byteComponents=3;for(unsigned int k=0;k<3;k++)color[k]=(*values)[i][k];
+                    }
                     else throw std::runtime_error("Unsupported current color array");
                     for(unsigned int k=0;k<4;k++) {
                         if(!std::isfinite(color[k]))throw std::runtime_error("Non-finite current color");
                         sink.currentAttributes.color[k]=color[k];
                     }
+                    sink.currentAttributes.colorByteComponents=byteComponents;
                 }
             }
             if(const auto* array=arrays.getSecondaryColorArray()) {
@@ -171,11 +175,12 @@ namespace WebCuda
                         float value;
                         if(const auto* values=dynamic_cast<const osg::Vec3Array*>(array))value=(*values)[i][k];
                         else if(const auto* values=dynamic_cast<const osg::Vec3dArray*>(array))value=static_cast<float>((*values)[i][k]);
-                        else if(const auto* values=dynamic_cast<const osg::Vec3ubArray*>(array))value=(*values)[i][k]/255.f;
+                        else if(const auto* values=dynamic_cast<const osg::Vec3ubArray*>(array))value=(*values)[i][k];
                         else throw std::runtime_error("Unsupported current secondary color array");
                         if(!std::isfinite(value))throw std::runtime_error("Non-finite current secondary color");
                         sink.currentAttributes.secondaryColor[k]=value;
                     }
+                    sink.currentAttributes.secondaryByteComponents=dynamic_cast<const osg::Vec3ubArray*>(array)?3u:0u;
                 }
             }
             if(const auto* array=arrays.getNormalArray()) {
@@ -260,6 +265,7 @@ namespace WebCuda
                 context.particleNormal[k]=sink.currentAttributes.normal[k];
             }
             context.currentFogCoordinate=sink.currentAttributes.fogCoordinate;
+            context.currentSecondaryByteComponents=sink.currentAttributes.secondaryByteComponents;
             if(dynamic_cast<const osg::DispatchCompute*>(&drawable)) {
                 const auto state=resolveState(context);
                 const auto* program=dynamic_cast<const osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM));

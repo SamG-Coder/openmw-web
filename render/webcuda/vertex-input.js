@@ -13,10 +13,20 @@ export function validateVertexInputs(scene) {
   const range=(offset,words)=>{
     if(offset+words>inputs.length)throw RangeError('Compact vertex stream exceeds input storage');
   };
+  const byteColors=(offset,count,stride,channels)=>{
+    for(let i=0;i<(stride?count:1);i++)for(let k=0;k<channels;k++) {
+      const value=inputs[offset+i*stride+k];
+      if(!Number.isInteger(value)||value<0||value>255)throw RangeError('Invalid vertex color byte');
+    }
+  };
   for(let d=0;d<layouts.length;d+=32) {
     const [first,count,source,kind,mode,fallback]=layouts.subarray(d,d+6);
+    const colorBytes=layouts[d+28],secondaryBytes=layouts[d+29],fallbackBytes=layouts[d+30];
     if(first!==end||first+count>matrixIds.length||source>count||kind>3||mode>2)
       throw RangeError('Invalid compact vertex draw range');
+    if(![0,3,4].includes(colorBytes)||![0,3].includes(secondaryBytes)||![0,3].includes(fallbackBytes)
+      ||(kind!==1&&(colorBytes||fallbackBytes))||(kind===3&&secondaryBytes)||layouts[d+31])
+      throw RangeError('Invalid compact vertex color format');
     end=first+count;
     for(let i=first;i<end;i++)if(matrixIds[i]!==d/32)throw RangeError('Compact vertex draw does not match matrix IDs');
     if(kind===0) {
@@ -24,7 +34,8 @@ export function validateVertexInputs(scene) {
       range(layouts[d+6],count*10);range(layouts[d+7],count*34);range(layouts[d+8],count*3);
       const flags=validateVertexAttributes(inputs.subarray(layouts[d+7],layouts[d+7]+count*34),count);
       projectedParticles||=flags.projectedParticles;lineParticles||=flags.lineParticles;
-      for(let k=9;k<32;k++)if(layouts[d+k])throw RangeError('Invalid dense vertex input reserved word');
+      for(let k=9;k<28;k++)if(layouts[d+k])throw RangeError('Invalid dense vertex input reserved word');
+      if(secondaryBytes)byteColors(layouts[d+8],count,3,secondaryBytes);
     } else if(kind===3) {
       if(source!==count||count%3||mode||fallback)throw RangeError('Invalid GUI input descriptor');
       const vertices=layouts[d+6],shared=layouts[d+7];
@@ -38,7 +49,8 @@ export function validateVertexInputs(scene) {
       if(source*4!==count||mode||fallback)throw RangeError('Invalid particle input descriptor');
       const particles=layouts[d+6],shared=layouts[d+7];
       range(particles,source*17);range(shared,23);
-      for(let k=8;k<32;k++)if(layouts[d+k])throw RangeError('Invalid particle input reserved word');
+      for(let k=8;k<28;k++)if(layouts[d+k])throw RangeError('Invalid particle input reserved word');
+      if(secondaryBytes)byteColors(shared+20,1,0,secondaryBytes);
       const detail=inputs[shared+6],flags=inputs[shared+16];
       if(!Number.isInteger(detail)||detail<=0||!Number.isInteger(flags)||flags<0||flags>31)
         throw RangeError('Invalid particle detail or flags');
@@ -59,7 +71,9 @@ export function validateVertexInputs(scene) {
         if(stride!==0&&stride!==width)throw RangeError('Invalid compact vertex stream stride');
         range(offset,source?width+(source-1)*stride:(stride?0:width));
       }
-      for(let k=28;k<32;k++)if(layouts[d+k])throw RangeError('Invalid vertex input reserved word');
+      if(colorBytes)byteColors(layouts[d+10],source,layouts[d+11],colorBytes);
+      if(secondaryBytes)byteColors(layouts[d+12],source,layouts[d+13],secondaryBytes);
+      if(fallbackBytes)byteColors(fallback,1,0,fallbackBytes);
     }
   }
   if(end!==matrixIds.length)throw RangeError('Incomplete compact vertex draw coverage');

@@ -1,5 +1,14 @@
 // Build mutable shader inputs from captured source streams. A stride of zero
 // means one constant value for the draw; no vertex transforms run on the host.
+__device__ float vertex_unorm8(float value) {
+    unsigned int byte=(unsigned int)value;
+    // Replicate the byte into Q0.32. For 1..254 the truncated value lies at
+    // or above a float midpoint; +1 resolves the midpoint upward. Exact
+    // power-of-two scaling avoids the native fast-math reciprocal error.
+    unsigned int repeated=(byte<<24u)|(byte<<16u)|(byte<<8u)|byte;
+    if(byte>0u&&byte<255u)repeated+=1u;
+    return (float)repeated*0.00000000023283064365386962890625f;
+}
 __global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* layouts,const unsigned int* matrix_ids,
                                     float* vertices,float* attributes,float* secondary_colors,unsigned int vertex_count) {
     unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;
@@ -8,7 +17,10 @@ __global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* lay
     if(layouts[d+3u]==0u) {
         for(unsigned int k=0;k<10;k++)vertices[v+k]=inputs[layouts[d+6u]+j*10u+k];
         for(unsigned int k=0;k<34;k++)attributes[a+k]=inputs[layouts[d+7u]+j*34u+k];
-        for(unsigned int k=0;k<3;k++)secondary_colors[i*3u+k]=inputs[layouts[d+8u]+j*3u+k];
+        for(unsigned int k=0;k<3;k++) {
+            float value=inputs[layouts[d+8u]+j*3u+k];
+            secondary_colors[i*3u+k]=layouts[d+29u]!=0u?vertex_unorm8(value):value;
+        }
         return;
     }
     for(unsigned int k=0;k<34;k++)attributes[a+k]=0.0f;
@@ -20,16 +32,7 @@ __global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* lay
             vertices[v+k]=inputs[p+k];secondary_colors[i*3u+k]=inputs[c+k];
         }
         vertices[v+3u]=1.0f;
-        for(unsigned int k=0;k<4;k++) {
-            unsigned int byte=(unsigned int)inputs[p+3u+k];
-            // Replicate the byte into Q0.32. For 1..254 the truncated value
-            // lies at or above a float midpoint; +1 resolves the midpoint
-            // upward. Exact power-of-two scaling avoids a fast-math reciprocal
-            // and gives the same correctly rounded UNORM8 on both backends.
-            unsigned int repeated=(byte<<24u)|(byte<<16u)|(byte<<8u)|byte;
-            if(byte>0u&&byte<255u)repeated+=1u;
-            vertices[v+4u+k]=(float)repeated*0.00000000023283064365386962890625f;
-        }
+        for(unsigned int k=0;k<4;k++)vertices[v+4u+k]=vertex_unorm8(inputs[p+3u+k]);
         for(unsigned int k=0;k<2;k++){vertices[v+8u+k]=inputs[p+7u+k];attributes[a+16u+k]=inputs[p+7u+k];}
         for(unsigned int unit=0;unit<4;unit++)attributes[a+27u+unit*2u]=1.0f;
         return;
@@ -50,7 +53,8 @@ __global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* lay
         for(unsigned int k=0;k<3;k++) {
             attributes[a+3u+k]=inputs[c+k];attributes[a+6u+k]=inputs[c+3u+k];
             attributes[a+10u+k]=inputs[p+13u+k];attributes[a+21u+k]=inputs[c+17u+k];
-            secondary_colors[i*3u+k]=inputs[c+20u+k];
+            float value=inputs[c+20u+k];
+            secondary_colors[i*3u+k]=layouts[d+29u]!=0u?vertex_unorm8(value):value;
         }
         attributes[a+9u]=inputs[p+11u];attributes[a+13u]=inputs[p+12u];attributes[a+14u]=inputs[c+6u];
         if(mode==5.0f||mode==6.0f||mode==8.0f) {
@@ -66,14 +70,23 @@ __global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* lay
         // Space reserved for CUDA-generated screen primitives has the same
         // initial state as a dense packet, including its current color input.
         for(unsigned int k=0;k<10;k++)vertices[v+k]=0.0f;
-        for(unsigned int k=0;k<3;k++)secondary_colors[i*3u+k]=inputs[layouts[d+5u]+k];
+        for(unsigned int k=0;k<3;k++) {
+            float value=inputs[layouts[d+5u]+k];
+            secondary_colors[i*3u+k]=layouts[d+30u]!=0u?vertex_unorm8(value):value;
+        }
         return;
     }
     unsigned int position=layouts[d+8u]+j*layouts[d+9u],color=layouts[d+10u]+j*layouts[d+11u];
     unsigned int secondary=layouts[d+12u]+j*layouts[d+13u],normal=layouts[d+14u]+j*layouts[d+15u];
     unsigned int tangent=layouts[d+16u]+j*layouts[d+17u],fog=layouts[d+18u]+j*layouts[d+19u];
-    for(unsigned int k=0;k<4;k++){vertices[v+k]=inputs[position+k];vertices[v+4u+k]=inputs[color+k];attributes[a+6u+k]=inputs[tangent+k];}
-    for(unsigned int k=0;k<3;k++){secondary_colors[i*3u+k]=inputs[secondary+k];attributes[a+3u+k]=inputs[normal+k];}
+    for(unsigned int k=0;k<4;k++) {
+        vertices[v+k]=inputs[position+k];attributes[a+6u+k]=inputs[tangent+k];
+        float value=inputs[color+k];vertices[v+4u+k]=k<layouts[d+28u]?vertex_unorm8(value):value;
+    }
+    for(unsigned int k=0;k<3;k++) {
+        float value=inputs[secondary+k];secondary_colors[i*3u+k]=layouts[d+29u]!=0u?vertex_unorm8(value):value;
+        attributes[a+3u+k]=inputs[normal+k];
+    }
     attributes[a]=layouts[d+4u]==2u?-1.0f:(layouts[d+4u]==1u?1.0f:0.0f);
     if(layouts[d+4u]==2u)attributes[a+2u]=inputs[fog];
     for(unsigned int unit=0;unit<4;unit++) {

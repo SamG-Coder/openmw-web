@@ -10,8 +10,10 @@ namespace VertexInputReference {
     struct Dim { unsigned int x=0,y=0; };
     static Dim blockIdx,threadIdx,blockDim{1,0},gridDim{1,0};
 #define __global__
+#define __device__
 #include "vertex-input.cu"
 #undef __global__
+#undef __device__
     inline std::vector<std::uint32_t> fixtures{0x56494e31u,0u};
     template<class T> void record(const std::vector<T>& values) {
         static_assert(sizeof(T)==4);
