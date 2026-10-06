@@ -778,9 +778,9 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         const depthHolder=pass.depthTargetId?targets.get(pass.depthTargetId):attachment;
         const normalHolder=pass.normalTargetId?targets.get(pass.normalTargetId):null;
         let nativeDirect=nativeTargets.canCamera(pass,compactDepth)
-          &&(!preserveColor||attachment.authority==='native')
-          &&(!preserveDepth||depthHolder?.authority==='native')
-          &&(!preserveNormal||normalHolder?.authority==='native');
+          &&(!preserveColor||(attachment.authority==='native'&&Boolean(attachment.native?.color)))
+          &&(!preserveDepth||(depthHolder?.authority==='native'&&Boolean(depthHolder.native?.depth)))
+          &&(!preserveNormal||(normalHolder?.authority==='native'&&Boolean(normalHolder.native?.normal)));
 
         let nativeTarget=null,targetBuffer=null,sampleBuffer=null;
         if(nativeDirect) {
