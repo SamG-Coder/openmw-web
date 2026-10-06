@@ -1,6 +1,8 @@
 #include "materialtable.hpp"
 #include "maptexture.hpp"
 #include "fogtexture.hpp"
+#include "terrainblendimage.hpp"
+#include <osg/ValueObject>
 #include <limits>
 #include <algorithm>
 #include <cstring>
@@ -320,6 +322,51 @@ namespace WebCuda
                     generated=mMapImages.emplace(key,destination).first;
                 }
                 record[0]=generated->second;record[1]=width;record[2]=height;record[3]|=1;
+            } else if(const auto* blend=dynamic_cast<const TerrainBlendImage*>(image)) {
+                const auto& inputs=*blend->inputs;
+                const auto width=blend->s(),height=blend->t();
+                if(width<=0||height<=0||blend->r()!=1||inputs.size()<3||!inputs[2]||blend->layer>=inputs[2]
+                    ||blend->mode>1||blend->getPixelFormat()!=GL_ALPHA||blend->getDataType()!=GL_UNSIGNED_BYTE)
+                    throw std::runtime_error("Invalid terrain blend image layout");
+                if(blend->mode==0 && (std::uint64_t(inputs[0])*2!=static_cast<unsigned int>(width)
+                    ||std::uint64_t(inputs[1])*2!=static_cast<unsigned int>(height)
+                    ||inputs.size()!=3+std::uint64_t(inputs[0])*inputs[1]))
+                    throw std::runtime_error("Terrain blend grid dimensions changed");
+                if(blend->mode==1 && (inputs[0]!=(static_cast<unsigned int>(width)+15u)/16u
+                    ||inputs[1]!=1u+(static_cast<unsigned int>(height)+14u)/16u
+                    ||inputs.size()<3+std::uint64_t(inputs[0])*inputs[1]))
+                    throw std::runtime_error("Terrain blend quad dimensions changed");
+                const auto imageKey=std::make_pair(image,static_cast<unsigned int>(GL_ALPHA));
+                auto found=mImages.find(imageKey);
+                if(found==mImages.end()||found->second.modified!=image->getModifiedCount()) {
+                    unsigned int w=width,h=height;std::uint64_t pixelCount=0;levels=0;
+                    do {pixelCount+=std::uint64_t(w)*h;++levels;if(w==1&&h==1)break;w=std::max(1u,w/2);h=std::max(1u,h/2);}while(true);
+                    if(mTexels.size()+pixelCount>std::numeric_limits<std::uint32_t>::max()
+                        ||mCompressedBlocks.size()+inputs.size()+4>std::numeric_limits<std::uint32_t>::max())
+                        throw std::runtime_error("Terrain blend atlas overflow");
+                    auto source=mTerrainBlendSources.find(blend->inputs);
+                    if(source==mTerrainBlendSources.end()) {
+                        const auto offset=static_cast<std::uint32_t>(mCompressedBlocks.size());
+                        mCompressedBlocks.insert(mCompressedBlocks.end(),inputs.begin(),inputs.end());
+                        source=mTerrainBlendSources.emplace(blend->inputs,offset).first;
+                    }
+                    const auto descriptor=static_cast<std::uint32_t>(mCompressedBlocks.size());
+                    mCompressedBlocks.insert(mCompressedBlocks.end(),{blend->mode,blend->layer,source->second,static_cast<std::uint32_t>(inputs.size())});
+                    ImageRecord resource{image,image->getModifiedCount(),static_cast<std::uint32_t>(mTexels.size()),
+                        static_cast<unsigned int>(width),static_cast<unsigned int>(height),levels};
+                    resizeAtlas(mTexels.size()+pixelCount);
+                    mTextureDecodes.insert(mTextureDecodes.end(),{descriptor,resource.offset,resource.width,resource.height,259u});
+                    w=width;h=height;unsigned int previous=resource.offset;
+                    while(w>1||h>1) {
+                        const auto destination=previous+w*h;
+                        mMipGenerations.insert(mMipGenerations.end(),{previous,destination,w,h});
+                        previous=destination;w=std::max(1u,w/2);h=std::max(1u,h/2);
+                    }
+                    mTextureResources.insert(mTextureResources.end(),{imageVersion(image,GL_ALPHA),resource.offset,static_cast<std::uint32_t>(pixelCount)});
+                    found=mImages.insert_or_assign(imageKey,resource).first;
+                }
+                record[0]=found->second.offset;record[1]=found->second.width;record[2]=found->second.height;
+                record[3]|=1;levels=found->second.levels;
             } else {
             if(!image)throw std::runtime_error("WebCuda texture has no image or registered render target");
             const unsigned int internalFormat=texture->getInternalFormatMode()==osg::Texture::USE_USER_DEFINED_FORMAT

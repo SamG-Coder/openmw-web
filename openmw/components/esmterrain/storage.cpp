@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <optional>
 #include <stdexcept>
+#include <array>
+#include <cstring>
+#include <memory>
 
 #include <osg/Image>
 #include <osg/Plane>
@@ -18,6 +21,7 @@
 #include <components/misc/strings/algorithm.hpp>
 #include <components/vfs/manager.hpp>
 #include <components/vfs/pathutil.hpp>
+#include <components/webcuda/terrainblendimage.hpp>
 
 #include "gridsampling.hpp"
 
@@ -110,8 +114,9 @@ namespace ESMTerrain
 
     Storage::Storage(const VFS::Manager* vfs, std::string_view normalMapPattern,
         std::string_view normalHeightMapPattern, bool autoUseNormalMaps, std::string_view specularMapPattern,
-        bool autoUseSpecularMaps)
+        bool autoUseSpecularMaps, bool gpuBlendmaps)
         : mVFS(vfs)
+        , mGpuBlendmaps(gpuBlendmaps)
         , mNormalMapPattern(normalMapPattern)
         , mNormalHeightMapPattern(normalHeightMapPattern)
         , mAutoUseNormalMaps(autoUseNormalMaps)
@@ -400,6 +405,7 @@ namespace ESMTerrain
 
         constexpr int quadsPerCell = 2;
         constexpr int quadSize = ESM4::Land::sVertsPerSide / quadsPerCell;
+        static_assert(quadSize == 16, "CUDA terrain blend source ABI uses 17x17 quad vertices");
         const int quadCount = static_cast<int>(chunkSize * quadsPerCell);
         assert(quadCount > 0);
 
@@ -410,20 +416,32 @@ namespace ESMTerrain
         const LandObject* land = getLand(ESM::ExteriorCellLocation(startCellX, startCellY, worldspace), cache);
 
         std::map<ESM::FormId, std::size_t> textureIndicesMap;
+        struct QuadInputs
+        {
+            unsigned int base;
+            std::array<std::vector<std::uint32_t>, (quadSize + 1) * (quadSize + 1)> vertices;
+        };
+        const unsigned int quadColumns = (blendmapSize + quadSize - 1) / quadSize;
+        const unsigned int quadRows = 1 + (blendmapSize + quadSize - 2) / quadSize;
+        std::vector<std::unique_ptr<QuadInputs>> quads(mGpuBlendmaps ? quadColumns * quadRows : 0);
 
-        auto getOrCreateBlendmap = [&](ESM::FormId texId) -> unsigned char* {
+        auto getOrCreateLayer = [&](ESM::FormId texId) -> std::size_t {
             auto found = textureIndicesMap.find(texId);
             if (found != textureIndicesMap.end())
-                return blendmaps[found->second]->data();
+                return found->second;
             Terrain::LayerInfo info
                 = texId.isZeroOrUnset() ? land->getEsm4DefaultLayerInfo() : getLandTextureLayerInfo(texId);
-            osg::ref_ptr<osg::Image> image(new osg::Image);
-            image->allocateImage(blendmapSize, blendmapSize, 1, GL_ALPHA, GL_UNSIGNED_BYTE);
-            std::memset(image->data(), 0, image->getTotalDataSize());
+            osg::ref_ptr<osg::Image> image;
+            if (!mGpuBlendmaps)
+            {
+                image = new osg::Image;
+                image->allocateImage(blendmapSize, blendmapSize, 1, GL_ALPHA, GL_UNSIGNED_BYTE);
+                std::memset(image->data(), 0, image->getTotalDataSize());
+            }
             textureIndicesMap.emplace(texId, blendmaps.size());
             blendmaps.push_back(std::move(image));
             layerList.push_back(std::move(info));
-            return blendmaps.back()->data();
+            return blendmaps.size() - 1;
         };
 
         const auto handleSample = [&](const CellSample& sample) {
@@ -445,7 +463,34 @@ namespace ESMTerrain
                 quad = sample.mSrcCol == 0 ? 1 : 3;
             const ESM4::Land::Texture& ltex = ldata->getEsm4Texture(quad);
 
-            unsigned char* const baseBlendmap = getOrCreateBlendmap(ESM::FormId::fromUint32(ltex.base.formId));
+            const auto baseLayer = getOrCreateLayer(ESM::FormId::fromUint32(ltex.base.formId));
+            if (mGpuBlendmaps)
+            {
+                if (sample.mDstRow >= quadColumns || sample.mDstCol >= quadRows)
+                    throw std::runtime_error("Terrain blend quad exceeds source grid");
+                auto& inputs = quads[sample.mDstCol * quadColumns + sample.mDstRow];
+                if (inputs) throw std::runtime_error("Duplicate terrain blend quad");
+                inputs = std::make_unique<QuadInputs>();
+                inputs->base = static_cast<unsigned int>(baseLayer);
+                for (const auto& layer : ltex.layers)
+                {
+                    const auto index = getOrCreateLayer(ESM::FormId::fromUint32(layer.texture.formId));
+                    for (const ESM4::Land::VTXT& v : layer.data)
+                    {
+                        if (v.position >= inputs->vertices.size() || !std::isfinite(v.opacity))
+                            throw std::runtime_error("Invalid terrain blend vertex input");
+                        std::uint32_t opacity;
+                        std::memcpy(&opacity, &v.opacity, 4);
+                        // Group raw source records by their original vertex.
+                        // CUDA owns boundary sampling, opacity quantization,
+                        // base subtraction and final per-layer pixel values.
+                        inputs->vertices[v.position].insert(inputs->vertices[v.position].end(),
+                            {static_cast<std::uint32_t>(index), opacity});
+                    }
+                }
+                return;
+            }
+            unsigned char* const baseBlendmap = blendmaps[baseLayer]->data();
             int starty = (static_cast<int>(sample.mDstCol) - 1) * quadSize;
             int startx = static_cast<int>(sample.mDstRow) * quadSize;
             for (int y = std::max(0, starty + 1); y <= starty + quadSize && y < blendmapSize; ++y)
@@ -457,7 +502,7 @@ namespace ESMTerrain
 
             for (const auto& layer : ltex.layers)
             {
-                unsigned char* const layerBlendmap = getOrCreateBlendmap(ESM::FormId::fromUint32(layer.texture.formId));
+                unsigned char* const layerBlendmap = blendmaps[getOrCreateLayer(ESM::FormId::fromUint32(layer.texture.formId))]->data();
                 for (const ESM4::Land::VTXT& v : layer.data)
                 {
                     int y = v.position / (quadSize + 1);
@@ -477,6 +522,28 @@ namespace ESMTerrain
 
         sampleBlendmaps(chunkSize, origin.x(), origin.y(), quadsPerCell, handleSample);
 
+        if (mGpuBlendmaps && blendmaps.size() > 1)
+        {
+            auto inputs = std::make_shared<std::vector<std::uint32_t>>(3 + quads.size(), 0);
+            (*inputs)[0] = quadColumns; (*inputs)[1] = quadRows; (*inputs)[2] = layerList.size();
+            for (std::size_t q = 0; q < quads.size(); ++q)
+            {
+                if (!quads[q]) continue;
+                (*inputs)[3 + q] = inputs->size();
+                inputs->push_back(quads[q]->base);
+                const auto offsets = inputs->size();
+                inputs->resize(offsets + quads[q]->vertices.size() + 1);
+                for (std::size_t v = 0; v < quads[q]->vertices.size(); ++v)
+                {
+                    (*inputs)[offsets + v] = inputs->size();
+                    const auto& records = quads[q]->vertices[v];
+                    inputs->insert(inputs->end(), records.begin(), records.end());
+                }
+                (*inputs)[offsets + quads[q]->vertices.size()] = inputs->size();
+            }
+            for (std::size_t layer = 0; layer < blendmaps.size(); ++layer)
+                blendmaps[layer] = new WebCuda::TerrainBlendImage(inputs, 1, layer, blendmapSize, blendmapSize);
+        }
         if (blendmaps.size() == 1)
             blendmaps.clear(); // If a single texture fills the whole terrain, there is no need to blend
     }
@@ -518,6 +585,8 @@ namespace ESMTerrain
         sampleBlendmaps(chunkSize, origin.x(), origin.y(), ESM::Land::LAND_TEXTURE_SIZE, handleSample);
 
         std::map<UniqueTextureId, std::size_t> textureIndicesMap;
+        auto inputs = mGpuBlendmaps ? std::make_shared<std::vector<std::uint32_t>>(3 + textureIds.size()) : nullptr;
+        if (inputs) { (*inputs)[0] = blendmapSize; (*inputs)[1] = blendmapSize; }
 
         for (std::size_t y = 0; y < blendmapSize; ++y)
         {
@@ -544,15 +613,24 @@ namespace ESMTerrain
 
                     if (layerIndex >= layerList.size())
                     {
-                        osg::ref_ptr<osg::Image> image(new osg::Image);
-                        image->allocateImage(static_cast<int>(blendmapImageSize), static_cast<int>(blendmapImageSize),
-                            1, GL_ALPHA, GL_UNSIGNED_BYTE);
-                        std::memset(image->data(), 0, image->getTotalDataSize());
+                        osg::ref_ptr<osg::Image> image;
+                        if (!mGpuBlendmaps)
+                        {
+                            image = new osg::Image;
+                            image->allocateImage(static_cast<int>(blendmapImageSize), static_cast<int>(blendmapImageSize),
+                                1, GL_ALPHA, GL_UNSIGNED_BYTE);
+                            std::memset(image->data(), 0, image->getTotalDataSize());
+                        }
                         blendmaps.push_back(std::move(image));
                         layerList.push_back(std::move(info));
                     }
                 }
                 const std::size_t layerIndex = found->second;
+                if (inputs)
+                {
+                    (*inputs)[3 + y * blendmapSize + x] = layerIndex;
+                    continue;
+                }
                 unsigned char* const data = blendmaps[layerIndex]->data();
                 const std::size_t realY = y * imageScaleFactor;
                 const std::size_t realX = x * imageScaleFactor;
@@ -563,6 +641,12 @@ namespace ESMTerrain
             }
         }
 
+        if (inputs && blendmaps.size() > 1)
+        {
+            (*inputs)[2] = layerList.size();
+            for (std::size_t layer = 0; layer < blendmaps.size(); ++layer)
+                blendmaps[layer] = new WebCuda::TerrainBlendImage(inputs, 0, layer, blendmapImageSize, blendmapImageSize);
+        }
         if (blendmaps.size() == 1)
             blendmaps.clear(); // If a single texture fills the whole terrain, there is no need to blend
     }

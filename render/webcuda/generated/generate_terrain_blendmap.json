@@ -1,0 +1,115 @@
+{
+  "version": "0.1.1",
+  "name": "generate_terrain_blendmap",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel generate_terrain_blendmap.\n@group(0) @binding(0) var<storage, read> b_blocks: array<u32>;\n@group(0) @binding(1) var<storage, read_write> b_pixels: array<u32>;\nstruct CWParams {\n  p_width: u32,\n  p_height: u32,\n  p_block_offset: u32,\n  p_pixel_offset: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= (cw_params.p_width * cw_params.p_height))) {\n    return;\n  }\n  var v_mode: u32 = b_blocks[cw_params.p_block_offset];\n  var v_layer: u32 = b_blocks[(cw_params.p_block_offset + 1u)];\n  var v_source: u32 = b_blocks[(cw_params.p_block_offset + 2u)];\n  var v_x: u32 = (v_i % cw_params.p_width);\n  var v_y: u32 = (v_i / cw_params.p_width);\n  var v_alpha: u32 = 0u;\n  if ((v_mode == 0u)) {\n    var v_inputWidth: u32 = b_blocks[v_source];\n    var cw_tmp_0: u32;\n    if ((b_blocks[(((v_source + 3u) + ((v_y / 2u) * v_inputWidth)) + (v_x / 2u))] == v_layer)) {\n      cw_tmp_0 = 255u;\n    } else {\n      cw_tmp_0 = 0u;\n    }\n    v_alpha = cw_tmp_0;\n  } else {\n    var v_columns: u32 = b_blocks[v_source];\n    var v_qx: u32 = (v_x / 16u);\n    var v_qy: u32 = ((v_y + 15u) / 16u);\n    var v_quad: u32 = b_blocks[(((v_source + 3u) + (v_qy * v_columns)) + v_qx)];\n    if ((v_quad != 0u)) {\n      var v_base: u32 = b_blocks[(v_source + v_quad)];\n      var cw_tmp_1: u32;\n      if ((v_base == v_layer)) {\n        cw_tmp_1 = 255u;\n      } else {\n        cw_tmp_1 = 0u;\n      }\n      v_alpha = cw_tmp_1;\n      var cw_tmp_2: u32;\n      if ((v_y == 0u)) {\n        cw_tmp_2 = 16u;\n      } else {\n        cw_tmp_2 = (((v_y - 1u) % 16u) + 1u);\n      }\n      var v_vertex: u32 = ((cw_tmp_2 * 17u) + (v_x % 16u));\n      var v_begin: u32 = b_blocks[(((v_source + v_quad) + 1u) + v_vertex)];\n      var v_end: u32 = b_blocks[(((v_source + v_quad) + 2u) + v_vertex)];\n      {\n        var v_record: u32 = v_begin;\n        loop {\n          if (!(v_record < v_end)) { break; }\n          var v_paintedLayer: u32 = b_blocks[(v_source + v_record)];\n          let cw_argument_index_3 = ((v_source + v_record) + 1u);\n          var v_opacity: f32 = bitcast<f32>(b_blocks[cw_argument_index_3]);\n          var v_delta: u32 = u32(min(255.0f, max(0.0f, (v_opacity * 255.0f))));\n          if ((v_layer == v_base)) {\n            var cw_tmp_4: u32;\n            if ((v_alpha < v_delta)) {\n              cw_tmp_4 = v_alpha;\n            } else {\n              cw_tmp_4 = v_delta;\n            }\n            v_alpha = (v_alpha - cw_tmp_4);\n          }\n          if ((v_layer == v_paintedLayer)) {\n            v_alpha = v_delta;\n          }\n          continuing {\n            v_record = (v_record + 2u);\n          }\n        }\n      }\n    }\n  }\n  b_pixels[(cw_params.p_pixel_offset + v_i)] = (16777215u | (v_alpha << 24u));\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "blocks",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "pixels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "block_offset",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32",
+        "offset": 12
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 3095,
+      "beforeBytes": 3095,
+      "afterBytes": 3095,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 2674,
+          "transitiveBytes": 2674,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Terrain masks from immutable land records. No CPU-generated alpha pixels.\n// Descriptor: mode, destination layer, source offset, source word count.\n__global__ void generate_terrain_blendmap(const unsigned int* blocks,unsigned int* pixels,\n    unsigned int width,unsigned int height,unsigned int block_offset,unsigned int pixel_offset) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=width*height)return;\n    unsigned int mode=blocks[block_offset],layer=blocks[block_offset+1u],source=blocks[block_offset+2u];\n    unsigned int x=i%width,y=i/width,alpha=0u;\n    if(mode==0u) {\n        // Vanilla Morrowind doubles each source texel with nearest sampling.\n        unsigned int inputWidth=blocks[source];\n        alpha=blocks[source+3u+(y/2u)*inputWidth+x/2u]==layer?255u:0u;\n    } else {\n        // ESM4 excludes the right and bottom shared vertices. The first output\n        // row comes from row 16 of the neighbouring quad; subsequent rows use\n        // source rows 1..16. This preserves the engine's asymmetric borders.\n        unsigned int columns=blocks[source],qx=x/16u,qy=(y+15u)/16u;\n        unsigned int quad=blocks[source+3u+qy*columns+qx];\n        if(quad!=0u) {\n            unsigned int base=blocks[source+quad];\n            alpha=base==layer?255u:0u;\n            unsigned int vertex=(y==0u?16u:(y-1u)%16u+1u)*17u+x%16u;\n            unsigned int begin=blocks[source+quad+1u+vertex],end=blocks[source+quad+2u+vertex];\n            for(unsigned int record=begin;record<end;record+=2u) {\n                unsigned int paintedLayer=blocks[source+record];\n                float opacity=__uint_as_float(blocks[source+record+1u]);\n                unsigned int delta=(unsigned int)fminf(255.0f,fmaxf(0.0f,opacity*255.0f));\n                if(layer==base)alpha-=alpha<delta?alpha:delta;\n                if(layer==paintedLayer)alpha=delta;\n            }\n        }\n    }\n    // An ALPHA texture samples white RGB, including where alpha is zero.\n    pixels[pixel_offset+i]=16777215u|(alpha<<24u);\n}\n",
+    "entry": "generate_terrain_blendmap",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

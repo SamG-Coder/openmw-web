@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated per-pixel raster work and native fence boundaries. CUDA binning rejects scissored draws and filled-triangle tiles outside actual edge coverage; 1800 exact CPU and standalone GPU raster comparisons pass. Isolated GPU raster timings improve with the smaller lists; full-game FPS remains unmeasured.",
+  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated per-pixel raster work and native fence boundaries. Terrain blend mask generation now runs in authored CUDA and matches the original engine masks in real WASM capture and standalone GPU comparisons. Full-game FPS remains unmeasured.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest engine remains 61275df13d9f, with regenerated CUDA tile-binning artifacts served separately. Filled-triangle edge rejection now avoids empty tiles before per-pixel setup; exact CPU/GPU comparisons and isolated GPU timings pass. Continue tracing large-pass sizing, triangle setup and native fence boundaries. All four stock postprocess effect names have CUDA routes; custom effects and broader game/lifecycle acceptance remain outside the verified coverage.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest staged engine is f7c1bdb71a48. Terrain blend masks now use immutable land inputs and CUDA generation with existing GPU residency. Continue tracing large-pass sizing, triangle setup and native fence boundaries. All four stock postprocess effect names have CUDA routes; custom effects and broader game/lifecycle acceptance remain outside the verified coverage.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -900,7 +900,11 @@
       "beforeTileReferences": 8192,
       "afterTileReferences": 2
     },
-    "reports": ["D:/OpenMW-local/webcuda-tests/tile-pruning-cpu.log", "D:/OpenMW-local/webcuda-tests/tile-pruning-gpu.log", "D:/OpenMW-local/webcuda-tile-pruning-native-compile.json"],
+    "reports": [
+      "D:/OpenMW-local/webcuda-tests/tile-pruning-cpu.log",
+      "D:/OpenMW-local/webcuda-tests/tile-pruning-gpu.log",
+      "D:/OpenMW-local/webcuda-tile-pruning-native-compile.json"
+    ],
     "limits": "Standalone GPU execution validates CUDA arithmetic and list safety, not browser ownership, presentation, game FPS or full-game acceptance. Standard WebGPU artifacts were generated; their new GPU execution was not repeated."
   },
   "cudaTileCoverage": {
@@ -923,11 +927,51 @@
       "triangles": 96,
       "measuredSamples": 9,
       "warmups": 3,
-      "randomTriangles": {"beforeReferences": 84358, "afterReferences": 27750, "beforeMs": 2.479, "afterMs": 1.894},
-      "longThinTriangles": {"beforeReferences": 345600, "afterReferences": 12384, "beforeMs": 3.798, "afterMs": 1.677},
+      "randomTriangles": {
+        "beforeReferences": 84358,
+        "afterReferences": 27750,
+        "beforeMs": 2.479,
+        "afterMs": 1.894
+      },
+      "longThinTriangles": {
+        "beforeReferences": 345600,
+        "afterReferences": 12384,
+        "beforeMs": 3.798,
+        "afterMs": 1.677
+      },
       "method": "CUDA event medians with alternating order, identical production raster kernel and direct CUDA buffers. Compare rectangular lists with edge-tested lists. Binning and host/browser work are outside the timer."
     },
-    "reports": ["D:/OpenMW-local/webcuda-tests/tile-coverage-cpu.log", "D:/OpenMW-local/webcuda-tests/tile-coverage-gpu.log", "D:/OpenMW-local/webcuda-tile-coverage-native-compile.json"],
+    "reports": [
+      "D:/OpenMW-local/webcuda-tests/tile-coverage-cpu.log",
+      "D:/OpenMW-local/webcuda-tests/tile-coverage-gpu.log",
+      "D:/OpenMW-local/webcuda-tile-coverage-native-compile.json"
+    ],
     "limits": "Synthetic native GPU raster evidence, not full-game FPS or browser interop. Regenerated WebGPU shaders have not been re-executed in a browser. Broad scene, lifecycle and variable-refresh acceptance remains incomplete."
+  },
+  "terrainBlendMigration": {
+    "stagedVersion": "f7c1bdb71a48",
+    "change": "WebCuda terrain storage captures shared immutable ESM3 layer IDs or ordered ESM4 raw opacity records. A generated CUDA kernel paints alpha masks; MaterialTable records decode 259, mip generation and immutable texture residency. The ordinary renderer retains its existing path.",
+    "source": "render/webcuda/terrain-blend.cu",
+    "validation": {
+      "originalEngineImages": 123,
+      "wasmExactOriginalAndRelocatedComparisons": 246,
+      "nativeGpuExactOriginalAndRelocatedComparisons": 246,
+      "realPacketHostValidation": 246,
+      "singleLayerElisions": 19,
+      "wasmIntegrationSuites": 6,
+      "relatedHostChecks": 39,
+      "frameLifetimeChecks": 6,
+      "pacingAndGuardChecks": 5,
+      "pagedKernelBundledNvrtc": "passed",
+      "fullEngineBuildAndLink": "passed",
+      "httpRangeIsolationMimeAndServedModules": "passed"
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-terrain-producer.log",
+      "D:/OpenMW-local/webcuda-tests/terrain-blend-gpu.log",
+      "D:/OpenMW-local/webcuda-terrain-native-compile.json",
+      "D:/OpenMW-local/webcuda-terrain-stage.json"
+    ],
+    "limits": "Standalone native GPU execution and host/WASM tests. Browser execution of the new terrain kernel, full-game behavior and FPS are not newly verified."
   }
 }

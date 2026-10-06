@@ -13,6 +13,7 @@ export const kernelManifest = Object.freeze([
   {"file":"unlit-falloff.cu","entry":"assemble_unlit_falloff","runtime":true},
   {"file":"fog-map.cu","entry":"generate_fog_map","runtime":true},
   {"file":"map.cu","entry":"generate_map","runtime":true},
+  {"file":"terrain-blend.cu","entry":"generate_terrain_blendmap","runtime":true},
   {"file":"snapshot.cu","entry":"snapshot_frame","runtime":true},
   {"file":"readback.cu","entry":"capture_image","runtime":true},
   {"file":"debug.cu","entry":"shade_debug_vertices","runtime":true},

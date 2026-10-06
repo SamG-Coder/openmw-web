@@ -81,7 +81,7 @@ namespace ESMTerrain
     public:
         Storage(const VFS::Manager* vfs, std::string_view normalMapPattern = {},
             std::string_view normalHeightMapPattern = {}, bool autoUseNormalMaps = false,
-            std::string_view specularMapPattern = {}, bool autoUseSpecularMaps = false);
+            std::string_view specularMapPattern = {}, bool autoUseSpecularMaps = false, bool gpuBlendmaps = false);
 
         // Not implemented in this class, because we need different Store implementations for game and editor
         virtual osg::ref_ptr<const LandObject> getLand(ESM::ExteriorCellLocation cellLocation) = 0;
@@ -149,6 +149,9 @@ namespace ESMTerrain
 
     private:
         const VFS::Manager* mVFS;
+        // Captured at construction on the main thread; background terrain
+        // loading must not query browser state or execute rendering math.
+        const bool mGpuBlendmaps;
 
         inline void fixNormal(
             osg::Vec3f& normal, ESM::ExteriorCellLocation cellLocation, int col, int row, LandCache& cache);

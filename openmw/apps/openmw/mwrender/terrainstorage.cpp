@@ -6,6 +6,7 @@
 #include <components/esm4/loadltex.hpp>
 #include <components/esm4/loadtxst.hpp>
 #include <components/esm4/loadwrld.hpp>
+#include <components/webcuda/viewer.hpp>
 
 #include "../mwbase/environment.hpp"
 #include "../mwworld/esmstore.hpp"
@@ -19,7 +20,7 @@ namespace MWRender
         std::string_view normalHeightMapPattern, bool autoUseNormalMaps, std::string_view specularMapPattern,
         bool autoUseSpecularMaps)
         : ESMTerrain::Storage(resourceSystem->getVFS(), normalMapPattern, normalHeightMapPattern, autoUseNormalMaps,
-            specularMapPattern, autoUseSpecularMaps)
+            specularMapPattern, autoUseSpecularMaps, WebCuda::Viewer::requested())
         // E6 (MP): a headless peer needs terrain HEIGHTS (the physics heightfield and the
         // navmesh read them) but never draws, so the colour/normal/texture layers are
         // several MB of per-cell data loaded for nobody. Single-player keeps all four.

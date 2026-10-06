@@ -29,7 +29,31 @@ non-particle rejection from 213.019 to 0.806 ms. These isolate CPU routines;
 they do not measure the new game's frame rate. The user requested code-led
 analysis and automated checks instead of additional screenshot requests.
 
-The latest staged engine is `61275df13d9f`. Its capture revision resolves
+The latest staged engine is `f7c1bdb71a48`. Terrain layer blend masks now generate
+in `terrain-blend.cu` for the WebCuda viewer. The engine captures immutable land
+records instead of painting alpha images on the CPU. Morrowind's doubled texture
+grid and ESM4's ordered opacity records retain their original layer order and
+shared-edge rules. Layers share one source payload, and generated images use the
+existing GPU texture/mipmap residency cache. The ordinary non-WebCuda renderer
+keeps its original terrain path.
+
+The real WASM64 terrain producer and material table produce 123 reference images
+covering both formats, missing cells, duplicate layers, borders, chunk sizes and
+opacity limits. Original and relocated packets pass 246 exact image comparisons
+in WASM and another 246 on the RTX 5080, against the original CPU-painted masks,
+with output guards intact. All 246 packets also pass host range validation.
+Single-layer terrain omits masks in 19 cases. The generated paged kernel compiles
+with ChromiumRTXCuda alpha.6's bundled NVRTC. All six WASM integration suites,
+39 related host checks, six frame-lifetime checks and five pacing/guard checks
+pass; the full engine rebuild/link and HTTP staging checks also pass. This does
+not verify browser execution of this new kernel or establish gameplay FPS.
+
+Reproduce the terrain producer comparison with
+`wasm-build/test-webcuda-terrain.ps1`. It writes packets to
+`D:/OpenMW-local/webcuda-tests/terrain-blend-fixtures.bin`; the NVCC build of
+`render/webcuda/terrain-blend.test.cpp` consumes that file for the GPU comparison.
+
+Engine `61275df13d9f` introduced the capture revision that resolves
 array types, bindings and bounds once per
 draw and reuses one merged state through geometry or particle capture. Readers
 borrow only for the synchronous call, so changed arrays, shader sources and

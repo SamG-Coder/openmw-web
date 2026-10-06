@@ -89,6 +89,7 @@ namespace WebCuda
         RenderTexture mRenderTexture;
         std::map<std::pair<const osg::Texture2D*,std::uint64_t>,std::uint32_t> mFogImages;
         std::map<std::shared_ptr<const std::vector<std::uint32_t>>,std::uint32_t> mMapSources;
+        std::map<std::shared_ptr<const std::vector<std::uint32_t>>,std::uint32_t> mTerrainBlendSources;
         std::map<std::array<std::uint32_t,4>,std::uint32_t> mMapImages;
         std::map<std::pair<const osg::Image*,unsigned int>,ImageRecord> mImages;
         // Attachment identity, dimensions, storage format, mip requirement -> offset/levels.

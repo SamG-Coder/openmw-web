@@ -1,0 +1,113 @@
+{
+  "name": "generate_terrain_blendmap",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "blocks",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "pixels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "block_offset",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32",
+        "offset": 12
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 3095,
+      "beforeBytes": 3095,
+      "afterBytes": 3095,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 2674,
+          "transitiveBytes": 2674,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\n// Terrain masks from immutable land records. No CPU-generated alpha pixels.\n// Descriptor: mode, destination layer, source offset, source word count.\n__global__ void generate_terrain_blendmap(const unsigned long long* omw_pages_blocks,const unsigned long long* omw_pages_pixels,\n    unsigned int width,unsigned int height,unsigned int block_offset,unsigned int pixel_offset) {\nOmwPaged<const unsigned int> blocks(omw_pages_blocks);\nOmwPaged<unsigned int> pixels(omw_pages_pixels);\n\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=width*height)return;\n    unsigned int mode=blocks[block_offset],layer=blocks[block_offset+1u],source=blocks[block_offset+2u];\n    unsigned int x=i%width,y=i/width,alpha=0u;\n    if(mode==0u) {\n        // Vanilla Morrowind doubles each source texel with nearest sampling.\n        unsigned int inputWidth=blocks[source];\n        alpha=blocks[source+3u+(y/2u)*inputWidth+x/2u]==layer?255u:0u;\n    } else {\n        // ESM4 excludes the right and bottom shared vertices. The first output\n        // row comes from row 16 of the neighbouring quad; subsequent rows use\n        // source rows 1..16. This preserves the engine's asymmetric borders.\n        unsigned int columns=blocks[source],qx=x/16u,qy=(y+15u)/16u;\n        unsigned int quad=blocks[source+3u+qy*columns+qx];\n        if(quad!=0u) {\n            unsigned int base=blocks[source+quad];\n            alpha=base==layer?255u:0u;\n            unsigned int vertex=(y==0u?16u:(y-1u)%16u+1u)*17u+x%16u;\n            unsigned int begin=blocks[source+quad+1u+vertex],end=blocks[source+quad+2u+vertex];\n            for(unsigned int record=begin;record<end;record+=2u) {\n                unsigned int paintedLayer=blocks[source+record];\n                float opacity=__uint_as_float(blocks[source+record+1u]);\n                unsigned int delta=(unsigned int)fminf(255.0f,fmaxf(0.0f,opacity*255.0f));\n                if(layer==base)alpha-=alpha<delta?alpha:delta;\n                if(layer==paintedLayer)alpha=delta;\n            }\n        }\n    }\n    // An ALPHA texture samples white RGB, including where alpha is zero.\n    pixels[pixel_offset+i]=16777215u|(alpha<<24u);\n}\n",
+    "entry": "generate_terrain_blendmap",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "generate_terrain_blendmap",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Terrain masks from immutable land records. No CPU-generated alpha pixels.\n// Descriptor: mode, destination layer, source offset, source word count.\n__global__ void generate_terrain_blendmap(const unsigned int* blocks,unsigned int* pixels,\n    unsigned int width,unsigned int height,unsigned int block_offset,unsigned int pixel_offset) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=width*height)return;\n    unsigned int mode=blocks[block_offset],layer=blocks[block_offset+1u],source=blocks[block_offset+2u];\n    unsigned int x=i%width,y=i/width,alpha=0u;\n    if(mode==0u) {\n        // Vanilla Morrowind doubles each source texel with nearest sampling.\n        unsigned int inputWidth=blocks[source];\n        alpha=blocks[source+3u+(y/2u)*inputWidth+x/2u]==layer?255u:0u;\n    } else {\n        // ESM4 excludes the right and bottom shared vertices. The first output\n        // row comes from row 16 of the neighbouring quad; subsequent rows use\n        // source rows 1..16. This preserves the engine's asymmetric borders.\n        unsigned int columns=blocks[source],qx=x/16u,qy=(y+15u)/16u;\n        unsigned int quad=blocks[source+3u+qy*columns+qx];\n        if(quad!=0u) {\n            unsigned int base=blocks[source+quad];\n            alpha=base==layer?255u:0u;\n            unsigned int vertex=(y==0u?16u:(y-1u)%16u+1u)*17u+x%16u;\n            unsigned int begin=blocks[source+quad+1u+vertex],end=blocks[source+quad+2u+vertex];\n            for(unsigned int record=begin;record<end;record+=2u) {\n                unsigned int paintedLayer=blocks[source+record];\n                float opacity=__uint_as_float(blocks[source+record+1u]);\n                unsigned int delta=(unsigned int)fminf(255.0f,fmaxf(0.0f,opacity*255.0f));\n                if(layer==base)alpha-=alpha<delta?alpha:delta;\n                if(layer==paintedLayer)alpha=delta;\n            }\n        }\n    }\n    // An ALPHA texture samples white RGB, including where alpha is zero.\n    pixels[pixel_offset+i]=16777215u|(alpha<<24u);\n}\n",
+    "entry": "generate_terrain_blendmap",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

@@ -8,6 +8,7 @@ import { atlasUploadRanges } from './atlas-upload.js';
 import { TextureResidency, mergeWordRanges } from './texture-residency.js';
 import { colorStorage, depthStorage } from './color-storage.js';
 import { allFinite, validateVertexAttributes } from './packet-validation.js';
+import { terrainBlendInputRange } from './terrain-blend-inputs.js';
 function validSampler(sampler) {
   if(!Number.isInteger(sampler)||sampler<0||sampler>0xffffffff)return false;
   if(((sampler&0x40000000)&&((sampler>>>9)&3))||((sampler&0x80000000)&&((sampler>>>11)&3)))return false;
@@ -585,9 +586,16 @@ export class MaterialPipeline {
       const texturePlan=this.textureResidency.plan(scene.textureResources??new Uint32Array(),scene.texels.length);
       const decodePlans=[];
       const validatedMapInputs=new Map();
+      const validatedTerrainInputs=new Map();
       for(let i=0;i<scene.textureDecodes.length;i+=5) {
         const [offset,destination,w,h,packedFormat]=scene.textureDecodes.subarray(i,i+5);
         const recordDecode=(words,pixels)=>decodePlans.push({offset,words,cached:texturePlan.isResident(destination,pixels)});
+        if(packedFormat===259) {
+          if(destination+w*h>scene.texels.length)throw RangeError('Invalid terrain blend destination');
+          const range=terrainBlendInputRange(scene.compressedBlocks,offset,w,h,validatedTerrainInputs);
+          decodePlans.push({...range,cached:texturePlan.isResident(destination,w*h)});
+          continue;
+        }
         if(packedFormat===258) {
           const count=scene.compressedBlocks[offset],end=offset+1+w*h+count*3;
           if(!w||!h||!Number.isSafeInteger(end)||end>scene.compressedBlocks.length||destination+w*h>scene.texels.length)throw RangeError('Invalid fog texture inputs');
@@ -679,6 +687,11 @@ export class MaterialPipeline {
       const decodeBatch=boundedBatch(r),floatMipOffsets=new Set(),floatMipStorage=new Map(),depthMipStorage=new Map();
       for(let i=0;i<scene.textureDecodes.length;i+=5) {
         const [block_offset,pixel_offset,w,h,format]=scene.textureDecodes.subarray(i,i+5);
+        if(format===259) {
+          if(!decodePlans[i/5].cached)decodeBatch.dispatch(k.generate_terrain_blendmap.bind({blocks,pixels:texels},
+            {width:w,height:h,block_offset,pixel_offset}),groups(w*h));
+          continue;
+        }
         if(format===258) {
           if(!decodePlans[i/5].cached)decodeBatch.dispatch(k.generate_fog_map.bind({blocks,pixels:texels},{width:w,height:h,block_offset,pixel_offset}),groups(w*h));
           continue;

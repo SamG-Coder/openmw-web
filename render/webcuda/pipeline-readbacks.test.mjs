@@ -74,3 +74,20 @@ test('a large-pass allocation error stops before any scatter or raster',async()=
   assert(!f.commands.includes('copy_tile_offsets'));assert(!f.commands.includes('raster_material'));
   f.readbacks.cancel(Error('frame failed'));assert.equal(f.pipeline.busy,false);
 });
+
+test('terrain masks and their mip chains generate once, then restore from immutable texture residency',async()=>{
+  const f=fixture(),scene=f.scene();
+  scene.texels=new Uint32Array(5);
+  scene.compressedBlocks=new Uint32Array([1,1,2,0,0,0,0,4]);
+  scene.textureDecodes=new Uint32Array([4,0,2,2,259]);
+  scene.textureResources=new Uint32Array([234,0,5]);
+  scene.mipGenerations=new Uint32Array([0,4,2,2]);
+  for(let frame=0;frame<2;frame++) {
+    const readbacks=new FrameReadbacks(f.runtime,bytes=>f.pipeline.buffer('frameReadback',bytes));
+    const rendered=await f.pipeline.render(scene,32,32,null,{deferCompletion:true,readback:(...args)=>readbacks.read(...args)});
+    await readbacks.flush();assert.equal((await rendered.queryCompletion).error,undefined);
+  }
+  assert.equal(f.commands.filter(name=>name==='generate_terrain_blendmap').length,1);
+  assert.equal(f.commands.filter(name=>name==='generate_mip').length,1);
+  assert.equal(f.commands.filter(name=>name==='raster_material').length,2);
+});

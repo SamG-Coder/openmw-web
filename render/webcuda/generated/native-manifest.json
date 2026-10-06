@@ -55,6 +55,11 @@
     "artifact": "generate_map.native.json"
   },
   {
+    "entry": "generate_terrain_blendmap",
+    "runtime": true,
+    "artifact": "generate_terrain_blendmap.native.json"
+  },
+  {
     "entry": "snapshot_frame",
     "runtime": true,
     "artifact": "snapshot_frame.native.json"
