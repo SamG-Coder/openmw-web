@@ -25,15 +25,25 @@
 set -euo pipefail
 
 ROOT="${ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
-# Emscripten runs on python3 from PATH and REQUIRES >= 3.10. macOS ships /usr/bin/python3 at
-# 3.9, and on a fresh login shell that can sit ahead of Homebrew's — at which point emcc dies
-# inside CMake's configure step with a traceback about sys.version_info, which reads like a
-# broken build rather than a broken PATH. Put Homebrew first so the build cannot inherit it.
+# Emscripten requires Python >= 3.10. Prefer python3 where available, but
+# Windows emsdk commonly exposes its bundled interpreter as python.exe only.
+# The C# WebHost invokes this through MSYS bash, so requiring the literal
+# "python3" command breaks an otherwise complete Windows toolchain.
 export PATH="/opt/homebrew/bin:$PATH"
-if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then
-  echo "emscripten needs python3 >= 3.10; PATH resolves to $(python3 --version 2>&1) at $(command -v python3)" >&2
+PYTHON_CMD="${PYTHON:-}"
+if [ -z "$PYTHON_CMD" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_CMD="$(command -v python)"
+  fi
+fi
+if [ -z "$PYTHON_CMD" ] || ! "$PYTHON_CMD" -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; then
+  found="${PYTHON_CMD:-not found}"
+  echo "emscripten needs Python >= 3.10; interpreter: $found" >&2
   exit 1
 fi
+export PYTHON="$PYTHON_CMD"
 
 EMSDK_BIN="${EMSDK_BIN:-/opt/homebrew/Cellar/emscripten/6.0.1/libexec}"
 EMCC="$EMSDK_BIN/emcc"; EMXX="$EMSDK_BIN/em++"
