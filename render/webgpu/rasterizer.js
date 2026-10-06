@@ -402,9 +402,16 @@ export class HardwareRasterizer {
   }
   attachments(target, config, loadOp='load', clear={}) {
     const clearColor=clear.color??[0,0,0,0],clearDepth=clear.depth??1,clearStencil=clear.stencil??0;
-    const colorAttachments=config.compact?[]:[{view:target.colorView,loadOp,storeOp:'store',clearValue:clearColor},
-      ...(config.normal?[{view:target.normalView,loadOp,storeOp:'store',clearValue:clearColor}]:[])];
-    const depthStencilAttachment={view:target.depthView,depthLoadOp:loadOp,depthStoreOp:'store',depthClearValue:clearDepth,
+    const colorView=target.color?.renderView??target.colorView;
+    const colorResolve=config.samples>1?(target.color?.sampleView??null):null;
+    const normalView=target.normal?.renderView??target.normalView;
+    const normalResolve=config.samples>1?(target.normal?.sampleView??null):null;
+    const depthView=target.depth?.renderView??target.depthView;
+    const colorAttachments=config.compact?[]:[{view:colorView,loadOp,storeOp:'store',clearValue:clearColor,
+      ...(colorResolve?{resolveTarget:colorResolve}:{})},
+      ...(config.normal?[{view:normalView,loadOp,storeOp:'store',clearValue:clearColor,
+        ...(normalResolve?{resolveTarget:normalResolve}:{})}]:[])];
+    const depthStencilAttachment={view:depthView,depthLoadOp:loadOp,depthStoreOp:'store',depthClearValue:clearDepth,
       ...(config.stencil?{stencilLoadOp:loadOp,stencilStoreOp:'store',stencilClearValue:clearStencil}:{})};
     return {colorAttachments,depthStencilAttachment};
   }
@@ -439,7 +446,13 @@ export class HardwareRasterizer {
       if(this.disposed) {counter.dispose();throw Error('HardwareRasterizer was disposed during visibility pipeline compilation');}
       this.visibilityCounter=counter;
     }
-    const bridge=await this.bridge(config);
+    const directTarget=pass.nativeTarget??null;
+    if(directTarget?.config) {
+      const expected=JSON.stringify([config.width,config.height,config.samples,config.compact,config.normal,config.stencil,
+        config.colorFormat,config.normalFormat,config.depthFormat]);
+      if(directTarget.config.key!==expected)throw Error('Native logical render target does not match camera configuration');
+    }
+    const bridge=directTarget?null:await this.bridge(config);
     // Compile each unique native pipeline once. A real Morrowind scene contains
     // many runs that share material state; compiling per-run created hundreds of
     // duplicate awaiters and made the first 3D frame appear to hang.
@@ -458,7 +471,7 @@ export class HardwareRasterizer {
     }
     if(this.disposed)throw Error('HardwareRasterizer was disposed during pipeline compilation');
     this.runtime.assertAlive?.();
-    const target=this.textures(config);
+    const target=directTarget??this.textures(config);
     const visibilityTarget=queryRuns.length?this.visibilityCounter.target(config):null;
     this.runtime.flush?.();
     const uniforms=this.buffer('material uniforms',Math.max(1,runs.length)*this.uniformStride,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST);
@@ -470,31 +483,35 @@ export class HardwareRasterizer {
       ...['vertices','triangles','materials','texels','attributes'].map((key,binding)=>({binding,resource:{buffer:native[key]}})),
       {binding:5,resource:{buffer:uniforms,size:80}},
     ]});
-    const bridgeUniform=this.buffer('attachment uniforms',this.uniformStride*9,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST);
-    const bridgeData=new Uint32Array(this.uniformStride*9/4);
-    for(let i=0;i<9;i++)bridgeData.set([config.width,config.height,config.width*config.height,config.samples,
-      config.compact?1:0,i===0?0:1<<(i-1),params.color_channels,params.normal_channels],i*this.uniformStride/4);
-    device.queue.writeBuffer(bridgeUniform,0,bridgeData);
-    const bridgeBindings=(pipeline,index=0,source=true)=>device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
-      ...(source?[{binding:0,resource:{buffer:native.target}}]:[]),
-      {binding:1,resource:{buffer:bridgeUniform,offset:index*this.uniformStride,size:32}},
-    ]});
+    let bridgeUniform=null,bridgeBindings=null;
+    if(bridge) {
+      bridgeUniform=this.buffer('attachment uniforms',this.uniformStride*9,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST);
+      const bridgeData=new Uint32Array(this.uniformStride*9/4);
+      for(let i=0;i<9;i++)bridgeData.set([config.width,config.height,config.width*config.height,config.samples,
+        config.compact?1:0,i===0?0:1<<(i-1),params.color_channels,params.normal_channels],i*this.uniformStride/4);
+      device.queue.writeBuffer(bridgeUniform,0,bridgeData);
+      bridgeBindings=(pipeline,index=0,source=true)=>device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
+        ...(source?[{binding:0,resource:{buffer:native.target}}]:[]),
+        {binding:1,resource:{buffer:bridgeUniform,offset:index*this.uniformStride,size:32}},
+      ]});
+    }
     const encoder=device.createCommandEncoder({label:'OpenMW WebGPU hardware rendering'});
-    if(pass.nativeFullClear) {
+    if(directTarget&&pass.nativeFullClear) {
       // Full target clears can stay entirely inside native WebGPU attachments.
       // This avoids importing a 40-byte/pixel compatibility buffer before every
       // main-scene camera pass.
       const clearPass=encoder.beginRenderPass({label:'OpenMW native attachment clear',
         ...this.attachments(target,config,'clear',{color:pass.clearColor,depth:pass.clearDepth,stencil:pass.clearStencil})});
       clearPass.end();
-    } else {
-      // Partial clears / preserved attachment regions still need the compatibility
-      // buffer imported before rasterization.
+    } else if(!directTarget) {
+      // Compatibility fallback: import the legacy attachment buffer only for
+      // passes that cannot yet remain native.
       const seed=encoder.beginRenderPass({label:'OpenMW import engine attachments',...this.attachments(target,config,'clear')});
       seed.setPipeline(bridge.seed);seed.setBindGroup(0,bridgeBindings(bridge.seed));seed.draw(3);seed.end();
       if(config.stencil)for(let i=0;i<8;i++) {
+        const depthView=target.depth?.renderView??target.depthView;
         const stencil=encoder.beginRenderPass({label:'OpenMW import stencil',colorAttachments:[],
-          depthStencilAttachment:{view:target.depthView,depthReadOnly:true,stencilLoadOp:'load',stencilStoreOp:'store'}});
+          depthStencilAttachment:{view:depthView,depthReadOnly:true,stencilLoadOp:'load',stencilStoreOp:'store'}});
         stencil.setPipeline(bridge.seedStencil[i]);stencil.setBindGroup(0,bridgeBindings(bridge.seedStencil[i],i+1));
         stencil.setStencilReference(255);stencil.draw(3);stencil.end();
       }
@@ -530,25 +547,27 @@ export class HardwareRasterizer {
       }
     }
     render?.end();
-    if(config.stencil)for(let i=0;i<8;i++) {
-      const stencil=encoder.beginRenderPass({label:'OpenMW export stencil',
-        colorAttachments:[{view:target.stencilView,loadOp:i===0?'clear':'load',storeOp:'store',clearValue:[0,0,0,0]}],
-        depthStencilAttachment:{view:target.depthView,depthReadOnly:true,stencilReadOnly:true}});
-      stencil.setPipeline(bridge.extractStencil[i]);stencil.setBindGroup(0,bridgeBindings(bridge.extractStencil[i],i+1,false));
-      stencil.setStencilReference(255);stencil.draw(3);stencil.end();
+    if(!directTarget) {
+      if(config.stencil)for(let i=0;i<8;i++) {
+        const stencil=encoder.beginRenderPass({label:'OpenMW export stencil',
+          colorAttachments:[{view:target.stencilView,loadOp:i===0?'clear':'load',storeOp:'store',clearValue:[0,0,0,0]}],
+          depthStencilAttachment:{view:target.depthView,depthReadOnly:true,stencilReadOnly:true}});
+        stencil.setPipeline(bridge.extractStencil[i]);stencil.setBindGroup(0,bridgeBindings(bridge.extractStencil[i],i+1,false));
+        stencil.setStencilReference(255);stencil.draw(3);stencil.end();
+      }
+      const exportBindings=device.createBindGroup({layout:bridge.export.getBindGroupLayout(0),entries:[
+        {binding:0,resource:{buffer:native.target}},{binding:1,resource:{buffer:bridgeUniform,size:32}},
+        {binding:2,resource:target.depthSampleView},
+        ...(config.compact?[]:[{binding:3,resource:target.colorView}]),
+        ...(config.normal?[{binding:4,resource:target.normalView}]:[]),
+        ...(config.stencil?[{binding:5,resource:target.stencilView}]:[]),
+      ]});
+      const exportPass=encoder.beginComputePass({label:'OpenMW export native attachments to engine'});
+      exportPass.setPipeline(bridge.export);exportPass.setBindGroup(0,exportBindings);
+      exportPass.dispatchWorkgroups(Math.ceil(config.width/8),Math.ceil(config.height/8),config.samples);exportPass.end();
     }
-    const exportBindings=device.createBindGroup({layout:bridge.export.getBindGroupLayout(0),entries:[
-      {binding:0,resource:{buffer:native.target}},{binding:1,resource:{buffer:bridgeUniform,size:32}},
-      {binding:2,resource:target.depthSampleView},
-      ...(config.compact?[]:[{binding:3,resource:target.colorView}]),
-      ...(config.normal?[{binding:4,resource:target.normalView}]:[]),
-      ...(config.stencil?[{binding:5,resource:target.stencilView}]:[]),
-    ]});
-    const exportPass=encoder.beginComputePass({label:'OpenMW export native attachments to engine'});
-    exportPass.setPipeline(bridge.export);exportPass.setBindGroup(0,exportBindings);
-    exportPass.dispatchWorkgroups(Math.ceil(config.width/8),Math.ceil(config.height/8),config.samples);exportPass.end();
     device.queue.submit([encoder.finish()]);
-    return {gpuMs:null,drawCalls,occlusionQueries:queryRuns.length};
+    return {gpuMs:null,drawCalls,occlusionQueries:queryRuns.length,nativeTarget:directTarget??null};
     } finally {this.busy=false;}
   }
   snapshot() {
