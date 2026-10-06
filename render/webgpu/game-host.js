@@ -63,6 +63,8 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     throw error;
   }
   let frame=null, state=null, lastState=null, busy=false, failed=false, disposed=false;
+  let inflightFrames=0,lastFence=Promise.resolve();
+  const maxInflightFrames=2;
   let disposalPromise=null,recoveryCancelled=false;
   const imageRequests=new Set();
   Module.webcudaImageError=null;
@@ -151,7 +153,9 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     if(!attachment)return;
     if(attachment.buffer)pipeline.retireBuffer(attachment.buffer);
     if(attachment.sampleBuffer)pipeline.retireBuffer(attachment.sampleBuffer);
-    nativeTargets.destroy(attachment);
+    const fence=lastFence;
+    if(inflightFrames>0)Promise.resolve(fence).then(()=>nativeTargets.destroy(attachment)).catch(()=>{});
+    else nativeTargets.destroy(attachment);
   }
   function planeStorage(id,width,height,sampleCount=1,alpha=1,compactDepth) {
     let destination=targets.get(id);
@@ -311,7 +315,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   Module.webcudaBeginFrame=()=>{
     if(disposed||failed||Module.webcudaRecoveryPending)return false;
     if(frame)throw Error('Nested WebGPU frame');
-    if(busy){stats.skipped++;publishDiagnostics();return false;}
+    if(busy||inflightFrames>=maxInflightFrames){stats.skipped++;publishDiagnostics();return false;}
     frame=[]; state=null;lastState=null;colorTargetStack.length=0;acceptedAt=performance.now();stats.accepted++;armFirst3DWatchdog();return true;
   };
   Module.webcudaPassState=value=>{
@@ -844,15 +848,23 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       }
       if(depthStack.length)throw Error('Unclosed depth isolation');
       const validationStart=performance.now();timing.dispatchPhaseMs=validationStart-start;
-      // Deferred camera/status checks must pass before acquiring a canvas texture.
-      // A failed GPU preparation must never publish a partially rendered frame.
-      await readbacks.flush();
-      for(const completed of await Promise.all(queryCompletions)) {
-        if(completed.error)throw completed.error;
-        for(const [id,count] of completed.queryResults)completedQueries.set(id,(completedQueries.get(id)??0)+count);
-      }
-      timing.validationWaitMs=performance.now()-validationStart;
-      if(inspectPasses)canvas.dataset.webcudaPasses=JSON.stringify(await Promise.all(passDiagnostics));
+      // Submit the frame readback copy now, but do not stall normal gameplay
+      // waiting for mapAsync. Query/validation data is consumed one frame late,
+      // matching ordinary asynchronous GPU query behaviour.
+      const validationTask=(async()=>{
+        await readbacks.flush();
+        for(const completed of await Promise.all(queryCompletions)) {
+          if(completed.error)throw completed.error;
+          for(const [id,count] of completed.queryResults)completedQueries.set(id,(completedQueries.get(id)??0)+count);
+        }
+        queryFrame++;
+        for(const [id,count] of completedQueries){Module.webcudaQueryResults.set(id,count);queryLastSeen.set(id,queryFrame);}
+        for(const [id,last] of queryLastSeen)if(queryFrame-last>120){queryLastSeen.delete(id);Module.webcudaQueryResults.delete(id);}
+        if(inspectPasses)canvas.dataset.webcudaPasses=JSON.stringify(await Promise.all(passDiagnostics));
+        timing.validationWaitMs=performance.now()-validationStart;
+      })();
+      validationTask.catch(error=>fail(error));
+      if(inspectPasses)await validationTask;
       if(result&&!failed&&!disposed) {
         const screen=targets.get(0);
         if(!screen)throw Error('Screen target is unavailable');
@@ -884,21 +896,19 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         timing.presentationSubmitIntervalMs=lastPresentationSubmit===null?null:timing.presentationSubmitAt-lastPresentationSubmit;
         lastPresentationSubmit=timing.presentationSubmitAt;
       }
-      // Plane stores can be the last commands of an offscreen-only frame.
-      // Finish them before accepting a new frame that may retire their owners.
+      // Fence the submitted frame without blocking the browser thread. The next
+      // OpenMW traversal may capture while this frame executes on the GPU.
       const completionStart=performance.now();
-      await runtime.idle();
-      timing.completionWaitMs=performance.now()-completionStart;
-      queueCompleted=true;pipeline.collectRetired();
-      if(runtime.flushRetired)await runtime.flushRetired();
+      const fence=runtime.fence();
+      lastFence=fence;inflightFrames++;queueCompleted=true;
+      pipeline.deferRetired(fence);
+      timing.completionWaitMs=0;
+      fence.then(()=>{
+        inflightFrames=Math.max(0,inflightFrames-1);
+        Module.webcudaRecoveryAttempts=0;
+        publishDiagnostics();
+      }).catch(error=>{inflightFrames=Math.max(0,inflightFrames-1);fail(error);});
       if(result&&!failed&&!disposed){canvas.style.display='block';stats.presented++;if(first3DWatchdog){clearTimeout(first3DWatchdog);first3DWatchdog=null;}}
-      // Publish a complete accepted frame together, so visible/total queries
-      // cannot be observed from different asynchronous pass completions.
-      queryFrame++;
-      for(const [id,count] of completedQueries){Module.webcudaQueryResults.set(id,count);queryLastSeen.set(id,queryFrame);}
-      for(const [id,last] of queryLastSeen)if(queryFrame-last>120){queryLastSeen.delete(id);Module.webcudaQueryResults.delete(id);}
-      // Only a completed GPU frame proves that the replacement is usable.
-      Module.webcudaRecoveryAttempts=0;
       timing.frameWallMs=performance.now()-start;
       timing.uploadedBytesDuringFrame=runtime.stats.dataBytesUploaded-uploadsBefore;
       // Preserve the legacy property while exposing its actual wall-clock meaning.
@@ -907,8 +917,8 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       frameTimings[timingCursor]=timing;timingCursor=(timingCursor+1)%frameTimings.length;
       timingCount=Math.min(timingCount+1,frameTimings.length);
     }catch(error){readbacks?.cancel(error);for(const pass of passes)if(pass.kind==='image-capture')pass.reject(error);fail(error);}finally{
-      // A packet or shader failure may happen after earlier passes submitted.
-      // Drain those commands before exposing the host as idle or disposing it.
+      // Failure before the frame fence is exceptional; drain only that path.
+      // Successful frames remain GPU-asynchronous.
       if(!queueCompleted)try{await runtime.idle();pipeline.collectRetired();}catch(error){fail(error);}
       releasePackets(passes);
       timing.retainedPassesAfterFrame=Module.webcudaTransportStats?.retainedPasses??null;
