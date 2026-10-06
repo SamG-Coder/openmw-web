@@ -42,6 +42,7 @@ const cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);
 
 
 
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,
@@ -57,8 +58,8 @@ fn main(
     var v_c: u32 = u32(0i);
     loop {
       if (!(v_c < u32(4i))) { break; }
-      let cw_argument_index_30 = ((v_i * u32(9i)) + v_c);
-      var v_value: u32 = u32(((min(1.0f, max(0.0f, b_target[cw_argument_index_30])) * 255.0f) + 0.5f));
+      let cw_argument_index_32 = ((v_i * u32(9i)) + v_c);
+      var v_value: u32 = u32(((min(1.0f, max(0.0f, b_target[cw_argument_index_32])) * 255.0f) + 0.5f));
       v_packed = (v_packed | (v_value << (v_c * u32(8i))));
       continuing {
         v_c += u32(1);

@@ -42,6 +42,7 @@ const cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);
 
 
 
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,
@@ -56,8 +57,8 @@ fn main(
     var v_c: u32 = u32(0i);
     loop {
       if (!(v_c < u32(4i))) { break; }
-      let cw_argument_index_30 = (((v_i * u32(9i)) + u32(5i)) + v_c);
-      b_texels[((cw_params.p_offset + (((((cw_params.p_height - u32(1i)) - (v_i / cw_params.p_width)) * cw_params.p_width) + (v_i % cw_params.p_width)) * u32(4i))) + v_c)] = bitcast<u32>(b_target[cw_argument_index_30]);
+      let cw_argument_index_32 = (((v_i * u32(9i)) + u32(5i)) + v_c);
+      b_texels[((cw_params.p_offset + (((((cw_params.p_height - u32(1i)) - (v_i / cw_params.p_width)) * cw_params.p_width) + (v_i % cw_params.p_width)) * u32(4i))) + v_c)] = bitcast<u32>(b_target[cw_argument_index_32]);
       continuing {
         v_c += u32(1);
       }

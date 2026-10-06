@@ -60,6 +60,7 @@ fn f_store_depth_value(cw_arg_value: f32, cw_arg_bits: u32, cw_thread: vec3<u32>
 
 
 
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,
@@ -67,20 +68,20 @@ fn main(
   @builtin(num_workgroups) cw_grid: vec3<u32>
 ) {
   var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);
-  var cw_tmp_30: u32;
+  var cw_tmp_32: u32;
   if ((cw_params.p_width > 1u)) {
-    cw_tmp_30 = (cw_params.p_width / 2u);
+    cw_tmp_32 = (cw_params.p_width / 2u);
   } else {
-    cw_tmp_30 = 1u;
+    cw_tmp_32 = 1u;
   }
-  var v_dw: u32 = cw_tmp_30;
-  var cw_tmp_31: u32;
+  var v_dw: u32 = cw_tmp_32;
+  var cw_tmp_33: u32;
   if ((cw_params.p_height > 1u)) {
-    cw_tmp_31 = (cw_params.p_height / 2u);
+    cw_tmp_33 = (cw_params.p_height / 2u);
   } else {
-    cw_tmp_31 = 1u;
+    cw_tmp_33 = 1u;
   }
-  var v_dh: u32 = cw_tmp_31;
+  var v_dh: u32 = cw_tmp_33;
   if ((v_i >= (v_dw * v_dh))) {
     return;
   }
@@ -97,8 +98,8 @@ fn main(
         var v_x: u32 = v_x0;
         loop {
           if (!(v_x < v_x1)) { break; }
-          let cw_argument_index_32 = ((cw_params.p_source + (v_y * cw_params.p_width)) + v_x);
-          v_sum = (v_sum + bitcast<f32>(b_texels[cw_argument_index_32]));
+          let cw_argument_index_34 = ((cw_params.p_source + (v_y * cw_params.p_width)) + v_x);
+          v_sum = (v_sum + bitcast<f32>(b_texels[cw_argument_index_34]));
           continuing {
             v_x += u32(1);
           }

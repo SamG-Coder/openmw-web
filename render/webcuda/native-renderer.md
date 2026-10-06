@@ -506,6 +506,64 @@ execution remain incomplete. The report and summary are
 `D:/OpenMW-local/webcuda-seyda-neen-vertex-residency-2026-10-07.json` and
 `D:/OpenMW-local/webcuda-seyda-neen-vertex-residency-2026-10-07-summary.json`.
 
+## Raster pixels grouped by tile
+
+`raster_material` now traverses the pixels of each 16x16 tile consecutively.
+Row-major traversal put neighboring lanes on different candidate lists; those
+lanes could take different triangle/material branches within the same warp.
+The authored CUDA helper changes invocation-to-pixel mapping only. It retains
+the original candidate order, coverage, interpolation, depth, stencil, queries,
+blending and storage calculations. Partial edge tiles enumerate only real
+pixels, so dispatch counts, buffer sizes and the engine ABI remain unchanged.
+Warps in complete tile rows share a candidate list; partial tile boundaries may
+still split a warp. This adds no allocation or host-to-GPU transfer.
+
+The reference is the unmodified native source from `69d54372`. Both CPU and
+RTX 5080 CUDA runs pass all 1,800 exact color/depth/stencil comparisons across
+the existing pruning and coverage fixtures, including 1/2/4/8/16 samples and
+partial edge tiles. A separate bijection check covers 147 dimensions, including
+8192x8192, and verifies warp coherence for complete tiles. The material,
+texture-filter and storage-conversion reference checks also pass. All 59 host
+checks and all 90 paged runtime/storage NVRTC compilations pass. All 371
+generated artifacts reproduce exactly with the unchanged SDK commit recorded
+above; the served raster artifacts match these files.
+
+The browser WebGPU check compiles 88 runtime kernels and passes 45 GPU output
+checks, including 24 production-pipeline checks. New 35x19 fixtures use distinct
+tile materials, partial rows/columns, alpha blending, one/four sample planes,
+sample masks, a two-dimensional dispatch and trailing guards. Driver creation
+of the raster pipeline takes 315.49 seconds in this run, following 0.05 seconds
+of WGSL validation. This remains a separate startup cost. The report is
+`D:/OpenMW-local/webcuda-raster-tile-order-browser-validation.json`.
+
+The existing alternating native benchmark uses identical compact candidate
+lists, 1280x720 output, 96 triangles, three warmups and nine measured samples:
+
+| Synthetic geometry | Tile references | Previous raster | Tile traversal |
+| --- | ---: | ---: | ---: |
+| Random triangles | 27,750 | 2.113 ms | 1.923 ms |
+| Long thin triangles | 12,384 | 1.995 ms | 1.237 ms |
+
+These reductions (9.0% and 38.0%) measure only raster kernel time. They do not
+establish whole-game frame rate, native browser performance or 60-180 Hz
+presentation. CPU material/geometry capture and the remaining GPU frame work
+still need optimization. This shader-only change reuses engine `92c47a9a3f5b`.
+Reports are `D:/OpenMW-local/webcuda-raster-tile-order-{cpu,cuda,host}.log`,
+`D:/OpenMW-local/webcuda-raster-tile-order-native-compile.json` and
+`D:/OpenMW-local/webcuda-raster-tile-order-artifacts.json`.
+
+The exterior WebGPU smoke run records 267 presentations without renderer/pass
+errors, aborted captures or legacy draw attempts. All 120 sampled completed
+scene frames release their retained packets. Median capture is 102.647 ms,
+renderer wall time 146.185 ms and presentation submission interval 262.610 ms;
+material encoding accounts for 50.513 ms and geometry encoding 28.055 ms.
+Uploads are 22,570,418 bytes/frame and saved runtime buffer capacity is
+2,000,025,888 bytes. This is a streaming debug scene, not a matched performance
+comparison or a physical VRAM/RSS measurement. Native-browser gameplay and
+60-180 Hz presentation remain unverified. The report and summary are
+`D:/OpenMW-local/webcuda-seyda-neen-raster-tile-order-2026-10-07.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-raster-tile-order-2026-10-07-summary.json`.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

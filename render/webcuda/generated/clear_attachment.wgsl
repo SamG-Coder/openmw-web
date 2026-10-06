@@ -225,6 +225,7 @@ fn f_store_depth_value(cw_arg_value: f32, cw_arg_bits: u32, cw_thread: vec3<u32>
 
 
 
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,
@@ -256,25 +257,25 @@ fn main(
         if (((v_c < cw_params.p_color_channels) && ((cw_params.p_clear_color_mask & (1u << v_c)) == 0u))) {
           continue;
         }
-        var cw_tmp_32: f32;
+        var cw_tmp_34: f32;
         if ((v_c == 0u)) {
-          cw_tmp_32 = cw_params.p_red;
+          cw_tmp_34 = cw_params.p_red;
         } else {
-          var cw_tmp_31: f32;
+          var cw_tmp_33: f32;
           if ((v_c == 1u)) {
-            cw_tmp_31 = cw_params.p_green;
+            cw_tmp_33 = cw_params.p_green;
           } else {
-            var cw_tmp_30: f32;
+            var cw_tmp_32: f32;
             if ((v_c == 2u)) {
-              cw_tmp_30 = cw_params.p_blue;
+              cw_tmp_32 = cw_params.p_blue;
             } else {
-              cw_tmp_30 = cw_params.p_alpha;
+              cw_tmp_32 = cw_params.p_alpha;
             }
-            cw_tmp_31 = cw_tmp_30;
+            cw_tmp_33 = cw_tmp_32;
           }
-          cw_tmp_32 = cw_tmp_31;
+          cw_tmp_34 = cw_tmp_33;
         }
-        var v_value: f32 = cw_tmp_32;
+        var v_value: f32 = cw_tmp_34;
         b_target[((v_target_offset + (v_i * u32(9i))) + v_c)] = f_store_color_value(v_value, v_c, cw_params.p_color_channels, cw_params.p_color_storage, cw_thread, cw_block, cw_grid);
         continuing {
           v_c += u32(1);
@@ -289,25 +290,25 @@ fn main(
           if (((v_c < cw_params.p_normal_channels) && ((cw_params.p_clear_color_mask & (1u << v_c)) == 0u))) {
             continue;
           }
-          var cw_tmp_35: f32;
+          var cw_tmp_37: f32;
           if ((v_c == 0u)) {
-            cw_tmp_35 = cw_params.p_red;
+            cw_tmp_37 = cw_params.p_red;
           } else {
-            var cw_tmp_34: f32;
+            var cw_tmp_36: f32;
             if ((v_c == 1u)) {
-              cw_tmp_34 = cw_params.p_green;
+              cw_tmp_36 = cw_params.p_green;
             } else {
-              var cw_tmp_33: f32;
+              var cw_tmp_35: f32;
               if ((v_c == 2u)) {
-                cw_tmp_33 = cw_params.p_blue;
+                cw_tmp_35 = cw_params.p_blue;
               } else {
-                cw_tmp_33 = cw_params.p_alpha;
+                cw_tmp_35 = cw_params.p_alpha;
               }
-              cw_tmp_34 = cw_tmp_33;
+              cw_tmp_36 = cw_tmp_35;
             }
-            cw_tmp_35 = cw_tmp_34;
+            cw_tmp_37 = cw_tmp_36;
           }
-          var v_value: f32 = cw_tmp_35;
+          var v_value: f32 = cw_tmp_37;
           b_target[(((v_target_offset + (v_i * u32(9i))) + u32(5i)) + v_c)] = f_store_color_value(v_value, v_c, cw_params.p_normal_channels, cw_params.p_normal_storage, cw_thread, cw_block, cw_grid);
           continuing {
             v_c += u32(1);

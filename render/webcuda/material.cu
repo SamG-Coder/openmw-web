@@ -719,6 +719,7 @@ __global__ void clear_target(float* target, unsigned int pixel_count,
 }
 
 #include "water.cu"
+#include "raster-pixel.cuh"
 
 __global__ void raster_material(const float* vertices, const unsigned int* triangles,
                                unsigned int* counts, const unsigned int* candidates,
@@ -728,7 +729,7 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
     unsigned int pixel = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;
     if (pixel >= width * height*sample_count) return;
     unsigned int sample=pixel/(width*height),target_offset=sample*width*height*10;
-    pixel=pixel%(width*height);
+    pixel=raster_pixel_index(pixel%(width*height),width,height);
     unsigned int x = pixel % width; unsigned int y = pixel / width;
     unsigned int tile = (y / 16) * ((width + 15) / 16) + x / 16;
     unsigned int count = counts[tile];

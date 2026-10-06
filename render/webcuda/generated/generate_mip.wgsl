@@ -41,6 +41,7 @@ const cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);
 
 
 
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,
@@ -48,20 +49,20 @@ fn main(
   @builtin(num_workgroups) cw_grid: vec3<u32>
 ) {
   var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);
-  var cw_tmp_30: u32;
+  var cw_tmp_32: u32;
   if ((cw_params.p_width > u32(1i))) {
-    cw_tmp_30 = (cw_params.p_width / u32(2i));
+    cw_tmp_32 = (cw_params.p_width / u32(2i));
   } else {
-    cw_tmp_30 = u32(1i);
+    cw_tmp_32 = u32(1i);
   }
-  var v_dw: u32 = cw_tmp_30;
-  var cw_tmp_31: u32;
+  var v_dw: u32 = cw_tmp_32;
+  var cw_tmp_33: u32;
   if ((cw_params.p_height > u32(1i))) {
-    cw_tmp_31 = (cw_params.p_height / u32(2i));
+    cw_tmp_33 = (cw_params.p_height / u32(2i));
   } else {
-    cw_tmp_31 = u32(1i);
+    cw_tmp_33 = u32(1i);
   }
-  var v_dh: u32 = cw_tmp_31;
+  var v_dh: u32 = cw_tmp_33;
   if ((v_i >= (v_dw * v_dh))) {
     return;
   }

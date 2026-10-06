@@ -16,6 +16,7 @@ for (const {file, entry} of kernelManifest) {
   if(file==='material.cu')source=source.replace('#include "water.cu"',await readFile(join(root,'render/webcuda/water.cu'),'utf8'));
   if(source.includes('#include "cluster-lighting.cuh"'))source=source.replace('#include "cluster-lighting.cuh"',await readFile(join(root,'render/webcuda/cluster-lighting.cuh'),'utf8'));
   if(source.includes('#include "precision.cuh"'))source=source.replace('#include "precision.cuh"',await readFile(join(root,'render/webcuda/precision.cuh'),'utf8'));
+  if(source.includes('#include "raster-pixel.cuh"'))source=source.replace('#include "raster-pixel.cuh"',await readFile(join(root,'render/webcuda/raster-pixel.cuh'),'utf8'));
   // Keep the same authored, header-expanded CUDA beside WGSL. ChromiumRTXCuda
   // feeds this source to NVRTC; it must never reconstruct CUDA from WGSL.
   if (/#|%:|\?\?|\\|__has_include/.test(source))

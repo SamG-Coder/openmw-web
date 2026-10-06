@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce material capture, remaining topology/deformation transfers and GPU raster/frame cost. Exact-content vertex versioning, per-pass deduplication and bounded GPU residency pass native CUDA fixtures and WebGPU overwrite/relocation checks. The rebuilt exterior reaches 767 presentations without renderer errors and uploads a median 23.6 MB/frame; a larger scene workload still has a 275.745 ms submission interval. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: reduce material capture, remaining topology/deformation transfers and GPU frame cost. CUDA raster pixels now visit each tile consecutively; 1,800 before/after comparisons match exactly on CPU and RTX 5080. Isolated native raster time falls 9% for random triangles and 38% for thin triangles, with identical candidate lists. WebGPU passes 88 kernel compilations, 45 output checks and 267 exterior presentations without errors. This is not a matched game performance comparison: median submission interval remains 262.610 ms, with 50.513 ms in material capture. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Reduce repeated geometry capture/uploads with persistent immutable geometry versions and explicit lifetime/invalidation, preserving dynamic vertex inputs. Validate native shared-budget compatibility and representative scene/lifecycle behavior. Stable clipping compaction is implemented and passes exterior WebGPU regression; it retains primitive order, interpolation and native resource ownership. Shader variant parsing is a secondary CPU allocation opportunity.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Focus on material capture and remaining topology/deformation transport after immutable vertex residency and tile-grouped raster traversal. Preserve exact state invalidation, triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1275,6 +1275,59 @@
       "D:/OpenMW-local/webcuda-seyda-neen-vertex-input-2026-10-06-summary.json"
     ],
     "limits": "The richer input benchmark has a small CPU regression despite reduced bytes. Expanded GPU working buffers remain, so transport size is not physical VRAM usage. No current native-browser gameplay or physical refresh-rate acceptance."
+  },
+  "rasterTileTraversal": {
+    "engine": "92c47a9a3f5b",
+    "referenceCommit": "69d54372b3b337463c0c9cea4286fcba337fee43",
+    "change": "Authored CUDA maps consecutive invocations to each 16x16 tile; partial edge tiles enumerate only real pixels. Candidate order, raster arithmetic, dispatch counts, allocations and engine ABI are unchanged.",
+    "validation": {
+      "cpuExactColorDepthStencilComparisons": 1800,
+      "rtx5080ExactColorDepthStencilComparisons": 1800,
+      "traversalDimensionChecks": 147,
+      "hostChecks": 59,
+      "webgpuRuntimeKernels": 88,
+      "webgpuOutputChecks": 45,
+      "productionPipelineChecks": 24,
+      "bundledNvrtcPagedRuntimeAndStorageKernels": 90,
+      "generatedArtifactsReproducedExactly": 371,
+      "unchangedKernelBindingContracts": 92,
+      "servedRasterArtifacts": "match source"
+    },
+    "benchmark": {
+      "scope": "Isolated RTX 5080 kernel timing with identical compact lists; no game FPS claim",
+      "resolution": [1280,720],
+      "triangles": 96,
+      "warmups": 3,
+      "alternatingMeasuredSamples": 9,
+      "randomTriangles": {"tileReferences":27750,"previousMs":2.113,"currentMs":1.923},
+      "thinTriangles": {"tileReferences":12384,"previousMs":1.995,"currentMs":1.237}
+    },
+    "exteriorWebgpu": {
+      "savedPresentations": 267,
+      "rendererErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 2000025888,
+      "medianUploadedBytes": 22570418,
+      "medianCaptureMs": 102.6475,
+      "medianMaterialEncodeMs": 50.513024,
+      "medianGeometryEncodeMs": 28.054656,
+      "medianRendererWallMs": 146.185,
+      "medianPresentationSubmitIntervalMs": 262.610,
+      "limits": "Debug scene with streaming; not a matched benchmark or native-browser acceptance. Buffer capacity is not physical VRAM or RSS."
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-raster-tile-order-cpu.log",
+      "D:/OpenMW-local/webcuda-raster-tile-order-cuda.log",
+      "D:/OpenMW-local/webcuda-raster-tile-order-host.log",
+      "D:/OpenMW-local/webcuda-raster-tile-order-browser-validation.json",
+      "D:/OpenMW-local/webcuda-raster-tile-order-native-compile.json",
+      "D:/OpenMW-local/webcuda-raster-tile-order-artifacts.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-raster-tile-order-2026-10-07-summary.json"
+    ],
+    "limits": "Partial tile boundaries may still split a warp. Native standalone execution and compilation do not establish native browser gameplay or whole-game frame pacing."
   },
   "immutableVertexResidency": {
     "engine": "92c47a9a3f5b",
