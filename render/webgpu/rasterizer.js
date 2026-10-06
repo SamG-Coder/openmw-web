@@ -374,11 +374,14 @@ export class HardwareRasterizer {
     let pending=this.pipelines.get(state.key);
     if(!pending) {
       pending=(async()=>{
-        const variantKey=JSON.stringify(state.constants);
+        // A module only needs the fragment family used by this pipeline.
+        // Keeping every material entry point made the first real 3D frame ask
+        // the browser to compile all shading families for every variant.
+        const variantKey=JSON.stringify({constants:state.constants,entryPoint:state.descriptor.fragment.entryPoint});
         let variant=this.shaderModules.get(variantKey);
         if(!variant) {
           variant=(async()=>{
-            const code=specializeMaterialSource(this.materialSource,state.constants);
+            const code=specializeMaterialSource(this.materialSource,state.constants,state.descriptor.fragment.entryPoint);
             const module=this.device.createShaderModule({label:`OpenMW native material ${variantKey}`,code});
             const info=await module.getCompilationInfo();
             const errors=info.messages.filter(message=>message.type==='error');
