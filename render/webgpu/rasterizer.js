@@ -444,15 +444,16 @@ export class HardwareRasterizer {
     // duplicate awaiters and made the first 3D frame appear to hang.
     const pipelineByKey=new Map();
     for(const run of runs) {
-      let pending=pipelineByKey.get(run.state.key);
+      let pending=pipelineByKey.get(run.state.key),created=false;
       if(!pending) {
         pending=this.pipeline(run.state);
         pipelineByKey.set(run.state.key,pending);
+        created=true;
       }
       run.pipeline=await pending;
       // Yield between genuinely new pipelines so the browser can paint the
       // loading screen and report validation errors during first-world warmup.
-      if(pipelineByKey.get(run.state.key)===pending)await new Promise(resolve=>setTimeout(resolve,0));
+      if(created)await new Promise(resolve=>setTimeout(resolve,0));
     }
     if(this.disposed)throw Error('HardwareRasterizer was disposed during pipeline compilation');
     this.runtime.assertAlive?.();
