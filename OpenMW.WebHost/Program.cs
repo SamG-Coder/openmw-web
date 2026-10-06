@@ -219,11 +219,7 @@ app.MapGet("/e/{version}/{**asset}", async (HttpContext context, string version,
         return;
     }
 
-    if (!contentTypes.TryGetContentType(path, out var type))
-        type = "application/octet-stream";
-    context.Response.ContentType = type;
-    context.Response.Headers["Cache-Control"] = "no-cache";
-    await context.Response.SendFileAsync(path, 0, null, context.RequestAborted);
+    await SendBinaryFile(context, path, contentTypes);
 });
 
 _ = manager.EnsureEngineAsync();
