@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Four descriptors per draw: enabled components, mode, normal flags, reserved,
+// Four descriptors per draw: enabled components, mode, normal flags, post reference,
 // then four plane equations and the eye-plane application matrix (36 words).
+// prepare_texgen_matrices resolves a nonzero post reference before this kernel.
 // Execute after deformation and before clipping.
 __global__ void generate_texture_coordinates(const float* source,const float* source_attributes,
     const float* matrices,const unsigned int* matrix_ids,const unsigned int* descriptors,

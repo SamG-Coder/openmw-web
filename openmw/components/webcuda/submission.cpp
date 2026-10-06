@@ -38,6 +38,10 @@ namespace WebCuda
             std::array<osg::Matrixd,4> matrices;
             std::array<const osg::Light*,8> lights{};
             std::array<osg::Matrixd,8> lightMatrices;
+            std::array<osg::Matrixd,4> postMatrices;
+            std::array<osg::Matrixd,8> lightPostMatrices;
+            std::array<bool,4> hasPost{};
+            std::array<bool,8> hasLightPost{};
             void positioned(osgUtil::PositionalStateContainer* container,const osg::Matrix* post=nullptr)
             {
                 if(!container)return;
@@ -47,7 +51,8 @@ namespace WebCuda
                     const int index=light->getLightNum();
                     if(index<0||index>=8)throw std::runtime_error("Fixed light index exceeds compatibility limit");
                     lightMatrices[index]=entry.second.valid()?osg::Matrixd(*entry.second):osg::Matrixd::identity();
-                    if(post)lightMatrices[index]*=*post;
+                    hasLightPost[index]=post!=nullptr;
+                    if(post)lightPostMatrices[index]=*post;
                     lights[index]=light;defaults->setAttribute(const_cast<osg::Light*>(light));
                 }
                 for(const auto& [unit,entries]:container->getTexUnitAttrMatrixListMap())for(const auto& entry:entries) {
@@ -55,7 +60,8 @@ namespace WebCuda
                     if(!generator)continue;
                     if(unit>=4)throw std::runtime_error("Positioned TexGen exceeds transported UV sets");
                     matrices[unit]=entry.second.valid()?osg::Matrixd(*entry.second):osg::Matrixd::identity();
-                    if(post)matrices[unit]*=*post;
+                    hasPost[unit]=post!=nullptr;
+                    if(post)postMatrices[unit]=*post;
                     applied[unit]=generator;
                     defaults->setTextureAttribute(unit,const_cast<osg::TexGen*>(generator));
                 }
@@ -67,9 +73,10 @@ namespace WebCuda
                     const auto* light=dynamic_cast<const osg::Light*>(state->getAttribute(osg::StateAttribute::LIGHT,index));
                     if(light!=lights[index]) {
                         if(!context.modelView)throw std::runtime_error("Light application has no model-view matrix");
-                        lightMatrices[index]=*context.modelView;lights[index]=light;
+                        lightMatrices[index]=*context.modelView;lights[index]=light;hasLightPost[index]=false;
                     }
                     context.lightModelView[index]=&lightMatrices[index];
+                    context.lightModelViewPost[index]=hasLightPost[index]?&lightPostMatrices[index]:nullptr;
                 }
                 for(unsigned int unit=0;unit<4;unit++) {
                     const auto* generator=dynamic_cast<const osg::TexGen*>(state->getTextureAttribute(unit,osg::StateAttribute::TEXGEN));
@@ -77,9 +84,10 @@ namespace WebCuda
                     // does not reapply the stored eye-plane equations.
                     if(generator!=applied[unit]) {
                         if(!context.modelView)throw std::runtime_error("TexGen application has no model-view matrix");
-                        matrices[unit]=*context.modelView;applied[unit]=generator;
+                        matrices[unit]=*context.modelView;applied[unit]=generator;hasPost[unit]=false;
                     }
                     context.texgenModelView[unit]=&matrices[unit];
+                    context.texgenModelViewPost[unit]=hasPost[unit]?&postMatrices[unit]:nullptr;
                 }
             }
         };

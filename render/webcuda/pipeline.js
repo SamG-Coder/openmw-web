@@ -10,6 +10,7 @@ import { colorStorage, depthStorage } from './color-storage.js';
 import { allFinite, validateVertexAttributes } from './packet-validation.js';
 import { validateVertexInputs } from './vertex-input.js';
 import { terrainBlendInputRange } from './terrain-blend-inputs.js';
+import { validatePositionedState } from './positioned-state.js';
 function validSampler(sampler) {
   if(!Number.isInteger(sampler)||sampler<0||sampler>0xffffffff)return false;
   if(((sampler&0x40000000)&&((sampler>>>9)&3))||((sampler&0x80000000)&&((sampler>>>11)&3)))return false;
@@ -332,7 +333,7 @@ export class MaterialPipeline {
       let fixed_enabled=0;
       const fixedValues=new Float32Array(scene.fixedLighting.buffer,scene.fixedLighting.byteOffset,scene.fixedLighting.length);
       for(let d=0;d<scene.fixedLighting.length;d+=368) {
-        if(scene.fixedLighting[d]>255||(scene.fixedLighting[d+1]&~191)||scene.fixedLighting[d+2]>5||scene.fixedLighting[d+3])
+        if(scene.fixedLighting[d]>255||(scene.fixedLighting[d+1]&~191)||scene.fixedLighting[d+2]>5)
           throw RangeError('Invalid fixed lighting descriptor header');
         if(scene.fixedLighting[d+1]&160)fixed_enabled=1;
         for(let i=d+4;i<d+368;i++)if(!Number.isFinite(fixedValues[i]))throw RangeError('Non-finite fixed lighting state');
@@ -366,11 +367,13 @@ export class MaterialPipeline {
       const texgenFloats=new Float32Array(scene.texgen.buffer,scene.texgen.byteOffset,scene.texgen.length);
       let hasTexgen=false;
       for(let offset=0;offset<scene.texgen.length;offset+=36) {
-        const [mask,mode,flags,reserved]=scene.texgen.subarray(offset,offset+4);
-        if(mask>15||mode>5||flags>3||reserved!==0||(mask&&!mode)||(mode===2&&(mask&12))||((mode===3||mode===4)&&(mask&8))
+        const [mask,mode,flags]=scene.texgen.subarray(offset,offset+3);
+        if(mask>15||mode>5||flags>3||(mask&&!mode)||(mode===2&&(mask&12))||((mode===3||mode===4)&&(mask&8))
           ||!allFinite(texgenFloats,offset+4,offset+36))throw RangeError('Invalid texture generation descriptor');
         hasTexgen||=mask!==0;
       }
+      scene.positionedState??=new Uint32Array();
+      const positionedTransforms=validatePositionedState(scene);
       scene.morphRanges??=new Uint32Array();scene.morphOffsets??=new Float32Array();
       if(!(scene.morphRanges instanceof Uint32Array)||scene.morphRanges.length%3||!(scene.morphOffsets instanceof Float32Array)
         ||scene.morphOffsets.length%4||!allFinite(scene.morphOffsets))throw RangeError('Invalid morph packet');
@@ -833,15 +836,26 @@ export class MaterialPipeline {
       if(scene.localTransforms.some((value,index)=>index%35===0&&value!==0))r.batch().dispatch(k.transform_local_vertices.bind({vertices:source,matrix_ids,matrices,transforms:upload('localTransforms')},
         {vertex_count:vertexCount}),groups(vertexCount)).submit();
       r.batch().dispatch(k.expand_particles.bind({source,attributes:sourceAttributes,matrices,matrix_ids},{vertex_count:vertexCount}),groups(vertexCount)).submit();
-      if(fixed_enabled)r.batch().dispatch(k.shade_fixed_vertices.bind({vertices:source,attributes:sourceAttributes,matrices,matrix_ids,
-        descriptors:upload('fixedLighting'),secondary_colors:secondaryColors??upload('secondaryColors'),output:fixedLighting,endpoints:fixedEndpoints},{vertex_count:vertexCount,capture_endpoints}),groups(vertexCount)).submit();
+      const positionedBuffer=positionedTransforms.fixed||positionedTransforms.texgen?upload('positionedState'):null;
+      if(fixed_enabled) {
+        const descriptors=upload('fixedLighting');
+        if(positionedTransforms.fixed)r.batch().dispatch(k.prepare_fixed_matrices.bind({descriptors,positioned:positionedBuffer},
+          {draw_count:scene.matrices.length/32}),groups(scene.matrices.length/4)).submit();
+        r.batch().dispatch(k.shade_fixed_vertices.bind({vertices:source,attributes:sourceAttributes,matrices,matrix_ids,
+          descriptors,secondary_colors:secondaryColors??upload('secondaryColors'),output:fixedLighting,endpoints:fixedEndpoints},{vertex_count:vertexCount,capture_endpoints}),groups(vertexCount)).submit();
+      }
       r.batch()
         .dispatch(k.transform_attributes.bind({source,attributes:sourceAttributes,matrices,matrix_ids,output:transformedAttributes,lighting_origins:lightingOrigins},{vertex_count:vertexCount,track_lighting,source_point_fade_offset}),groups(vertexCount))
         .dispatch(k.transform_material.bind({source,matrices,matrix_ids,vertices:transformed},{vertex_count:vertexCount}),groups(vertexCount))
         .dispatch(k.project_particles.bind({source,attributes:sourceAttributes,matrices,matrix_ids,vertices:transformed,varyings:transformedAttributes,fixed_lighting:fixedLighting,fixed_endpoints:fixedEndpoints},
           {vertex_count:vertexCount,width:viewport_width,height:viewport_height,fixed_enabled,track_world_particles,world_particle_offset,source_point_fade_offset,sample_count}),groups(vertexCount)).submit();
-      if(hasTexgen)r.batch().dispatch(k.generate_texture_coordinates.bind({source,source_attributes:sourceAttributes,matrices,matrix_ids,
-        descriptors:upload('texgen'),attributes:transformedAttributes},{vertex_count:vertexCount}),groups(vertexCount)).submit();
+      if(hasTexgen) {
+        const descriptors=upload('texgen');
+        if(positionedTransforms.texgen)r.batch().dispatch(k.prepare_texgen_matrices.bind({descriptors,positioned:positionedBuffer},
+          {draw_count:scene.matrices.length/32}),groups(scene.matrices.length/8)).submit();
+        r.batch().dispatch(k.generate_texture_coordinates.bind({source,source_attributes:sourceAttributes,matrices,matrix_ids,
+          descriptors,attributes:transformedAttributes},{vertex_count:vertexCount}),groups(vertexCount)).submit();
+      }
       if(scene.uvMatrices)r.batch().dispatch(k.transform_uv.bind({vertices:transformed,uv_matrices:upload('uvMatrices'),matrix_ids},
         {vertex_count:vertexCount}),groups(vertexCount)).submit();
       if(scene.screenPrimitives.length)r.batch().dispatch(k.expand_screen_primitives.bind({vertices:transformed,attributes:transformedAttributes,records:upload('screenPrimitives'),lighting_origins:lightingOrigins,fixed_lighting:fixedLighting},

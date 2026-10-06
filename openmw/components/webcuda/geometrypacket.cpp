@@ -179,6 +179,18 @@ namespace WebCuda
             osg::Vec4 (*mRead)(const void*,unsigned int)=nullptr;
             osg::Vec4 mConstant;
         };
+        std::uint32_t capturePostMatrix(GeometryPacket& draw,const osg::Matrixd& matrix)
+        {
+            if(draw.positionedState.size()>std::numeric_limits<std::uint32_t>::max()-16)
+                throw std::runtime_error("Positioned state exceeds packet range");
+            const auto offset=static_cast<std::uint32_t>(draw.positionedState.size());
+            for(unsigned int k=0;k<16;k++) {
+                const float value=static_cast<float>(matrix.ptr()[k]);
+                if(!std::isfinite(value))throw std::runtime_error("Non-finite positioned application transform");
+                std::uint32_t word;std::memcpy(&word,&value,4);draw.positionedState.push_back(word);
+            }
+            return offset+1;
+        }
         void fixedLighting(GeometryPacket& draw,const DrawContext& context,const osg::StateSet& state)
         {
             std::array<std::uint32_t,368> data{};
@@ -237,6 +249,14 @@ namespace WebCuda
                     scalar(offset+19,light->getConstantAttenuation());scalar(offset+20,light->getLinearAttenuation());
                     scalar(offset+21,light->getQuadraticAttenuation());scalar(offset+22,light->getSpotExponent());scalar(offset+23,light->getSpotCutoff());
                     for(unsigned int k=0;k<16;k++)scalar(offset+24+k,static_cast<float>(application->ptr()[k]));
+                    if(context.lightModelViewPost[index]&&application!=&identity) {
+                        if(!data[3]) {
+                            data[3]=static_cast<std::uint32_t>(draw.positionedState.size()+1);
+                            draw.positionedState.resize(draw.positionedState.size()+8,0);
+                        }
+                        const auto post=capturePostMatrix(draw,*context.lightModelViewPost[index]);
+                        draw.positionedState[data[3]-1+index]=post;
+                    }
                 }
             }
             if(!state.getAttribute(osg::StateAttribute::PROGRAM)&&(state.getMode(0x8458)&osg::StateAttribute::ON)!=0)
@@ -329,6 +349,8 @@ namespace WebCuda
                                 if(!std::isfinite(value))throw std::runtime_error("Non-finite TexGen application matrix");
                                 std::memcpy(&generation[20+k],&value,4);
                             }
+                            if(context.texgenModelViewPost[unit])
+                                generation[3]=capturePostMatrix(draw,*context.texgenModelViewPost[unit]);
                         }
                         generation[2]=((state->getMode(GL_NORMALIZE)&osg::StateAttribute::ON)!=0?1u:0u)
                             |((state->getMode(0x803A)&osg::StateAttribute::ON)!=0?2u:0u);
@@ -448,6 +470,17 @@ namespace WebCuda
             }
             packet.textGradientRanges.insert(packet.textGradientRanges.end(),draw.textGradientRanges.begin(),draw.textGradientRanges.end());
             packet.textGradientColors.insert(packet.textGradientColors.end(),draw.textGradientColors.begin(),draw.textGradientColors.end());
+            if(packet.positionedState.size()+draw.positionedState.size()>std::numeric_limits<std::uint32_t>::max())
+                throw std::runtime_error("Combined positioned state exceeds packet range");
+            const auto positionedBase=static_cast<std::uint32_t>(packet.positionedState.size());
+            packet.positionedState.insert(packet.positionedState.end(),draw.positionedState.begin(),draw.positionedState.end());
+            for(std::size_t d=0;d<draw.fixedLighting.size();d+=368)if(draw.fixedLighting[d+3]) {
+                const auto table=draw.fixedLighting[d+3]-1;
+                for(unsigned int light=0;light<8;light++)if(const auto post=draw.positionedState[table+light])
+                    packet.positionedState[positionedBase+table+light]=post+positionedBase;
+                draw.fixedLighting[d+3]+=positionedBase;
+            }
+            for(std::size_t d=0;d<draw.texgen.size();d+=36)if(draw.texgen[d+3])draw.texgen[d+3]+=positionedBase;
             packet.matrices.insert(packet.matrices.end(), draw.matrices.begin(), draw.matrices.end());
             packet.uvMatrices.insert(packet.uvMatrices.end(),draw.uvMatrices.begin(),draw.uvMatrices.end());
             packet.texgen.insert(packet.texgen.end(),draw.texgen.begin(),draw.texgen.end());

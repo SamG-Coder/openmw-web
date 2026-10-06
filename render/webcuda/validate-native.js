@@ -7,6 +7,7 @@ import { NativeRendererRuntime } from './native-runtime.js';
 import { checkNativeStorageGpu } from './native-storage-gpu-check.js';
 import { checkPipelineGpu } from './pipeline-gpu-check.js';
 import { checkPooledTextureResidencyGpu } from './texture-residency-gpu-check.js';
+import { checkPositionedStateGpu } from './positioned-state-gpu-check.js';
 
 const run=document.querySelector('#run'),save=document.querySelector('#save');
 const availability=document.querySelector('#availability'),status=document.querySelector('#status');
@@ -69,6 +70,9 @@ run.addEventListener('click',async()=>{
       const elapsedMs=performance.now()-started;
       report.kernels.push({entry,sourceSha256:hash,sourceBytes:bytes.length,compileAndLoadMs:elapsedMs});
       log(`${entry}: native CUDA ready in ${(elapsedMs/1000).toFixed(3)} s; source SHA-256 ${hash}`);
+      if(entry==='prepare_fixed_matrices'||entry==='prepare_texgen_matrices') {
+        setStage('Native positioned state checks');await checks((runtime,kernel)=>checkPositionedStateGpu(runtime,kernel,entry),kernel);
+      }
       if(entry==='raster_material'){setStage('Native raster output checks');await checks(checkRasterGpu,kernel);}
       if(entry==='decode_float_image'){setStage('Native depth image checks');await checks(checkDepthImageGpu,kernel);}
       if(entry==='compact_depth_to_texture'){setStage('Native depth layout checks');await checks(checkCompactDepthGpu,kernel);}

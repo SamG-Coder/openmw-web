@@ -673,6 +673,70 @@ browser gameplay remain unverified. Reports are
 `D:/OpenMW-local/webcuda-seyda-neen-shared-draw-capture-2026-10-07.json` and
 `D:/OpenMW-local/webcuda-seyda-neen-shared-draw-capture-2026-10-07-summary.json`.
 
+## Positioned light and texture matrices in CUDA
+
+Source review found two remaining matrix products in `PositionalState`: the
+application matrix of an inherited light or eye-linear TexGen was multiplied
+by its render-stage transform on the CPU. Capture now retains both matrices.
+`positioned-state.cu` composes them before the existing lighting and TexGen
+kernels. Ordinary state replacement clears the inherited transform; reusing
+the same attribute preserves its original application, matching OSG.
+
+The 368-word fixed-light and 36-word TexGen descriptors keep their sizes.
+Their previously reserved word3 holds a one-based reference into an optional
+`positionedState` packet: lights reference eight matrix offsets, while TexGen
+references a matrix directly. Zero preserves the prior descriptor meaning.
+Packet assembly relocates these references; the browser bridge retains the
+WASM input views through completion. The host validates ranges and finite
+inputs, uploads each descriptor once, then binds that same GPU buffer to
+preparation and its consumer. Passes without inherited transforms skip the new
+dispatches. CUDA never writes back into the captured WASM arrays.
+
+All eight WASM64 integration suites and 63 host checks pass. The new capture
+fixture covers 132 draws, all eight light slots and four TexGen units,
+noncommuting and non-affine matrices, attribute persistence/replacement and
+offset relocation. Its independent reference uses OSG's previous double
+precision matrix product. The authored CUDA body passes both CPU execution
+and real RTX 5080 execution, including two-dimensional dispatch and guards.
+CUDA composes FP32 inputs; it does not promise bit-identical double precision
+results. Maximum normalized error in the native fixture is 1.28985084e-6,
+within its 2e-5 bound. The CPU fixture reaches 1.64162827e-6.
+
+The full engine build and HTTP staging pass for engine `b32cdb0ea5be`.
+All 379 generated artifacts reproduce byte-for-byte, all 92 existing kernel
+WGSL bodies and binding contracts are unchanged, and the tracked SDK remains
+unchanged. The browser's bundled NVRTC compiles all 90 runtime kernels plus
+the two native storage kernels. The two new preparation kernels also pass
+WebGPU output checks for matrix order, offsets, inactive records, guards and
+repeated captures. These checks alone do not establish gameplay performance.
+Reports use the `D:/OpenMW-local/webcuda-positioned-state-*` prefix.
+
+The complete WebGPU validator loads all 90 runtime kernels and passes 53 GPU
+checks, including 30 production-pipeline checks. Six new pipeline checks render
+analytical reference colors, then the same colors from raw inherited light and
+eye-linear texture matrices, including repeated captures. The texture fixture
+uses the fixed texture-environment path that actually consumes TexGen output.
+This verifies upload, preparation and downstream consumption together. The
+summary is `D:/OpenMW-local/webcuda-positioned-state-webgpu.json`.
+
+The rebuilt Seyda Neen WebGPU smoke run records 335 presentations, no renderer
+or pass errors, no aborted captures and no legacy draw attempts. All 120
+sampled completed scene frames release their packets. Median capture is
+107.265 ms, material encoding 41.086 ms, geometry encoding 32.538 ms, renderer
+wall time 140.170 ms and presentation submission interval 256.990 ms. Streaming
+and the separate validator's concurrent shader compilation make this a health
+check, not a matched performance comparison. Buffer capacity is 2,001,016,864
+bytes, not physical VRAM or process RSS. Current native-browser gameplay and
+smooth 60-180 Hz presentation remain unverified. The report and summary are
+`D:/OpenMW-local/webcuda-seyda-neen-positioned-state-2026-10-07.json` and its
+`-summary.json` companion.
+
+To repeat the independent native matrix check, set
+`WEBCUDA_POSITIONED_FIXTURES` to an output `.bin` path and run
+`wasm-build/test-webcuda-submission.ps1`. Build
+`render/webcuda/positioned-state-kernel.test.cpp` with ordinary C++17 or NVCC
+using the flags below, then pass that fixture path to the executable.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal
@@ -743,7 +807,7 @@ interop API and does not claim GPU or browser execution.
 Regenerate CUDA artifacts through `wasm-build/compile-webcuda.mjs`; generated
 WGSL and native JSON are outputs and must not be edited by hand. Native source
 lowering changes the buffer ABI to paged indexing without replacing rendering
-math. `wasm-build/check-native-cuda.py --paged` checks all 83 runtime kernels
+math. `wasm-build/check-native-cuda.py --paged` checks all 90 runtime kernels
 and the two native storage kernels with the browser's bundled NVRTC.
 
 The source checkpoint was also checked with all ten standalone CPU kernel

@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce remaining material/state capture, geometry validation/transfers and GPU frame cost. Source review also found and repaired Viewer/capture-sink divergence for points, lines, particles and text decorations. Rebuilt engine 5c1d2efa4bbd reaches 296 exterior presentations without errors and releases all sampled completed packets. This is not a matched performance comparison: median submission interval remains 235.4475 ms, with 33.625344 ms in material capture and 28.043008 ms in geometry capture. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: reduce remaining material/state capture, geometry validation/transfers and GPU frame cost. Inherited light and eye-linear TexGen matrix composition now runs in authored CUDA; capture transports raw application/post matrices. Rebuilt engine b32cdb0ea5be reaches 335 exterior presentations without errors and releases all 120 sampled completed packets. Median submission interval is 256.990 ms in this streaming debug run with concurrent shader compilation; this is not a matched performance comparison. Broad gameplay, native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Continue inspecting repeated state resolution within a draw, geometry validation and topology/deformation transport after shader metadata reuse, immutable vertex residency and tile-grouped raster traversal. Audit remaining CPU composition of positioned light/TexGen application matrices against the raw-input CUDA boundary. Viewer and standalone geometry/particle capture now share the same code. Preserve exact state invalidation, triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. An ordinary geometry leaf currently resolves the same state separately in PositionalState::capture, captureCurrentColor, MaterialTable::encode and appendGeometry. Reduce this repeated work within a synchronous draw while preserving callback/override mutation and independent variant state. Continue auditing geometry validation and topology/deformation transport. Positioned light/TexGen composition now consumes captured raw matrix pairs in CUDA. Preserve triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1490,5 +1490,60 @@
       "D:/OpenMW-local/webcuda-seyda-neen-vertex-residency-2026-10-07-summary.json"
     ],
     "limits": "Source bytes are still compared and captured each pass; CPU metadata and temporary replacement entries are outside the retained-payload cap. GPU working records remain and the new arena adds up to 32 MiB. No current native-browser gameplay or physical refresh-rate acceptance."
+  },
+  "positionedStateCuda": {
+    "engine": "b32cdb0ea5be",
+    "sourceFinding": "PositionalState multiplied inherited light and eye-linear TexGen application matrices by the stage transform on the CPU. Capture now copies both raw matrices; authored CUDA performs composition before lighting and texture-coordinate generation.",
+    "packet": "Existing descriptor sizes are preserved. Word3 is a one-based optional reference: fixed lighting points to an eight-offset table; TexGen points directly to matrix16. Commit relocates all references. Zero keeps the previous no-composition behavior.",
+    "ownership": "The bridge retains direct shared-WASM views; host validation checks indirect bounds and finite inputs. Each descriptor is uploaded once, prepared in its GPU buffer and consumed without a second upload. No GPU writes modify captured WASM arrays.",
+    "validation": {
+      "wasm64IntegrationSuites": 8,
+      "hostChecks": 63,
+      "engineCapturedReferenceDraws": 132,
+      "cpuAndNativeGpuMatrixReference": "passed",
+      "nativeGpuMaxNormalizedError": 1.28985084e-06,
+      "cpuMaxNormalizedError": 1.64162827e-06,
+      "allowedNormalizedError": 2e-05,
+      "newKernelsWebgpu": "matrix order, offsets, inactive records, guards and repeated capture passed",
+      "runtimeKernels": 90,
+      "pagedNativeRuntimeAndStorageCompiles": 92,
+      "generatedFiles": 379,
+      "repeatGeneration": "byte-identical",
+      "existingKernelWgslAndBindingContractsUnchanged": 92,
+      "trackedSdkChanges": false,
+      "fullEngineBuildAndHttpStaging": "passed",
+      "webgpuRuntimeKernelPipelines": 90,
+      "webgpuOutputChecks": 53,
+      "webgpuProductionPipelineChecks": 30,
+      "positionedPipelineRenderedColors": "analytical references, CUDA-prepared inputs and repeated captures passed for lighting and TexGen"
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-positioned-state-integration.log",
+      "D:/OpenMW-local/webcuda-positioned-state-host.log",
+      "D:/OpenMW-local/webcuda-positioned-state-cpu.log",
+      "D:/OpenMW-local/webcuda-positioned-state-gpu.log",
+      "D:/OpenMW-local/webcuda-positioned-state-native-compile.json",
+      "D:/OpenMW-local/webcuda-positioned-state-reproducibility.json",
+      "D:/OpenMW-local/webcuda-positioned-state-engine-link.log",
+      "D:/OpenMW-local/webcuda-positioned-state-stage.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-positioned-state-2026-10-07-summary.json",
+      "D:/OpenMW-local/webcuda-positioned-state-webgpu.json"
+    ],
+    "limits": "FP32 GPU composition is numerically bounded against the previous OSG double product, not bit-identical. This migration alone does not establish a frame-rate improvement or current native-browser gameplay acceptance.",
+    "exteriorWebgpu": {
+      "savedPresentations": 335,
+      "rendererErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 2001016864,
+      "medianCaptureMs": 107.265,
+      "medianMaterialEncodeMs": 41.085952,
+      "medianGeometryEncodeMs": 32.537856,
+      "medianRendererWallMs": 140.17,
+      "medianPresentationSubmitIntervalMs": 256.99,
+      "limits": "Streaming debug scene with concurrent validator shader compilation; not a matched performance comparison or native-browser acceptance. Buffer capacity does not measure physical VRAM/RSS."
+    }
   }
 }

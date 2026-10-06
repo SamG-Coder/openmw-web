@@ -44,6 +44,10 @@ namespace WebCuda
         float particleNormal[3]={0.f,0.f,1.f};
         const osg::Matrixd* texgenModelView[4]={nullptr,nullptr,nullptr,nullptr};
         const osg::Matrixd* lightModelView[8]={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
+        // Raw inherited-stage transforms. CUDA composes these with the
+        // application matrices; capture never multiplies the matrix pair.
+        const osg::Matrixd* texgenModelViewPost[4]={nullptr,nullptr,nullptr,nullptr};
+        const osg::Matrixd* lightModelViewPost[8]={nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr};
         bool screenPrimitiveDraw=false; // CUDA clips the centreline/point before expanding its raster footprint.
         bool pointDraw=false; // Ordinary point primitives: bypass replaced texture matrices.
     };

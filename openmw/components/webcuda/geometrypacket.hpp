@@ -35,6 +35,10 @@ namespace WebCuda
         std::vector<float> uvMatrices; // texture unit zero, 16 floats per draw
         std::vector<std::uint32_t> texgen; // Four36-word generation descriptors per draw, matched to matrixIds.
         std::vector<std::uint32_t> fixedLighting; // 368 words per draw: compatibility light/material state, aligned with matrixIds
+        // Optional inherited application transforms. Descriptor word3 is a
+        // one-based offset: fixed lighting references an eight-offset table,
+        // TexGen references a raw float-bit matrix16. Zero means no composition.
+        std::vector<std::uint32_t> positionedState;
         std::vector<std::uint32_t> matrixIds;
         std::vector<std::uint32_t> triangles; // three indices, resolved material ID
         std::vector<std::uint32_t> polygonEdges; // outgoing edge bits 0..2 per triangle, excluding polygon triangulation diagonals

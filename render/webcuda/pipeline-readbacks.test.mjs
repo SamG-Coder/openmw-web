@@ -39,6 +39,30 @@ function fixture() {
     pass:{deferCompletion:true,readback:(...args)=>readbacks.read(...args)}};
 }
 
+test('positioned CUDA preparation uses one upload before each descriptor consumer',async()=>{
+  const f=fixture(),scene=f.scene(),writes=[];
+  scene.fixedLighting=new Uint32Array(368);scene.fixedLighting.set([1,128,0,1]);
+  new Float32Array(scene.fixedLighting.buffer)[48+23]=180;
+  scene.texgen=new Uint32Array(144);scene.texgen.set([1,5,0,9]);
+  scene.positionedState=new Uint32Array(24);scene.positionedState[0]=9;
+  for(let k=0;k<4;k++)new Float32Array(scene.positionedState.buffer)[8+k*5]=1;
+  const write=f.runtime.write;
+  f.runtime.write=(buffer,data,offset)=>{writes.push(buffer.label);write(buffer,data,offset);};
+  const rendered=await f.pipeline.render(scene,32,32,null,f.pass);
+  for(const [prepare,consume,buffer] of [['prepare_fixed_matrices','shade_fixed_vertices','fixedLighting'],
+    ['prepare_texgen_matrices','generate_texture_coordinates','texgen']]) {
+    assert(f.commands.indexOf(prepare)>=0&&f.commands.indexOf(prepare)<f.commands.indexOf(consume));
+    const before=f.invocations.find(i=>i.name===prepare),after=f.invocations.find(i=>i.name===consume);
+    assert.equal(before.resources.descriptors,after.resources.descriptors);
+    assert.equal(before.scalars.draw_count,1);assert.equal(writes.filter(label=>label===`OpenMW ${buffer}`).length,1);
+  }
+  assert.equal(writes.filter(label=>label==='OpenMW positionedState').length,1);
+  assert.equal(scene.fixedLighting[3],1);assert.equal(scene.positionedState[0],9);
+  f.commands.length=0;
+  const plain=await f.pipeline.render(f.scene(),32,32,null,f.pass);await f.readbacks.flush();await Promise.all([rendered.queryCompletion,plain.queryCompletion]);
+  assert(!f.commands.some(name=>name==='prepare_fixed_matrices'||name==='prepare_texgen_matrices'));
+});
+
 test('bounded passes queue through reused scratch and defer status mapping until frame end',async()=>{
   const f=fixture(),completions=[];
   for(let i=0;i<4;i++) {

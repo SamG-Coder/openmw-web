@@ -76,6 +76,54 @@ export async function checkPipelineGpu(runtime,kernels) {
     for(let i=0;i<pixels;i++)if(i%width>=2)translatedExpected.set([.5,0,0,1,.5],i*9);
     equal('Pipeline model-view translation and right-plane clipping preserve uncovered pixels',
       await render(translated),translatedExpected);
+    // Exercise the actual upload -> preparation -> consumer path. Each fixture
+    // has an analytical color and a separately specified composed matrix;
+    // omitting preparation changes the rendered result.
+    for(const kind of ['light','texgen']) {
+      const positioned=scene(),isLight=kind==='light';
+      positioned.materials.set([isLight?0:2,isLight?1:2,1,isLight?2:1|2|512|16384,0,0,0,width,height,0,0,0]);
+      if(isLight)positioned.texels=new Uint32Array([0xffffffff]);
+      else {
+        // TexGen is consumed by the fixed texture-environment path, whose
+        // descriptor keeps homogeneous coordinates and its own texture matrix.
+        positioned.texels=new Uint32Array(46);positioned.texels.set([0xff0000ff,0xff00ff00]);
+        positioned.texels.set([2,1,0,0],26);
+        for(let axis=0;axis<4;axis++)new Float32Array(positioned.texels.buffer)[30+axis*5]=1;
+      }
+      positioned.attributes=new Float32Array(4*34);
+      for(let vertex=0;vertex<4;vertex++) {
+        positioned.vertices.set([1,1,1,1],vertex*10+4);
+        positioned.attributes[vertex*34+5]=1;
+        for(let unit=0;unit<4;unit++)positioned.attributes[vertex*34+27+unit*2]=1;
+      }
+      const descriptors=new Uint32Array(isLight?368:144),values=new Float32Array(descriptors.buffer);
+      const base=isLight?[2,0,0,0,0,3,0,0,0,0,4,0,0,0,0,1]:[2,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1];
+      const post=isLight?[0,0,1,0,0,1,0,0,-1,0,0,0,0,0,0,1]:[1,0,0,0,0,1,0,0,0,0,1,0,4,0,0,1];
+      const composed=isLight?[0,0,2,0,0,3,0,0,-4,0,0,0,0,0,0,1]:[2,0,0,0,0,1,0,0,0,0,1,0,4,0,0,1];
+      const matrixOffset=isLight?72:20;
+      if(isLight) {
+        positioned.fixedLighting=descriptors;descriptors.set([1,128,0,0]);
+        values.set([1,1,1,1],12);values.set([1,1,1,1],29);
+        values.set([1,0,0,0],48);values.set([.25,.5,.75,1],56);values[71]=180;
+      } else {
+        positioned.texgen=descriptors;descriptors.set([3,5,0,0]);
+        values.set([.125,0,0,.5],4);values.set([0,0,0,.5],8);
+      }
+      values.set(composed,matrixOffset);
+      const expected=initial.slice();
+      for(let i=0;i<pixels;i++)expected.set(isLight?[.25,.5,.75,1]:[1,0,0,1],i*9);
+      runtime.write(target,initial);
+      equal(`Pipeline positioned ${kind} analytical reference`,await render(positioned),expected);
+      values.set(base,matrixOffset);descriptors[3]=1;
+      positioned.positionedState=new Uint32Array(isLight?24:16);
+      if(isLight)positioned.positionedState[0]=9;
+      new Float32Array(positioned.positionedState.buffer).set(post,isLight?8:0);
+      for(let capture=0;capture<2;capture++) {
+        runtime.write(target,initial);
+        equal(`Pipeline positioned ${kind} CUDA preparation ${capture?'after recapture':'before shading'}`,
+          await render(positioned),expected);
+      }
+    }
     for(const compactKind of ['dense','streams']) {
       const compact=scene();compact.vertexEncoding=1;compact.vertexLayouts=new Uint32Array(32);
       compact.matrices[12]=.5;

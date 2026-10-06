@@ -36,6 +36,7 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
     const unsigned int* polygonEdges,size_t polygonEdgeWords,
     const unsigned int* texgen,size_t texgenWords,
     const unsigned int* fixedLighting,size_t fixedLightingWords,
+    const unsigned int* positionedState,size_t positionedStateWords,
     const unsigned int* textGradientRanges,size_t textGradientRangeWords,const float* textGradientColors,size_t textGradientColorFloats,
     const float* localTransforms,size_t localTransformFloats,
     const float* debugParams,size_t debugParamFloats,
@@ -79,6 +80,7 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
         localTransforms:view(HEAPF32,localTransforms,localTransformFloats),
         debugParams:view(HEAPF32,debugParams,debugParamFloats),
         secondaryColors:view(HEAPF32,secondaryColors,secondaryColorFloats),
+        positionedState:view(HEAPU32,positionedState,positionedStateWords),
         attributes:view(HEAPF32,attributes,attributeFloats),rasterParams:view(HEAPF32,rasterParams,rasterFloats),
         morphRanges:view(HEAPU32,morphRanges,morphRangeWords),morphOffsets:view(HEAPF32,morphOffsets,morphOffsetFloats),
         skinRanges:view(HEAPU32,skinRanges,skinRangeWords),skinWeights:view(HEAPU32,skinWeights,skinWeightWords),
@@ -129,7 +131,7 @@ namespace WebCuda
             geometry.skinRanges.data(),geometry.skinRanges.size(),geometry.skinWeights.data(),geometry.skinWeights.size(),
             geometry.skinBones.data(),geometry.skinBones.size(),geometry.skinTransforms.data(),geometry.skinTransforms.size(),
             geometry.ribbonRanges.data(),geometry.ribbonRanges.size(),geometry.ribbonParticles.data(),geometry.ribbonParticles.size(),
-            geometry.screenPrimitives.data(),geometry.screenPrimitives.size(),geometry.flatColors.data(),geometry.flatColors.size(),geometry.polygonEdges.data(),geometry.polygonEdges.size(),geometry.texgen.data(),geometry.texgen.size(),geometry.fixedLighting.data(),geometry.fixedLighting.size(),geometry.textGradientRanges.data(),geometry.textGradientRanges.size(),geometry.textGradientColors.data(),geometry.textGradientColors.size(),geometry.localTransforms.data(),geometry.localTransforms.size(),geometry.debugParams.data(),geometry.debugParams.size(),geometry.secondaryColors.data(),geometry.secondaryColors.size(),geometry.groundcoverRanges.data(),geometry.groundcoverRanges.size(),geometry.groundcoverInstances.data(),geometry.groundcoverInstances.size(),geometry.groundcoverParams.data(),geometry.groundcoverParams.size(),table.depthMipSources().data(),table.depthMipSources().size(),
+            geometry.screenPrimitives.data(),geometry.screenPrimitives.size(),geometry.flatColors.data(),geometry.flatColors.size(),geometry.polygonEdges.data(),geometry.polygonEdges.size(),geometry.texgen.data(),geometry.texgen.size(),geometry.fixedLighting.data(),geometry.fixedLighting.size(),geometry.positionedState.data(),geometry.positionedState.size(),geometry.textGradientRanges.data(),geometry.textGradientRanges.size(),geometry.textGradientColors.data(),geometry.textGradientColors.size(),geometry.localTransforms.data(),geometry.localTransforms.size(),geometry.debugParams.data(),geometry.debugParams.size(),geometry.secondaryColors.data(),geometry.secondaryColors.size(),geometry.groundcoverRanges.data(),geometry.groundcoverRanges.size(),geometry.groundcoverInstances.data(),geometry.groundcoverInstances.size(),geometry.groundcoverParams.data(),geometry.groundcoverParams.size(),table.depthMipSources().data(),table.depthMipSources().size(),
             table.clusterRecords().data(),table.clusterRecords().size(),table.clusterMaterials().data(),table.clusterMaterials().size(),
             table.clusterLights().data(),table.clusterLights().size(),table.clusterProjections().data(),table.clusterProjections().size(),width,height)!=0;
 #else

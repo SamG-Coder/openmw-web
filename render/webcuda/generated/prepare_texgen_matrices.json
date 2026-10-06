@@ -1,0 +1,94 @@
+{
+  "version": "0.1.1",
+  "name": "prepare_texgen_matrices",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel prepare_texgen_matrices.\n@group(0) @binding(0) var<storage, read_write> b_descriptors: array<u32>;\n@group(0) @binding(1) var<storage, read> b_positioned: array<u32>;\nstruct CWParams {\n  p_draw_count: u32,\n  cw_pad_4: u32,\n  cw_pad_8: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn f_cw_buffer_helper_0(cw_buffer_arg_0: i32, cw_arg_matrix: u32, cw_buffer_arg_2: i32, cw_arg_post: u32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) {\n  var cw_buffer_offset_0: i32 = cw_buffer_arg_0;\n  var cw_buffer_offset_2: i32 = cw_buffer_arg_2;\n  var v_matrix: u32 = cw_arg_matrix;\n  var v_post: u32 = cw_arg_post;\n  var v_result: array<f32, 16>;\n  {\n    var v_col: u32 = u32(0i);\n    loop {\n      if (!(v_col < u32(4i))) { break; }\n      {\n        var v_row: u32 = u32(0i);\n        loop {\n          if (!(v_row < u32(4i))) { break; }\n          var v_value: f32 = 0.0f;\n          {\n            var v_k: u32 = u32(0i);\n            loop {\n              if (!(v_k < u32(4i))) { break; }\n              let cw_argument_index_0 = (cw_buffer_offset_2 + i32(((v_post + (v_k * u32(4i))) + v_row)));\n              let cw_argument_index_1 = (cw_buffer_offset_0 + i32(((v_matrix + (v_col * u32(4i))) + v_k)));\n              v_value = (v_value + (bitcast<f32>(b_positioned[cw_argument_index_0]) * bitcast<f32>(b_descriptors[cw_argument_index_1])));\n              continuing {\n                v_k += u32(1);\n              }\n            }\n          }\n          v_result[((v_col * u32(4i)) + v_row)] = v_value;\n          continuing {\n            v_row += u32(1);\n          }\n        }\n      }\n      continuing {\n        v_col += u32(1);\n      }\n    }\n  }\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(16i))) { break; }\n      let cw_argument_index_2 = v_k;\n      b_descriptors[(cw_buffer_offset_0 + i32((v_matrix + v_k)))] = bitcast<u32>(v_result[cw_argument_index_2]);\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n}\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= (cw_params.p_draw_count * 4u))) {\n    return;\n  }\n  var v_d: u32 = (v_i * 36u);\n  var v_post: u32 = b_descriptors[(v_d + 3u)];\n  if ((((v_post == 0u) || (b_descriptors[v_d] == 0u)) || (b_descriptors[(v_d + 1u)] != 5u))) {\n    return;\n  }\n  f_cw_buffer_helper_0(0i, (v_d + 20u), 0i, (v_post - 1u), cw_thread, cw_block, cw_grid);\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "descriptors",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "positioned",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "draw_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 2711,
+      "beforeBytes": 2711,
+      "afterBytes": 2711,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 631,
+          "transitiveBytes": 2288,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "f_cw_buffer_helper_0",
+          "ownBytes": 1657,
+          "transitiveBytes": 1657,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// OSG captures row-vector application * inherited-stage matrices. Their raw\n// storage is the column-vector transpose, so compose post * application here.\n// Each invocation owns one matrix; finish all reads before writing it in place.\n__device__ void compose_positioned_matrix(unsigned int* descriptors,unsigned int matrix,\n    const unsigned int* positioned,unsigned int post) {\n    float result[16];\n    for(unsigned int col=0;col<4;col++)for(unsigned int row=0;row<4;row++) {\n        float value=0.0f;\n        for(unsigned int k=0;k<4;k++)value+=__uint_as_float(positioned[post+k*4+row])\n            *__uint_as_float(descriptors[matrix+col*4+k]);\n        result[col*4+row]=value;\n    }\n    for(unsigned int k=0;k<16;k++)descriptors[matrix+k]=__float_as_uint(result[k]);\n}\n__global__ void prepare_fixed_matrices(unsigned int* descriptors,const unsigned int* positioned,unsigned int draw_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=draw_count*8u)return;\n    unsigned int draw=i/8u,light=i%8u,d=draw*368u,table=descriptors[d+3u];\n    if(table==0u||(descriptors[d]&(1u<<light))==0u)return;\n    unsigned int post=positioned[table-1u+light];\n    if(post!=0u)compose_positioned_matrix(descriptors,d+48u+light*40u+24u,positioned,post-1u);\n}\n__global__ void prepare_texgen_matrices(unsigned int* descriptors,const unsigned int* positioned,unsigned int draw_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=draw_count*4u)return;\n    unsigned int d=i*36u,post=descriptors[d+3u];\n    if(post==0u||descriptors[d]==0u||descriptors[d+1u]!=5u)return;\n    compose_positioned_matrix(descriptors,d+20u,positioned,post-1u);\n}\n",
+    "entry": "prepare_texgen_matrices",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "descriptors",
+        "type": "buffer"
+      },
+      {
+        "name": "positioned",
+        "type": "buffer"
+      },
+      {
+        "name": "draw_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

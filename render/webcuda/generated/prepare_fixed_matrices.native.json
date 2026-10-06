@@ -1,0 +1,29 @@
+{
+  "name": "prepare_fixed_matrices",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// OSG captures row-vector application * inherited-stage matrices. Their raw\n// storage is the column-vector transpose, so compose post * application here.\n// Each invocation owns one matrix; finish all reads before writing it in place.\n__device__ void compose_positioned_matrix(unsigned int* descriptors,unsigned int matrix,\n    const unsigned int* positioned,unsigned int post) {\n    float result[16];\n    for(unsigned int col=0;col<4;col++)for(unsigned int row=0;row<4;row++) {\n        float value=0.0f;\n        for(unsigned int k=0;k<4;k++)value+=__uint_as_float(positioned[post+k*4+row])\n            *__uint_as_float(descriptors[matrix+col*4+k]);\n        result[col*4+row]=value;\n    }\n    for(unsigned int k=0;k<16;k++)descriptors[matrix+k]=__float_as_uint(result[k]);\n}\n__global__ void prepare_fixed_matrices(unsigned int* descriptors,const unsigned int* positioned,unsigned int draw_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=draw_count*8u)return;\n    unsigned int draw=i/8u,light=i%8u,d=draw*368u,table=descriptors[d+3u];\n    if(table==0u||(descriptors[d]&(1u<<light))==0u)return;\n    unsigned int post=positioned[table-1u+light];\n    if(post!=0u)compose_positioned_matrix(descriptors,d+48u+light*40u+24u,positioned,post-1u);\n}\n__global__ void prepare_texgen_matrices(unsigned int* descriptors,const unsigned int* positioned,unsigned int draw_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=draw_count*4u)return;\n    unsigned int d=i*36u,post=descriptors[d+3u];\n    if(post==0u||descriptors[d]==0u||descriptors[d+1u]!=5u)return;\n    compose_positioned_matrix(descriptors,d+20u,positioned,post-1u);\n}\n",
+    "entry": "prepare_fixed_matrices",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "descriptors",
+        "type": "buffer"
+      },
+      {
+        "name": "positioned",
+        "type": "buffer"
+      },
+      {
+        "name": "draw_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}
