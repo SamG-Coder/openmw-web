@@ -162,7 +162,7 @@ struct Params { width:u32,height:u32,base:u32,pad:u32 }
 const COMPAT_DEPTH_WGSL=`
 struct Params { width:u32,height:u32,compact:u32,pad:u32 }
 @group(0) @binding(0) var sourceTex:texture_depth_2d;
-@group(0) @binding(1) var<storage,read_write> target:array<f32>;
+@group(0) @binding(1) var<storage,read_write> compatibilityBuffer:array<f32>;
 @group(0) @binding(2) var<uniform> params:Params;
 @compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) id:vec3<u32>){
   if(id.x>=params.width||id.y>=params.height){return;}
