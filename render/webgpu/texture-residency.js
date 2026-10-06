@@ -123,12 +123,18 @@ export class ImmutableBufferResidency {
       throw error;
     }
   }
-  // The caller must have completed the queue first (including failed frames).
-  collectRetired() {
-    for(const entry of this.retired){entry.released=true;this.liveBytes-=entry.words*4;}
-    this.freeRanges=mergeWordRanges([...this.freeRanges,...this.retired.map(entry=>[entry.offset,entry.offset+entry.words])],this.budgetBytes/4);
+  detachRetired() {
+    const retired=this.retired;
     this.retired=[];
+    return retired;
   }
+  collectDetached(retired) {
+    if(!retired?.length)return;
+    for(const entry of retired){entry.released=true;this.liveBytes-=entry.words*4;}
+    this.freeRanges=mergeWordRanges([...this.freeRanges,...retired.map(entry=>[entry.offset,entry.offset+entry.words])],this.budgetBytes/4);
+  }
+  // The caller must have completed the queue first (including failed frames).
+  collectRetired() { this.collectDetached(this.detachRetired()); }
   snapshot() {
     return {budgetBytes:this.budgetBytes,allocatedBytes:this.storage?.byteLength??0,occupiedBytes:this.liveBytes,entries:this.entries.size,
       retiredBytes:this.retired.reduce((sum,entry)=>sum+entry.words*4,0),hits:this.hits,misses:this.misses,
