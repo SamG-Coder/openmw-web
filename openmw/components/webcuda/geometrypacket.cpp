@@ -3,6 +3,7 @@
 #include "materialstate.hpp"
 #include "shaderanalysis.hpp"
 #include "deformation.hpp"
+#include "vertexstreamcache.hpp"
 #include <osg/UserDataContainer>
 #include <cmath>
 #include <cctype>
@@ -70,7 +71,7 @@ namespace WebCuda
             enum class Role { Vector, Color, SecondaryColor, Normal, Fog, Tangent };
 
             VertexArrayReader(const osg::Array* array, unsigned int count, unsigned int primitiveSet,
-                Role role, const osg::Vec4& fallback = osg::Vec4(0,0,0,1)) : mConstant(fallback)
+                Role role, const osg::Vec4& fallback = osg::Vec4(0,0,0,1)) : mArray(array),mConstant(fallback)
             {
                 const bool perVertex = role==Role::Vector || role==Role::Tangent;
                 if(!array || !count || (!perVertex && array->getBinding()==osg::Array::BIND_OFF))return;
@@ -117,13 +118,22 @@ namespace WebCuda
             osg::Vec4 operator[](unsigned int vertex) const { return mRead?mRead(mData,vertex):mConstant; }
             std::size_t inputWords(unsigned int count,unsigned int components) const { return std::size_t(mRead?count:1u)*components; }
 
-            void capture(std::vector<float>& inputs, std::uint32_t* descriptor,
+            void capture(GeometryPacket& draw, std::uint32_t* descriptor,
                 unsigned int count, unsigned int components) const
             {
+                auto& inputs=draw.vertexInputs;
                 const auto records=mRead?count:1u;
                 if(inputs.size()+std::uint64_t(records)*components>std::numeric_limits<std::uint32_t>::max())
                     throw std::runtime_error("Vertex input stream exceeds index range");
                 descriptor[0]=static_cast<std::uint32_t>(inputs.size());descriptor[1]=mRead?components:0u;
+                if(mRead) {
+                    static thread_local VertexStreamCache cache;
+                    if(const auto* entry=cache.capture(mArray,count,components,[&](unsigned int i){return (*this)[i];})) {
+                        draw.vertexResources.insert(draw.vertexResources.end(),{entry->version,descriptor[0],static_cast<std::uint32_t>(entry->values.size())});
+                        inputs.insert(inputs.end(),entry->values.begin(),entry->values.end());
+                        return;
+                    }
+                }
                 for(unsigned int i=0;i<records;i++) {
                     const auto value=(*this)[i];
                     for(unsigned int k=0;k<components;k++)inputs.push_back(value[k]);
@@ -165,6 +175,7 @@ namespace WebCuda
                 return "vertex";
             }
             const void* mData=nullptr;
+            const osg::Array* mArray=nullptr;
             osg::Vec4 (*mRead)(const void*,unsigned int)=nullptr;
             osg::Vec4 mConstant;
         };
@@ -381,9 +392,26 @@ namespace WebCuda
                     throw std::runtime_error("Combined vertex input stream exceeds index range");
                 if(draw.compactVertices) {
                     std::copy(draw.vertexLayouts.begin(),draw.vertexLayouts.end(),layout.begin());
-                    layout[5]+=static_cast<std::uint32_t>(inputBase);
-                    for(unsigned int stream=0;stream<10;stream++)layout[8+stream*2]+=static_cast<std::uint32_t>(inputBase);
-                    packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertexInputs.begin(),draw.vertexInputs.end());
+                    const auto appendInput=[&](std::uint32_t offset,std::uint32_t length) {
+                        std::uint32_t version=0;
+                        for(std::size_t i=0;i<draw.vertexResources.size();i+=3)
+                            if(draw.vertexResources[i+1]==offset){version=draw.vertexResources[i];break;}
+                        if(version) {
+                            const auto found=packet.vertexResourceOffsets.find(version);
+                            if(found!=packet.vertexResourceOffsets.end())return found->second;
+                        }
+                        const auto destination=static_cast<std::uint32_t>(packet.vertexInputs.size());
+                        packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertexInputs.begin()+offset,draw.vertexInputs.begin()+offset+length);
+                        if(version) {
+                            packet.vertexResources.insert(packet.vertexResources.end(),{version,destination,length});
+                            packet.vertexResourceOffsets.emplace(version,destination);
+                        }
+                        return destination;
+                    };
+                    layout[5]=appendInput(layout[5],3);
+                    const unsigned int widths[]={4,4,3,3,4,1,4,4,4,4};
+                    for(unsigned int stream=0;stream<10;stream++)
+                        layout[8+stream*2]=appendInput(layout[8+stream*2],layout[9+stream*2]?layout[2]*widths[stream]:widths[stream]);
                 } else {
                     layout[2]=static_cast<std::uint32_t>(count);
                     layout[6]=static_cast<std::uint32_t>(inputBase);
@@ -590,13 +618,13 @@ namespace WebCuda
             if(words>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("Vertex input stream exceeds index range");
             draw.vertexInputs.reserve(words);
             draw.vertexInputs.insert(draw.vertexInputs.end(),context.currentSecondaryColor,context.currentSecondaryColor+3);
-            positionValues.capture(draw.vertexInputs,layout+8,inputVertexCount,4);
-            colorValues.capture(draw.vertexInputs,layout+10,inputVertexCount,4);
-            secondaryValues.capture(draw.vertexInputs,layout+12,inputVertexCount,3);
-            normalValues.capture(draw.vertexInputs,layout+14,inputVertexCount,3);
-            tangentValues.capture(draw.vertexInputs,layout+16,inputVertexCount,4);
-            fogValues.capture(draw.vertexInputs,layout+18,inputVertexCount,1);
-            for(unsigned int unit=0;unit<4;unit++)coordinates[unit].capture(draw.vertexInputs,layout+20+unit*2,inputVertexCount,4);
+            positionValues.capture(draw,layout+8,inputVertexCount,4);
+            colorValues.capture(draw,layout+10,inputVertexCount,4);
+            secondaryValues.capture(draw,layout+12,inputVertexCount,3);
+            normalValues.capture(draw,layout+14,inputVertexCount,3);
+            tangentValues.capture(draw,layout+16,inputVertexCount,4);
+            fogValues.capture(draw,layout+18,inputVertexCount,1);
+            for(unsigned int unit=0;unit<4;unit++)coordinates[unit].capture(draw,layout+20+unit*2,inputVertexCount,4);
         }
         for (unsigned int i=0; i<inputVertexCount && (!draw.compactVertices || (morph&&!morph->targets.empty())); ++i)
         {

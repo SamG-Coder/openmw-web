@@ -97,9 +97,26 @@ export async function checkPipelineGpu(runtime,kernels) {
         compact.vertexInputs=new Float32Array(inputs);
       }
       compact.vertices=new Float32Array();compact.attributes=new Float32Array();
+      const version=compactKind==='dense'?1:2;
+      compact.vertexResources=new Uint32Array([version,0,compact.vertexInputs.length]);
       runtime.write(target,initial);
       equal(`Pipeline CUDA ${compactKind} vertex input construction preserves transformed and clipped color`,
         await render(compact),translatedExpected);
+      const changed={...compact,vertexInputs:compact.vertexInputs.slice(),vertexResources:new Uint32Array()};
+      const colors=compactKind==='dense'?[4,14,24,34]:[compact.vertexLayouts[10]];
+      for(const offset of colors){changed.vertexInputs[offset]=0;changed.vertexInputs[offset+1]=1;}
+      const green=translatedExpected.slice();
+      for(let i=0;i<pixels;i++)if(i%width>=2){green[i*9]=0;green[i*9+1]=.5;}
+      runtime.write(target,initial);
+      equal(`Pipeline CUDA ${compactKind} scratch overwrite changes the rendered color`,await render(changed),green);
+      const relocated={...compact,vertexLayouts:compact.vertexLayouts.slice(),vertexInputs:new Float32Array(compact.vertexInputs.length+16),
+        vertexResources:new Uint32Array([version,16,compact.vertexInputs.length])};
+      relocated.vertexInputs.set(compact.vertexInputs,16);
+      if(compactKind==='dense')for(const offset of [6,7,8])relocated.vertexLayouts[offset]+=16;
+      else {relocated.vertexLayouts[5]+=16;for(let i=8;i<28;i+=2)relocated.vertexLayouts[i]+=16;}
+      runtime.write(target,initial);
+      equal(`Pipeline CUDA ${compactKind} resident vertex inputs restore after scratch overwrite and relocation`,
+        await render(relocated),translatedExpected);
     }
     // Trigger the production compaction threshold with mostly offscreen draws.
     // The two visible triangles straddle a prefix-block boundary; compare with

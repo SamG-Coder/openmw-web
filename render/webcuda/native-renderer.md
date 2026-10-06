@@ -435,6 +435,77 @@ The `-arch` value is specific to this PC's GPU. Reports are
 `D:/OpenMW-local/webcuda-vertex-input-native-compile.json` and
 `D:/OpenMW-local/webcuda-vertex-input-benchmark.json`.
 
+## Immutable vertex stream residency
+
+Engine `92c47a9a3f5b` reuses converted source arrays and shares identical stream
+versions within each captured pass. The cache compares the source bytes on every
+use, rather than trusting OSG dirty counts. In-place edits receive new version
+IDs; old retained packets keep their original contents. Weak source references
+prevent stale versions from surviving source-object address reuse. Constants and
+small streams remain inline. The cache retains at most 64 MiB of raw/converted
+array payload and 8,192 entries, plus metadata and a temporary replacement entry.
+
+The browser receives `vertexResources` triples (immutable version, word offset,
+word count) alongside the compact inputs. A separate 32 MiB GPU arena restores
+cached streams into the current pass's input buffer, so cache hits skip host
+uploads even when another camera has overwritten that buffer or stream offsets
+have changed. Cache retirement waits for queue completion before reusing ranges.
+The existing immutable buffer allocator is shared with texture residency, with
+separate version namespaces and arenas. Each cache needs one native page/table,
+independent of its number of entries. Rendering still runs in the unchanged
+authored CUDA kernels, starting with construction of fresh mutable records.
+
+The 51 related host checks, six frame-lifetime checks and six WASM64 integration
+suites pass. Tests cover dirty-only notifications, undirtied source edits, finite
+input rejection, weak source lifetime, budget eviction, per-pass deduplication,
+borrowed bridge views and queue ownership. All 32 producer fixtures (9,486
+vertices) match the dense reference bit-for-bit in WASM and on the RTX 5080.
+Browser WebGPU compiles 88 runtime kernels and passes 43 GPU output checks,
+including 24 production-pipeline checks. Dense and stream inputs change rendered
+color when scratch is overwritten, then restore the original output from the
+resident arena at new offsets. Native interop simulations cover both 700-image
+and 700-vertex-stream pools and the 256-job submission limit. They do not prove
+current native-browser gameplay. CUDA sources and generated artifacts are
+unchanged; the full engine rebuild and HTTP staging checks pass.
+
+The same alternating WASM64 O3 capture benchmark uses 192 draws of 768 vertices,
+shared source arrays and a position edit on each draw. Nine samples after two
+warmups include stream descriptors and version records in the byte counts:
+
+| Input profile | Dense transport | Cached compact transport | Dense capture | Cached compact capture |
+| --- | ---: | ---: | ---: | ---: |
+| Position, normal, UV | 28,311,552 bytes | 3,018,264 bytes | 10.834 ms | 4.137 ms |
+| Color, tangent, four UV sets | 28,311,552 bytes | 3,027,504 bytes | 13.827 ms | 6.673 ms |
+
+These are isolated capture measurements. Raw source comparison, per-pass packet
+construction, matrices, topology and dynamic deformation data still consume CPU
+work. Cached source payloads remain in captured packets so GPU eviction and
+device replacement can recover without a separate engine upload handshake.
+The GPU arena adds up to 32 MiB; this change reduces transfers, not necessarily
+total memory. Reports are `D:/OpenMW-local/webcuda-vertex-residency-validation.json`,
+`D:/OpenMW-local/webcuda-vertex-residency-benchmark.json`,
+`D:/OpenMW-local/webcuda-vertex-residency-submission-tests.log` and
+`D:/OpenMW-local/webcuda-vertex-residency-cuda.log`.
+
+The rebuilt exterior WebGPU run saved 767 presentations with no renderer/pass
+error, aborted capture or legacy draw attempt. Its vertex arena held 3,090
+streams in 32 MiB after 4,319 evictions, 1,428,028 hits and 14,580,402,740 bytes
+restored on the GPU. All 120 sampled completed scene frames released their
+retained packets. Median uploads were 23,550,070 bytes/frame; capture was
+110.195 ms, renderer wall time 163.967 ms and presentation submission interval
+275.745 ms. Material encoding accounted for 44.337 ms and geometry 32.793 ms.
+This scene streamed more geometry than the preceding compact-input run, so the
+timing difference is not a controlled comparison or a frame-rate improvement.
+The latest large camera passes contain 245,423 and 371,711 triangles.
+
+Saved live buffer capacity is 2,001,943,328 bytes; an earlier in-flight DOM
+observation showed 2,664,260,640 bytes. These totals can include resources awaiting
+retirement and are not physical VRAM/RSS or proof of native allocation-budget
+acceptance. Smooth 60-180 Hz play, broader gameplay and current native-browser
+execution remain incomplete. The report and summary are
+`D:/OpenMW-local/webcuda-seyda-neen-vertex-residency-2026-10-07.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-vertex-residency-2026-10-07-summary.json`.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

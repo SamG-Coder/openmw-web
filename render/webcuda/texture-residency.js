@@ -1,5 +1,5 @@
-// Host resource ownership and GPU copies only. Image decoding and mip generation
-// remain authored CUDA kernels. A version ID names immutable image contents.
+// Host resource ownership and GPU copies only. Version IDs name immutable
+// contents; image decoding and vertex construction remain authored CUDA.
 export function mergeWordRanges(ranges,wordCount) {
   if(!Number.isSafeInteger(wordCount)||wordCount<0)throw RangeError('Invalid upload extent');
   const sorted=ranges.map(([start,end])=>{
@@ -17,10 +17,11 @@ export function mergeWordRanges(ranges,wordCount) {
   return result;
 }
 
-export class TextureResidency {
-  constructor(runtime,{budgetBytes=64*1024*1024}={}) {
+export class ImmutableBufferResidency {
+  constructor(runtime,{budgetBytes=64*1024*1024,label='OpenMW resident image arena',kind='image'}={}) {
     if(!Number.isSafeInteger(budgetBytes)||budgetBytes<0||budgetBytes%4)throw RangeError('Invalid texture cache budget');
     this.runtime=runtime;this.budgetBytes=budgetBytes;this.entries=new Map();this.retired=[];this.liveBytes=0;
+    this.label=label;this.kind=kind;
     // One shared arena bounds native resource/table count independently of
     // image count. Ranges remain immutable until the caller completes the GPU
     // queue and collects retirement; eviction alone never makes space reusable.
@@ -42,7 +43,7 @@ export class TextureResidency {
     // Validate before changing LRU state or recording hits.
     for(const region of regions) {
       const entry=this.entries.get(region.id);
-      if(entry&&entry.words!==region.words)throw RangeError('Image version changed its immutable extent');
+      if(entry&&entry.words!==region.words)throw RangeError(`Immutable ${this.kind} version changed its extent`);
       region.entry=entry??null;
     }
     const hits=[],misses=[];
@@ -68,7 +69,7 @@ export class TextureResidency {
   restore(plan,atlas) {
     if(!plan.hits.length)return;
     for(const region of plan.hits)if(region.entry.released||!this.storage)
-      throw Error('Texture residency plan references a released image');
+      throw Error(`Residency plan references a released ${this.kind}`);
     const batch=this.runtime.batch();
     for(const region of plan.hits) {
       batch.copy(this.storage,atlas,{sourceOffset:region.entry.offset*4,targetOffset:region.offset*4,byteLength:region.words*4});
@@ -81,7 +82,7 @@ export class TextureResidency {
     if(index<0)return null;
     // Reserve the physical allocation before consuming its logical range, so
     // failure leaves the allocator unchanged and existing images still owned.
-    this.storage??=this.runtime.createBuffer(this.budgetBytes,{label:'OpenMW resident image arena'});
+    this.storage??=this.runtime.createBuffer(this.budgetBytes,{label:this.label});
     const [offset,end]=this.freeRanges[index];
     if(offset+words===end)this.freeRanges.splice(index,1);
     else this.freeRanges[index][0]+=words;
@@ -139,3 +140,5 @@ export class TextureResidency {
     if(this.storage){this.runtime.destroyBuffer(this.storage);this.storage=null;}
   }
 }
+
+export class TextureResidency extends ImmutableBufferResidency {}

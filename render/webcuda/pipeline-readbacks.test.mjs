@@ -4,6 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {MaterialPipeline} from './pipeline.js';
 import {FrameReadbacks} from './frame-readbacks.js';
+import {ImmutableBufferResidency} from './texture-residency.js';
 
 function fixture() {
   const commands=[],reads=[],allocations=[],invocations=[];
@@ -69,6 +70,36 @@ test('compact input construction precedes deformation and transformation without
   const bad=fixture(),malformed={...scene,vertexLayouts:scene.vertexLayouts.slice()};malformed.vertexLayouts[7]=999999;
   await assert.rejects(bad.pipeline.render(malformed,32,32,null,bad.pass),/storage/);
   assert.equal(bad.allocations.length,0);
+});
+
+test('resident vertex streams survive scratch reuse and relocate without another host upload',async()=>{
+  const f=fixture(),writes=[];
+  f.pipeline.vertexResidency=new ImmutableBufferResidency(f.runtime,{budgetBytes:1024,kind:'vertex stream'});
+  const write=f.runtime.write;f.runtime.write=(buffer,data,offset=0)=>{if(buffer.label==='OpenMW vertexInputs')writes.push(data.byteLength);write(buffer,data,offset);};
+  const make=(version,shift=0,value=7)=>{
+    const scene=f.scene(),count=scene.matrixIds.length;
+    scene.vertexEncoding=1;scene.vertexLayouts=new Uint32Array(32);
+    scene.vertexLayouts.set([0,count,count,0,0,0,shift,shift+count*10,shift+count*44]);
+    scene.vertexInputs=new Float32Array(shift+count*47);scene.vertexInputs[shift]=value;
+    scene.vertexResources=new Uint32Array(version?[version,shift,count*10]:[]);
+    scene.vertices=new Float32Array();scene.attributes=new Float32Array();scene.secondaryColors=new Float32Array();return scene;
+  };
+  const render=async scene=>{
+    const frame=new FrameReadbacks(f.runtime,bytes=>f.pipeline.buffer('frameReadback',bytes));
+    const result=await f.pipeline.render(scene,32,32,null,{...f.pass,readback:(...args)=>frame.read(...args)});
+    await frame.flush();await result.queryCompletion;f.pipeline.collectRetired();
+  };
+  await render(make(1));assert.equal(writes.reduce((a,b)=>a+b,0),3*47*4);
+  await render(make(0,0,99)); // A different camera overwrites the scratch input.
+  writes.length=0;await render(make(1,4));
+  assert.equal(writes.reduce((a,b)=>a+b,0),(4+3*37)*4);
+  const restored=new Float32Array(f.pipeline.buffers.get('vertexInputs').data.buffer);
+  assert.equal(restored[4],7);assert.equal(f.pipeline.vertexResidency.snapshot().hits,1);
+  writes.length=0;await render(make(2,4,17));
+  assert.equal(writes.reduce((a,b)=>a+b,0),(4+3*47)*4);assert.equal(restored[4],17);
+  const bad=fixture(),invalid=make(3);invalid.vertexResources[1]=999999;
+  await assert.rejects(bad.pipeline.render(invalid,32,32,null,bad.pass),/range/);assert.equal(bad.allocations.length,0);
+  f.pipeline.dispose();assert.equal(f.pipeline.vertexResidency.snapshot().allocatedBytes,0);
 });
 
 test('large cameras size assembly from live GPU clipping slots before allocating expanded attributes',async()=>{

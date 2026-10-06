@@ -15,11 +15,37 @@
 #include <osgUtil/RenderStage>
 #include <components/webcuda/geometrypacket.hpp>
 #include <components/webcuda/deformation.hpp>
+#include <components/webcuda/vertexstreamcache.hpp>
 #include <osgParticle/ParticleSystem>
 #include <osg/UserDataContainer>
 #include "vertex-input-reference.hpp"
 
 namespace {
+    void streamCache() {
+        WebCuda::VertexStreamCache cache(168,0);
+        auto make=[](){return osg::ref_ptr<osg::Vec3Array>(new osg::Vec3Array(3));};
+        auto a=make(),b=make(),c=make();unsigned int converted=0;
+        auto capture=[&](const osg::Vec3Array* source){return cache.capture(source,3,4,[&](unsigned int i){
+            converted++;const auto& v=(*source)[i];return osg::Vec4(v.x(),v.y(),v.z(),1);});};
+        const auto first=capture(a)->version;
+        assert(capture(a)->version==first&&converted==3);
+        // Dirty notifications alone are insufficient evidence of changed bytes.
+        a->dirty();assert(capture(a)->version==first&&converted==3);
+        (*a)[1].x()=17;const auto changed=capture(a)->version;
+        assert(changed!=first&&capture(a)->values[4]==17&&converted==6);
+        (*a)[1].x()=std::numeric_limits<float>::infinity();
+        bool rejected=false;try {capture(a);}catch(const std::runtime_error&){rejected=true;}
+        assert(rejected&&cache.size()==1&&cache.bytes()==84);
+        (*a)[1].x()=17;assert(capture(a)->version==changed);
+        capture(b);assert(cache.bytes()==168);capture(c);assert(cache.bytes()==168);
+        assert(capture(a)->version!=changed&&cache.bytes()==168);
+        c=nullptr; // Weak ownership must let released source objects expire.
+        for(unsigned int i=0;i<1024;i++)capture(a);
+        assert(cache.size()==1&&cache.bytes()==84);
+        WebCuda::VertexStreamCache disabled(8,0);
+        assert(!disabled.capture(a,3,4,[](unsigned int){return osg::Vec4();}));
+        std::puts("Vertex stream cache: exact mutation detection, dirty-only reuse, finite inputs, LRU budget and weak source lifetime passed");
+    }
     template<class Array, class Value>
     osg::ref_ptr<Array> repeated(const Value& value) {
         auto result=osg::ref_ptr<Array>(new Array);
@@ -280,6 +306,18 @@ int main() {
     large->setTexCoordArray(0,largeUv);large->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES,0,3072));
     for(unsigned int draw=0;draw<2;draw++)for(auto* output:{&mixed,&reference})WebCuda::appendGeometry(*output,*large,context,15);
     VertexInputReference::verify(mixed,reference);
+    assert(mixed.vertexResources.size()==9); // Three arrays, shared by both draws.
+    const auto layout=mixed.vertexLayouts.size()-64;
+    for(const auto field:{8u,14u,20u})assert(mixed.vertexLayouts[layout+field]==mixed.vertexLayouts[layout+32+field]);
+    const auto originalPositionVersion=mixed.vertexResources[0],normalVersion=mixed.vertexResources[3];
+    const auto oldPositionOffset=mixed.vertexResources[1];
+    (*largePositions)[0].x()=42; // Deliberately no dirty() call.
+    WebCuda::GeometryPacket mutated(true),mutatedReference;
+    WebCuda::appendGeometry(mutated,*large,context,15);WebCuda::appendGeometry(mutatedReference,*large,context,15);
+    assert(mutated.vertexResources[0]!=originalPositionVersion&&mutated.vertexResources[3]==normalVersion);
+    assert(mutated.vertexInputs[mutated.vertexResources[1]]==42&&mixed.vertexInputs[oldPositionOffset]==0);
+    VertexInputReference::verify(mutated,mutatedReference);
+    streamCache();
     VertexInputReference::save();
     std::puts("WebCuda geometry packets: OSG strips, colors/UVs, matrix ABI, batching, rejection and MyGUI bytes passed");
 }

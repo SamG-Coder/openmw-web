@@ -103,14 +103,16 @@ int main() {
     geometry=WebCuda::GeometryPacket(true);geometry.capturedVertexCount=1;geometry.matrixIds={0};geometry.matrices.resize(32);
     geometry.triangles={0,0,0,0};geometry.vertexLayouts.resize(32);geometry.vertexInputs={2.f,3.f,4.f};
     const auto* compactInputs=geometry.vertexInputs.data();const auto* compactLayouts=geometry.vertexLayouts.data();
+    geometry.vertexResources={99,0,3};const auto* compactResources=geometry.vertexResources.data();
     EM_ASM({Module.webcudaSubmitPass=packet=>{Module.vertexPacket=packet;return true;};});
     assert(WebCuda::submitBrowserPass(std::move(geometry),table,16,8));
     assert(EM_ASM_INT({
         const s=Module.vertexPacket.scene;
         return s.vertexEncoding===1&&s.vertices.length===0&&s.attributes.length===0&&s.vertexInputs[2]===4
             &&s.vertexInputs.byteOffset===Number($0)&&s.vertexLayouts.byteOffset===Number($1)
+            &&s.vertexResources.byteOffset===Number($2)&&s.vertexResources[0]===99&&s.vertexResources.buffer===HEAPU32.buffer
             &&s.vertexInputs.buffer===HEAPF32.buffer&&s.vertexLayouts.buffer===HEAPU32.buffer;
-    },compactInputs,compactLayouts));
+    },compactInputs,compactLayouts,compactResources));
     EM_ASM({Module.vertexPacket.release();delete Module.vertexPacket;});
     EM_ASM({Module.webcudaSubmitPass=packet=>{Module.compactPacket=packet;return true;};});
     osg::ref_ptr<osg::Image> image=new osg::Image;

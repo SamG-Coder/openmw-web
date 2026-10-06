@@ -5,7 +5,7 @@ import { gpuTimedBatch } from './gpu-timing.js';
 // lives in the authored .cu kernels; generated WGSL is loaded without alteration.
 import { dispatchGroups } from './dispatch.js';
 import { atlasUploadRanges } from './atlas-upload.js';
-import { TextureResidency, mergeWordRanges } from './texture-residency.js';
+import { TextureResidency, ImmutableBufferResidency, mergeWordRanges } from './texture-residency.js';
 import { colorStorage, depthStorage } from './color-storage.js';
 import { allFinite, validateVertexAttributes } from './packet-validation.js';
 import { validateVertexInputs } from './vertex-input.js';
@@ -49,6 +49,7 @@ export class MaterialPipeline {
   constructor(runtime, kernels) {
     this.runtime=runtime; this.kernels=kernels; this.buffers=new Map(); this.retired=new Set(); this.busy=false;
     this.textureResidency=new TextureResidency(runtime);
+    this.vertexResidency=new ImmutableBufferResidency(runtime,{budgetBytes:32*1024*1024,label:'OpenMW resident vertex input arena',kind:'vertex stream'});
   }
   seedMultisample(source, samples, width, height, sampleCount) {
     this.validateMultisampleStorage(source,samples,width,height,sampleCount);
@@ -121,6 +122,7 @@ export class MaterialPipeline {
     for(const resource of this.retired)this.runtime.destroyBuffer(resource);
     this.retired.clear();
     this.textureResidency.collectRetired();
+    this.vertexResidency.collectRetired();
   }
   // Called by serialized pass submission. resourceKey separates camera/light
   // snapshots that must coexist until all consumers of the pass are queued.
@@ -587,6 +589,7 @@ export class MaterialPipeline {
       const upload=name=>this.buffer(name,scene[name].byteLength,scene[name]);
       if(scene.textureDecodes.length%5)throw RangeError('Invalid texture decode records');
       const texturePlan=this.textureResidency.plan(scene.textureResources??new Uint32Array(),scene.texels.length);
+      const vertexPlan=compactVertices?this.vertexResidency.plan(scene.vertexResources??new Uint32Array(),scene.vertexInputs.length):null;
       const decodePlans=[];
       const validatedMapInputs=new Map();
       const validatedTerrainInputs=new Map();
@@ -648,8 +651,15 @@ export class MaterialPipeline {
       const transformed=this.buffer('transformed',vertexCount*40);
       const sourceAttributes=compactVertices?this.buffer('attributes',vertexCount*136):upload('attributes');
       const secondaryColors=compactVertices?this.buffer('secondaryColors',vertexCount*12):null;
-      if(compactVertices&&vertexCount)r.batch().dispatch(k.unpack_vertex_inputs.bind({inputs:upload('vertexInputs'),layouts:upload('vertexLayouts'),matrix_ids,
-        vertices:source,attributes:sourceAttributes,secondary_colors:secondaryColors},{vertex_count:vertexCount}),dispatchGroups(vertexCount,r.device.limits)).submit();
+      if(compactVertices&&vertexCount) {
+        const inputs=this.buffer('vertexInputs',scene.vertexInputs.byteLength);
+        for(const [first,last] of atlasUploadRanges(scene.vertexInputs.length,undefined,scene.vertexInputs.length,vertexPlan.hitRanges))
+          this.upload(inputs,scene.vertexInputs.subarray(first,last),first*4);
+        this.vertexResidency.restore(vertexPlan,inputs);
+        this.vertexResidency.capture(vertexPlan,inputs);
+        r.batch().dispatch(k.unpack_vertex_inputs.bind({inputs,layouts:upload('vertexLayouts'),matrix_ids,
+          vertices:source,attributes:sourceAttributes,secondary_colors:secondaryColors},{vertex_count:vertexCount}),dispatchGroups(vertexCount,r.device.limits)).submit();
+      }
       let hasVertexLighting=false;
       for(let m=0;m<scene.materials.length;m+=12)
         if((scene.materials[m+3]&2048)&&(scene.texels[scene.materials[m]+4]&8388608))hasVertexLighting=true;
@@ -1012,5 +1022,6 @@ export class MaterialPipeline {
     this.buffers.clear();
     this.collectRetired();
     this.textureResidency.dispose();
+    this.vertexResidency.dispose();
   }
 }

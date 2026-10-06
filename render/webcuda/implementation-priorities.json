@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce repeated scene capture, cross-frame geometry transfers and GPU frame time. Compact source streams now replace repeated 47-float CPU vertex records, with expansion in authored CUDA; 31 real producer fixtures, native GPU equivalence and both production-pipeline encodings pass. The rebuilt exterior reaches 551 frames without renderer errors; its saved debug sample uploads a median 35.4 MB/frame with a 227.740 ms presentation interval. Broad gameplay, current native-browser exterior and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: reduce material capture, remaining topology/deformation transfers and GPU raster/frame cost. Exact-content vertex versioning, per-pass deduplication and bounded GPU residency pass native CUDA fixtures and WebGPU overwrite/relocation checks. The rebuilt exterior reaches 767 presentations without renderer errors and uploads a median 23.6 MB/frame; a larger scene workload still has a 275.745 ms submission interval. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -1275,5 +1275,70 @@
       "D:/OpenMW-local/webcuda-seyda-neen-vertex-input-2026-10-06-summary.json"
     ],
     "limits": "The richer input benchmark has a small CPU regression despite reduced bytes. Expanded GPU working buffers remain, so transport size is not physical VRAM usage. No current native-browser gameplay or physical refresh-rate acceptance."
+  },
+  "immutableVertexResidency": {
+    "engine": "92c47a9a3f5b",
+    "change": "Exact source-byte comparison versions immutable converted arrays, deduplicates them within each pass and restores GPU-resident inputs without host reupload. Unchanged CUDA kernels reconstruct the mutable working records before deformation and shading.",
+    "cpuPayloadBudgetBytes": 67108864,
+    "cpuEntryLimit": 8192,
+    "minimumCachedStreamBytes": 256,
+    "gpuArenaBudgetBytes": 33554432,
+    "validation": {
+      "hostChecks": 51,
+      "frameLifetimeChecks": 6,
+      "wasm64IntegrationSuites": 6,
+      "realProducerFixtures": 32,
+      "realProducerVertices": 9486,
+      "wasmAndRtx5080ExactFieldAndGuardComparison": "passed",
+      "webgpuRuntimeKernels": 88,
+      "webgpuOutputChecks": 43,
+      "productionPipelineChecks": 24,
+      "nativeResourceSimulation": "700 images and 700 vertex streams each use one arena; native page/table and 256-job limits hold",
+      "fullEngineBuildAndHttpStaging": "passed",
+      "cudaSourcesAndGeneratedArtifacts": "unchanged"
+    },
+    "benchmark": {
+      "scope": "Isolated WASM64 O3 capture, alternating dense/compact order with shared arrays and a position edit each draw; not gameplay FPS",
+      "draws": 192,
+      "verticesPerDraw": 768,
+      "measuredSamples": 9,
+      "warmups": 2,
+      "positionNormalUv": {"denseVertexBytes":28311552,"compactVertexBytes":3018264,"denseMs":10.833664,"compactMs":4.136704},
+      "colorTangentFourUv": {"denseVertexBytes":28311552,"compactVertexBytes":3027504,"denseMs":13.827072,"compactMs":6.673408}
+    },
+    "exteriorWebgpu": {
+      "savedPresentations": 767,
+      "rendererErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 2001943328,
+      "earlierInFlightBufferCapacityBytes": 2664260640,
+      "vertexArenaBytes": 33554432,
+      "residentStreams": 3090,
+      "vertexCacheHits": 1428028,
+      "vertexEvictions": 4319,
+      "vertexBytesRestoredOnGpu": 14580402740,
+      "medianUploadedBytes": 23550070,
+      "medianCapturedSceneBytes": 181553726,
+      "medianCaptureMs": 110.195,
+      "medianGeometryEncodeMs": 32.792576,
+      "medianMaterialEncodeMs": 44.337408,
+      "medianRendererWallMs": 163.9675,
+      "medianPresentationSubmitIntervalMs": 275.745,
+      "limits": "Debug scene with more streamed geometry than the preceding run; not a matched benchmark. In-flight capacity can include retired resources and does not prove physical VRAM/RSS or native budget acceptance."
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-vertex-residency-validation.json",
+      "D:/OpenMW-local/webcuda-vertex-residency-benchmark.json",
+      "D:/OpenMW-local/webcuda-vertex-residency-submission-tests.log",
+      "D:/OpenMW-local/webcuda-vertex-residency-cuda.log",
+      "D:/OpenMW-local/webcuda-vertex-residency-stage.json",
+      "D:/OpenMW-local/webcuda-vertex-residency-serving.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-vertex-residency-2026-10-07.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-vertex-residency-2026-10-07-summary.json"
+    ],
+    "limits": "Source bytes are still compared and captured each pass; CPU metadata and temporary replacement entries are outside the retained-payload cap. GPU working records remain and the new arena adds up to 32 MiB. No current native-browser gameplay or physical refresh-rate acceptance."
   }
 }

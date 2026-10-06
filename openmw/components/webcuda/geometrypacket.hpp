@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_WEBCUDA_GEOMETRYPACKET_H
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <vector>
 #include "submission.hpp"
 namespace WebCuda
@@ -16,6 +17,8 @@ namespace WebCuda
         // Streams: position4, color4, secondary3, normal3, tangent4, fog1, UV0..3 each4.
         std::vector<std::uint32_t> vertexLayouts;
         std::vector<float> vertexInputs;
+        std::vector<std::uint32_t> vertexResources; // immutable version, input offset, word count
+        std::map<std::uint32_t,std::uint32_t> vertexResourceOffsets; // capture-only deduplication
         std::size_t vertexCount() const { return compactVertices ? capturedVertexCount : vertices.size()/10; }
         std::vector<std::uint32_t> groundcoverRanges; // vertex, instance, parameter block
         std::vector<float> groundcoverInstances; // offset xyz, scale, rotation xyz

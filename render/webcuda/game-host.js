@@ -112,6 +112,7 @@ async function createWebCudaHost(Module,onError,releaseOwnership) {
       runtimeBufferBytes:Array.from(runtime.buffers??[],buffer=>buffer.byteLength).reduce((sum,bytes)=>sum+bytes,0),
       backend:runtime.backend??'webgpu',nativeRuntime:runtime.snapshot?.()??null,
       textureResidency:pipeline.textureResidency?.snapshot()??null,
+      vertexResidency:pipeline.vertexResidency?.snapshot()??null,
       wasmHeapCapacityBytes:Module.webcudaTransportStats?.heapCapacityBytes??Module.wasmMemory?.buffer.byteLength??null,
       transport:Module.webcudaTransportStats?{...Module.webcudaTransportStats}:null,
       legacyDrawAttempts:Module.webcudaLegacyDrawStats?.attempts??0,

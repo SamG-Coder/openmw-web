@@ -3,7 +3,7 @@ import test from 'node:test';
 import {NativeRendererRuntime} from './native-runtime.js';
 import {MaterialPipeline} from './pipeline.js';
 import {FrameReadbacks} from './frame-readbacks.js';
-import {TextureResidency} from './texture-residency.js';
+import {TextureResidency,ImmutableBufferResidency} from './texture-residency.js';
 import {NATIVE_PAGE_BYTES as page,pageRanges,canvasPageCopies} from './native-layout.js';
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
@@ -35,10 +35,11 @@ function fixture() {
 }
 const artifact={metadata:{uniformSize:4},native:{storage:'openmw-paged-64m-v1',entry:'test',parameters:[{name:'target',type:'buffer'},{name:'value',type:'u32'}]}};
 
-test('hundreds of resident images use one shared arena and keep native page/table counts bounded',async()=>{
+for(const [kind,Cache] of [['images',TextureResidency],['vertex streams',ImmutableBufferResidency]])
+test(`hundreds of resident ${kind} use one shared arena and keep native page/table counts bounded`,async()=>{
   const f=fixture(),count=700,atlas=f.runtime.createBuffer(count*4);
   f.native.capabilities.maxResources=8;
-  const cache=new TextureResidency(f.runtime,{budgetBytes:count*4});
+  const cache=new Cache(f.runtime,{budgetBytes:count*4,kind});
   const records=Uint32Array.from({length:count*3},(_,i)=>[Math.floor(i/3)+1,Math.floor(i/3),1][i%3]);
   cache.capture(cache.plan(records,count),atlas);
   await f.runtime.idle();
