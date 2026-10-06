@@ -1004,7 +1004,7 @@ export class MaterialPipeline {
          normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,
          stencil_clear,clear_color_mask,width,height,...viewportArgs,sample_count}),groups(width*height*sample_count)).submit();
       let rasterTiming={gpuMs:null,drawCalls:0};
-      if(slots!==0)rasterTiming=await this.rasterizer.render(
+      if(slots!==0||nativeDirect)rasterTiming=await this.rasterizer.render(
         {vertices,triangles:output_triangles,counts,materials,texels,...(rasterTarget?{target:rasterTarget}:{}),attributes:clippedAttributes},
         {width,height,capacity,raster_offset,boundary_offset,point_fade_offset,lighting_offset,cluster_offset,
          fixed_offset,falloff_offset,fixed_enabled,normal_enabled,normal_channels,normal_storage,
