@@ -6,7 +6,8 @@ import {colorStorage,depthStorage} from './color-storage.js';
 
 const FULLSCREEN=`
 @vertex fn fullscreen(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{
-  let x=f32((i<<1u)&2u), y=f32(i&2u);
+  let x=f32((i<<1u)&2u);
+  let y=f32(i&2u);
   return vec4<f32>(x*2.0-1.0,y*2.0-1.0,0.0,1.0);
 }`;
 
@@ -94,7 +95,9 @@ fn bilinear(tex:texture_2d<f32>,uv:vec2<f32>,size:vec2<u32>)->vec4<f32>{
     occlusion=bilinear(distortionTex,uv+delta,params.distortionSize).z;
     sampleUv=uv+delta;
   }
-  var color=mix(bilinear(sourceTex,sampleUv,params.sourceSize),bilinear(sourceTex,uv,params.sourceSize),occlusion);
+  let distorted=bilinear(sourceTex,sampleUv,params.sourceSize);
+  let original=bilinear(sourceTex,uv,params.sourceSize);
+  var color=distorted*(1.0-occlusion)+original*occlusion;
   if(params.useAdjust!=0u){
     color.rgb=max((color.rgb-vec3<f32>(0.5))*params.contrast+vec3<f32>(0.5),vec3<f32>(0.0));
     if(params.gamma==0.0){
