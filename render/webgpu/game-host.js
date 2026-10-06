@@ -7,6 +7,7 @@ import { colorStorage, depthStorage } from './color-storage.js';
 import { guardLegacyRendering } from './legacy-draw-guard.js';
 import { targetId as canonicalTargetId, targetCommand } from './target-id.js';
 import { FrameReadbacks } from './frame-readbacks.js';
+import { NativeAttachmentStore } from './native-targets.js';
 
 // A frame is accepted before culling starts, retains immutable WASM packets,
 // then uploads directly from their heap views in camera order. At most one
@@ -66,6 +67,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   const imageRequests=new Set();
   Module.webcudaImageError=null;
   const targets=new Map();
+  const nativeTargets=new NativeAttachmentStore(runtime);
   const luminanceHistory=new Map();
   Module.webcudaQueryResults=new Map();
   const queryLastSeen=new Map();let queryFrame=0;
@@ -141,96 +143,123 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     for(let i=0;i<timingCount;i++)result.push({...frameTimings[(timingCursor-timingCount+i+frameTimings.length)%frameTimings.length]});
     return result;
   }
-  // Attachment identities own storage. A depth/normal/stencil attachment must
-  // never alias the mutable composite of whichever color target used it last:
-  // that target can subsequently be rendered with a different attachment.
+  // Logical attachment identities are now native GPU textures first. A legacy
+  // 40-byte/pixel buffer is materialized only for the handful of compatibility
+  // operations that still consume buffer pixels (screenshots, uncommon effects).
   function retireAttachment(attachment) {
-    pipeline.retireBuffer(attachment.buffer);
+    if(!attachment)return;
+    if(attachment.buffer)pipeline.retireBuffer(attachment.buffer);
     if(attachment.sampleBuffer)pipeline.retireBuffer(attachment.sampleBuffer);
-  }
-  function sampleStorage(attachment,count) {
-    if(![1,4].includes(count))throw Error('WebGPU attachments support 1 or 4 samples; select no antialiasing or 4x MSAA');
-    if(attachment.compactDepth) {
-      if(count!==1)throw Error('Compact depth requires single-sample storage');
-      attachment.sampleCount=1;
-      return;
-    }
-    if(attachment.sampleCount===count)return;
-    const bytes=attachment.width*attachment.height*40*count;
-    if(!Number.isSafeInteger(bytes)||bytes/4>0xffffffff||bytes>runtime.device.limits.maxStorageBufferBindingSize
-      ||bytes>runtime.device.limits.maxBufferSize)throw Error('Sample attachment exceeds device storage limits');
-    let replacement=null;
-    if(count>1) {
-      replacement=runtime.createBuffer(bytes,{label:`OpenMW ${count}x sample attachment`});
-      try { pipeline.seedMultisample(attachment.buffer,replacement,attachment.width,attachment.height,count); }
-      catch(error) { pipeline.retireBuffer(replacement);throw error; }
-    }
-    const previous=attachment.sampleBuffer;
-    attachment.sampleBuffer=replacement;attachment.sampleCount=count;
-    if(previous)pipeline.retireBuffer(previous);
+    nativeTargets.destroy(attachment);
   }
   function planeStorage(id,width,height,sampleCount=1,alpha=1,compactDepth) {
     let destination=targets.get(id);
     compactDepth??=destination?.compactDepth??false;
-    if(compactDepth&&sampleCount!==1)throw Error("Compact depth requires single-sample storage");
+    if(compactDepth&&sampleCount!==1)throw Error('Compact depth requires single-sample storage');
     if(!destination||destination.width!==width||destination.height!==height||destination.compactDepth!==compactDepth) {
-      const bytes=width*height*(compactDepth?4:40);
-      if(!Number.isSafeInteger(bytes)||bytes>runtime.device.limits.maxStorageBufferBindingSize||bytes>runtime.device.limits.maxBufferSize)
-        throw RangeError(`OpenMW attachment ${id} (${width}x${height}) needs ${bytes} bytes; device storage limit is ${runtime.device.limits.maxStorageBufferBindingSize} and buffer limit is ${runtime.device.limits.maxBufferSize}`);
-      const replacement={buffer:runtime.createBuffer(bytes,{label:`OpenMW attachment ${id}`}),width,height,compactDepth};
-      try {
-        if(compactDepth)runtime.batch().dispatch(pipeline.kernels.clear_compact_depth.bind({target:replacement.buffer},{pixel_count:width*height,depth:1}),dispatchGroups(width*height,runtime.device.limits)).submit();
-        else runtime.batch().dispatch(pipeline.kernels.clear_target.bind({target:replacement.buffer},
-          {pixel_count:width*height,red:0,green:0,blue:0,alpha,depth:1}),
-          dispatchGroups(width*height,runtime.device.limits)).submit();
-        sampleStorage(replacement,sampleCount);
-      } catch(error) { retireAttachment(replacement);throw error; }
-      // Keep the previous target reachable until all replacement setup succeeds.
+      const replacement={buffer:null,sampleBuffer:null,native:null,width,height,compactDepth,sampleCount,alpha,
+        authority:'empty',colorFormat:0x8058,depthFormat:0x81a6,normalFormat:0x8058};
       if(destination) {
-        for(const [key,value] of targets)if(value.buffer===destination.buffer)targets.delete(key);
+        for(const [key,value] of targets)if(value===destination)targets.delete(key);
         retireAttachment(destination);
       }
       destination=replacement;targets.set(id,destination);
-    } else sampleStorage(destination,sampleCount);
+    } else if(destination.sampleCount!==sampleCount) {
+      // Native planes encode sample count in their texture allocation. Drop only
+      // GPU attachment storage; compatibility bytes can be regenerated lazily.
+      nativeTargets.destroy(destination);
+      if(destination.sampleBuffer){pipeline.retireBuffer(destination.sampleBuffer);destination.sampleBuffer=null;}
+      destination.sampleCount=sampleCount;destination.authority=destination.buffer?'compat':'empty';
+    }
     return destination;
   }
-  function copyPlane(source,destination,kernel) {
-    if(destination.buffer===source.buffer)return;
+  function compatibilityParams(attachment) {
+    const color=colorStorage(attachment.colorFormat??0x8058);
+    const normal=colorStorage(attachment.normalFormat??0x8058);
+    return {width:attachment.width,height:attachment.height,sample_count:attachment.sampleCount??1,
+      color_channels:attachment.compactDepth?0:color.channels,color_storage:color.storage,
+      normal_enabled:attachment.native?.normal?1:0,normal_channels:normal.channels,normal_storage:normal.storage,
+      depth_bits:depthStorage(attachment.depthFormat??0x81a6),stencil_enabled:0};
+  }
+  async function ensureCompatibility(attachment) {
+    if(!attachment)throw Error('Missing attachment');
+    if(!attachment.buffer) {
+      const bytes=attachment.width*attachment.height*(attachment.compactDepth?4:40);
+      if(!Number.isSafeInteger(bytes)||bytes>runtime.device.limits.maxStorageBufferBindingSize||bytes>runtime.device.limits.maxBufferSize)
+        throw RangeError('Compatibility attachment exceeds WebGPU buffer limits');
+      attachment.buffer=runtime.createBuffer(bytes,{label:'OpenMW compatibility attachment'});
+      if(attachment.compactDepth)runtime.batch().dispatch(pipeline.kernels.clear_compact_depth.bind({target:attachment.buffer},
+        {pixel_count:attachment.width*attachment.height,depth:1}),dispatchGroups(attachment.width*attachment.height,runtime.device.limits)).submit();
+      else runtime.batch().dispatch(pipeline.kernels.clear_target.bind({target:attachment.buffer},
+        {pixel_count:attachment.width*attachment.height,red:0,green:0,blue:0,alpha:attachment.alpha??1,depth:1}),
+        dispatchGroups(attachment.width*attachment.height,runtime.device.limits)).submit();
+    }
+    if(attachment.authority==='native'&&attachment.native) {
+      await pipeline.rasterizer.exportCompatibility({config:{},...attachment.native},attachment.buffer,compatibilityParams(attachment));
+    }
+    attachment.authority='compat';
+    return attachment.buffer;
+  }
+  async function importCompatibility(attachment) {
+    if(!attachment?.buffer||!attachment.native||attachment.authority!=='compat')return;
+    await pipeline.rasterizer.importCompatibility(attachment.buffer,{config:{},...attachment.native},compatibilityParams(attachment));
+    attachment.authority='native';
+  }
+  async function copyPlane(source,destination,kernel) {
+    if(source===destination)return;
+    if(kernel==='copy_depth'&&source.native?.depth&&destination.native?.depth
+      &&source.native.depth.samples===1&&destination.native.depth.samples===1) {
+      await nativeTargets.copyDepth(source.native,destination.native);
+      destination.authority='native';return;
+    }
+    if(kernel==='copy_normals'&&source.native?.normal&&destination.native?.normal
+      &&source.native.normal.samples===1&&destination.native.normal.samples===1) {
+      await nativeTargets.resolveColor({color:source.native.normal},{color:destination.native.normal},{clear:true});
+      destination.authority='native';return;
+    }
+    const sourceBuffer=await ensureCompatibility(source),destinationBuffer=await ensureCompatibility(destination);
     if(source.compactDepth||destination.compactDepth) {
       if(kernel!=='copy_depth')throw Error('Compact depth cannot copy color, normals or stencil');
-      runtime.batch().dispatch(pipeline.kernels.copy_depth_layout.bind({source:source.buffer,target:destination.buffer},
-        {pixel_count:source.width*source.height,source_compact:source.compactDepth?1:0,target_compact:destination.compactDepth?1:0}),dispatchGroups(source.width*source.height,runtime.device.limits)).submit();
+      runtime.batch().dispatch(pipeline.kernels.copy_depth_layout.bind({source:sourceBuffer,target:destinationBuffer},
+        {pixel_count:source.width*source.height,source_compact:source.compactDepth?1:0,target_compact:destination.compactDepth?1:0}),
+        dispatchGroups(source.width*source.height,runtime.device.limits)).submit();
+    } else {
+      runtime.batch().dispatch(pipeline.kernels[kernel].bind({source:sourceBuffer,target:destinationBuffer},
+        {pixel_count:source.width*source.height}),dispatchGroups(source.width*source.height,runtime.device.limits)).submit();
+    }
+    destination.authority='compat';
+  }
+  async function loadPlane(id,destination,kernel,preserve) {
+    if(!id||!preserve)return;
+    const source=planeStorage(id,destination.width,destination.height,destination.sampleCount??1);
+    await copyPlane(source,destination,kernel);
+  }
+  async function storePlane(id,source,kernel) {
+    if(!id)return;
+    await copyPlane(source,planeStorage(id,source.width,source.height,source.sampleCount??1),kernel);
+  }
+  async function storeAttachments(attachment,pass,nativeDirect) {
+    attachment.depthTargetId=pass.depthTargetId??0;
+    attachment.colorFormat=pass.colorFormat??attachment.colorFormat;
+    attachment.depthFormat=pass.depthFormat??attachment.depthFormat;
+    attachment.normalFormat=pass.normalFormat??attachment.normalFormat;
+    if(nativeDirect) {
+      attachment.authority='native';
+      if(pass.depthTargetId) {
+        const depth=targets.get(pass.depthTargetId);if(depth){depth.authority='native';depth.depthFormat=pass.depthFormat??depth.depthFormat;}
+      }
+      if(pass.normalTargetId) {
+        const normal=targets.get(pass.normalTargetId);if(normal){normal.authority='native';normal.normalFormat=pass.normalFormat??normal.normalFormat;}
+      }
+      if(pass.stencilTargetId) {
+        const stencil=targets.get(pass.stencilTargetId);if(stencil)stencil.authority='native';
+      }
       return;
     }
-    if((source.sampleCount??1)!==(destination.sampleCount??1))throw Error('Attachment sample counts differ');
-    if((source.sampleCount??1)>1) {
-      const plane={copy_depth:0,copy_normals:1,copy_stencil:2}[kernel];
-      if(plane===undefined)throw Error('Unsupported sample plane transfer');
-      runtime.batch().dispatch(pipeline.kernels.copy_multisample_plane.bind({source:source.sampleBuffer,target:destination.sampleBuffer},
-        {pixel_count:source.width*source.height,sample_count:source.sampleCount,plane}),
-        dispatchGroups(source.width*source.height*source.sampleCount,runtime.device.limits)).submit();
-    }
-    runtime.batch().dispatch(pipeline.kernels[kernel].bind({source:source.buffer,target:destination.buffer},
-      {pixel_count:source.width*source.height}),dispatchGroups(source.width*source.height,runtime.device.limits)).submit();
-  }
-  function loadPlane(id,destination,kernel,preserve) {
-    if(!id)return;
-    const source=planeStorage(id,destination.width,destination.height,destination.sampleCount??1);
-    if(preserve)copyPlane(source,destination,kernel);
-  }
-  function storePlane(id,source,kernel) {
-    if(id)copyPlane(source,planeStorage(id,source.width,source.height,source.sampleCount??1),kernel);
-  }
-  function storeDepth(attachment) {
-    storePlane(attachment.depthTargetId,attachment,'copy_depth');
-  }
-  function storeAttachments(attachment,pass) {
-    attachment.depthTargetId=pass.depthTargetId??0;
-    storeDepth(attachment);
-    if([0x88f0,0x8cad].includes(pass.depthFormat))storePlane(pass.depthTargetId,attachment,'copy_stencil');
-    storePlane(pass.stencilTargetId,attachment,'copy_stencil');
-    storePlane(pass.normalTargetId,attachment,'copy_normals');
-    if(pass.normalTargetId)targets.get(pass.normalTargetId).normalFormat=pass.normalFormat??0x8058;
+    await storePlane(pass.depthTargetId,attachment,'copy_depth');
+    if([0x88f0,0x8cad].includes(pass.depthFormat))await storePlane(pass.depthTargetId,attachment,'copy_stencil');
+    await storePlane(pass.stencilTargetId,attachment,'copy_stencil');
+    await storePlane(pass.normalTargetId,attachment,'copy_normals');
   }
   function fail(error) {
     if(failed||disposed)return;
