@@ -3,6 +3,7 @@
 // native from rasterization through post-processing and presentation.
 
 import {colorStorage,depthStorage} from './color-storage.js';
+import {canUseNativeCamera} from './attachment-policy.js';
 
 const FULLSCREEN=`
 @vertex fn fullscreen(@builtin(vertex_index) i:u32)->@builtin(position) vec4<f32>{
@@ -224,25 +225,7 @@ export class NativeAttachmentStore {
     return plane;
   }
   canCamera(pass,compact=false){
-    const samples=pass.sampleCount??1;
-    if(samples!==1&&samples!==4)return false;
-    // Separate stencil storage cannot be represented independently from WebGPU's
-    // depth-stencil attachment. Keep that rare path on the compatibility bridge.
-    if(pass.stencilTargetId&&pass.depthTargetId&&pass.stencilTargetId!==pass.depthTargetId)return false;
-    const v=pass.viewport??[0,0,pass.width,pass.height];
-    const full=v[0]===0&&v[1]===0&&v[2]===pass.width&&v[3]===pass.height;
-    const mask=pass.clearMask??16640;
-    // Native load (mask=0) or a complete attachment clear is fast. Partial
-    // component/depth clears still use the compatibility path.
-    if(mask!==0){
-      if(!full)return false;
-      if(!compact&&!(mask&16384))return false;
-      if(!(mask&256))return false;
-      const stencilBits=pass.stencilBits??([0x88f0,0x8cad].includes(pass.depthFormat)?8:0);
-      if(stencilBits&&!(mask&1024))return false;
-      if(!compact&&(pass.clearColorMask??15)!==15)return false;
-    }
-    return true;
+    return canUseNativeCamera(pass,compact);
   }
   cameraTarget(holder,pass,targets,compact=false){
     const samples=pass.sampleCount??1;
