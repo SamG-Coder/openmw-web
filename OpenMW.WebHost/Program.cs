@@ -119,6 +119,40 @@ app.MapGet("/", async context =>
 
 app.MapGet("/status", () => Results.Json(new { engine = manager.Status, gameData = gameData.Status }));
 
+// Optional local asset pack. The browser probes both URLs with a Range
+// request and simply continues without the pack when it is absent.
+app.MapGet("/moddata/{**asset}", async (HttpContext context, string asset) =>
+{
+    await SendRepositoryFile(context, Path.Combine(playRoot, "moddata"), asset, contentTypes);
+});
+app.MapGet("/data/{**asset}", async (HttpContext context, string asset) =>
+{
+    await SendRepositoryFile(context, Path.Combine(repoRoot, "data"), asset, contentTypes);
+});
+
+// A plain local Steam install has no dashboard-managed mod manifest. Return the
+// valid empty v2 document instead of a 404 so local boot is deterministic.
+app.MapGet("/mwdata-mods.json", () => Results.Json(new
+{
+    v = 2,
+    disabled = Array.Empty<string>(),
+    swaps = Array.Empty<object>(),
+    mods = Array.Empty<object>(),
+    content = Array.Empty<string>(),
+    groundcover = Array.Empty<string>()
+}));
+
+// Keep browser diagnostics visible in the VS Output window. The old Python
+// server forwarded this route to the multiplayer gateway; a local renderer run
+// has no gateway and should not turn every diagnostic post into a 404.
+app.MapPost("/clientlog", async (HttpContext context) =>
+{
+    using var reader = new StreamReader(context.Request.Body, Encoding.UTF8);
+    var body = await reader.ReadToEndAsync(context.RequestAborted);
+    app.Logger.LogInformation("Browser clientlog: {ClientLog}", body);
+    return Results.NoContent();
+});
+
 app.MapGet("/mwdata-manifest.json", () =>
 {
     var root = gameData.Current;
@@ -196,6 +230,26 @@ app.Logger.LogInformation("Repository root: {Root}", repoRoot);
 app.Logger.LogInformation("WebGPU renderer: {Renderer}", rendererRoot);
 app.Logger.LogInformation("Morrowind Data Files: {GameData}", gameData.Current ?? "(not found)");
 app.Run();
+
+static async Task SendRepositoryFile(HttpContext context, string root, string asset, FileExtensionContentTypeProvider contentTypes)
+{
+    if (String.IsNullOrWhiteSpace(asset) || !Directory.Exists(root))
+    {
+        context.Response.StatusCode = 404;
+        return;
+    }
+    var canonicalRoot = Path.GetFullPath(root);
+    var path = Path.GetFullPath(Path.Combine(canonicalRoot, asset.Replace('/', Path.DirectorySeparatorChar)));
+    if (!path.StartsWith(canonicalRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+    {
+        context.Response.StatusCode = 404;
+        return;
+    }
+    if (!contentTypes.TryGetContentType(path, out var type)) type = "application/octet-stream";
+    context.Response.ContentType = type;
+    context.Response.Headers["Cache-Control"] = "no-cache";
+    await context.Response.SendFileAsync(path, 0, null, context.RequestAborted);
+}
 
 sealed record EngineBundle(string Version, string Directory, string Source);
 
