@@ -724,22 +724,20 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
           const attachment=targets.get(pass.targetId);
           if(!attachment)throw Error('Depth isolation target is absent');
           const count=attachment.width*attachment.height,groups=dispatchGroups(count,runtime.device.limits);
+          await ensureCompatibility(attachment);
           if(pass.kind==='depth-save') {
-            const saved=pipeline.buffer(`isolatedDepth${depthStack.length}`,count*(attachment.compactDepth?4:40));
-            const entry={id:pass.targetId,buffer:saved,width:attachment.width,height:attachment.height,sampleCount:attachment.sampleCount??1,compactDepth:attachment.compactDepth};
-            if(entry.sampleCount>1) {
-              entry.sampleBuffer=pipeline.buffer(`isolatedSampleDepth${depthStack.length}`,count*40*entry.sampleCount);
-            }
+            const savedBuffer=pipeline.buffer(`isolatedDepth${depthStack.length}`,count*(attachment.compactDepth?4:40));
+            const entry={id:pass.targetId,buffer:savedBuffer,width:attachment.width,height:attachment.height,
+              sampleCount:1,compactDepth:attachment.compactDepth,authority:'compat',native:null};
             depthStack.push(entry);
-            copyPlane(attachment,entry,'copy_depth');
-            if(entry.sampleCount>1)runtime.batch().dispatch(pipeline.kernels.clear_multisample_depth.bind({target:attachment.sampleBuffer},
-              {pixel_count:count,sample_count:entry.sampleCount,depth:pass.depth}),dispatchGroups(count*entry.sampleCount,runtime.device.limits)).submit();
-            runtime.batch().dispatch((attachment.compactDepth?pipeline.kernels.clear_compact_depth:pipeline.kernels.clear_depth).bind({target:attachment.buffer},{pixel_count:count,depth:pass.depth}),groups).submit();
+            await copyPlane(attachment,entry,'copy_depth');
+            runtime.batch().dispatch((attachment.compactDepth?pipeline.kernels.clear_compact_depth:pipeline.kernels.clear_depth).bind(
+              {target:attachment.buffer},{pixel_count:count,depth:pass.depth}),groups).submit();
+            attachment.authority='compat';
           } else {
             const saved=depthStack.pop();if(!saved||saved.id!==pass.targetId)throw Error('Unbalanced depth isolation');
-            copyPlane(saved,attachment,'copy_depth');
+            await copyPlane(saved,attachment,'copy_depth');attachment.authority='compat';
           }
-          storeDepth(attachment);
           continue;
         }
         if(![pass.width,pass.height].every(n=>Number.isInteger(n)&&n>0&&n<=runtime.device.limits.maxTextureDimension2D))throw Error('Invalid camera target dimensions');
