@@ -194,10 +194,9 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         {pixel_count:attachment.width*attachment.height,red:0,green:0,blue:0,alpha:attachment.alpha??1,depth:1}),
         dispatchGroups(attachment.width*attachment.height,runtime.device.limits)).submit();
     }
-    if(attachment.authority==='native'&&attachment.native) {
-      await pipeline.rasterizer.exportCompatibility({config:{},...attachment.native},attachment.buffer,compatibilityParams(attachment));
-    }
-    attachment.authority='compat';
+    if((attachment.authority==='native'||attachment.authority==='empty')&&attachment.native)
+      await nativeTargets.materializeCompatibility(attachment,attachment.buffer);
+    if(attachment.authority==='empty')attachment.authority='compat';
     return attachment.buffer;
   }
   async function importCompatibility(attachment) {
