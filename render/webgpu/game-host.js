@@ -666,10 +666,44 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
             stages.push(next);passIndex++;
           }
           if(!stages.length)stages.push({kind:'scene-resolve',distortionId:0,scaleX:pass.scaleX,scaleY:pass.scaleY});
+          const adjustments=stages.filter(stage=>stage.kind==='scene-adjustments');
+          const distortions=stages.filter(stage=>stage.kind==='scene-distortion');
+          const nativePost=!partial&&original.authority==='native'&&original.native?.color?.samples===1
+            &&(destination.sampleCount??1)===1&&adjustments.length<=1&&distortions.length<=1
+            &&stages.every(stage=>['scene-resolve','scene-adjustments','scene-distortion'].includes(stage.kind));
+          if(nativePost) {
+            destination.colorFormat=pass.destinationFormat??destination.colorFormat;
+            nativeTargets.ensureColor(destination,destination.colorFormat,1,'color');
+            let distortion=null;
+            if(distortions.length) {
+              const holder=targets.get(distortions[0].distortionId);
+              if(!holder||holder.authority!=='native'||!holder.native?.color)throw Error('Native distortion target is unavailable');
+              distortion=holder.native;
+            }
+            const adjustment=adjustments[0];
+            await nativeTargets.resolveColor(original.native,destination.native,{
+              scaleX:pass.scaleX??1,scaleY:pass.scaleY??1,
+              gamma:adjustment?.gamma??1,contrast:adjustment?.contrast??1,adjust:Boolean(adjustment),distortion,clear:false
+            });
+            destination.authority='native';markScreenWritten(pass.targetId,destination);stats.passes++;continue;
+          }
+          await ensureCompatibility(original);await ensureCompatibility(destination);
+          for(const stage of stages) {
+            if(stage.kind==='scene-distortion') {
+              const holder=targets.get(stage.distortionId);if(holder)await ensureCompatibility(holder);
+            } else if(stage.kind==='scene-debug') {
+              const depth=stage.depthId&&targets.get(stage.depthId),normal=stage.normalId&&targets.get(stage.normalId);
+              if(depth)await ensureCompatibility(depth);if(normal)await ensureCompatibility(normal);
+            } else if(stage.kind==='scene-bloom') {
+              const depth=targets.get(stage.depthId);if(depth)await ensureCompatibility(depth);
+            }
+          }
+          const fallbackFinal=partial?{width:viewport_width,height:viewport_height,
+            buffer:pipeline.buffer('postprocessViewport',viewport_width*viewport_height*40)}:destination;
           let input=original;
           for(let stage=0;stage<stages.length;stage++) {
             const final=stage===stages.length-1;
-            const output=final?finalOutput:{width:original.width,height:original.height,
+            const output=final?fallbackFinal:{width:original.width,height:original.height,
               buffer:pipeline.buffer(`postprocessChain${stage%2}`,original.width*original.height*40)};
             dispatchPostEffect(stages[stage],input,output);
             const outputStorage=final?finalStorage:storage;
@@ -678,14 +712,10 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
               dispatchGroups(output.width*output.height,runtime.device.limits)).submit();
             input=output;
           }
-          if(partial)runtime.batch().dispatch(pipeline.kernels.place_postprocess.bind({source:finalOutput.buffer,target:destination.buffer},
+          if(partial)runtime.batch().dispatch(pipeline.kernels.place_postprocess.bind({source:fallbackFinal.buffer,target:destination.buffer},
             {width:destination.width,height:destination.height,source_width:viewport_width,source_height:viewport_height,viewport_x,viewport_y}),
             dispatchGroups(destination.width*destination.height,runtime.device.limits)).submit();
-          if((destination.sampleCount??1)>1)runtime.batch().dispatch(pipeline.kernels.broadcast_multisample_color.bind(
-            {source:destination.buffer,target:destination.sampleBuffer},
-            {width:destination.width,height:destination.height,sample_count:destination.sampleCount,
-             viewport_x,viewport_y,viewport_width,viewport_height}),
-            dispatchGroups(destination.width*destination.height*destination.sampleCount,runtime.device.limits)).submit();
+          destination.authority='compat';
           markScreenWritten(pass.targetId,destination);
           continue;
         }
