@@ -127,7 +127,12 @@ app.MapGet("/moddata/{**asset}", async (HttpContext context, string asset) =>
 });
 app.MapGet("/data/{**asset}", async (HttpContext context, string asset) =>
 {
-    await SendRepositoryFile(context, Path.Combine(repoRoot, "data"), asset, contentTypes);
+    // Development checkouts have historically placed this optional pack under
+    // either repo/data or play/data. Accept both without copying it.
+    var first = Path.Combine(repoRoot, "data");
+    var candidate = Path.Combine(first, asset.Replace('/', Path.DirectorySeparatorChar));
+    var root = File.Exists(candidate) ? first : Path.Combine(playRoot, "data");
+    await SendRepositoryFile(context, root, asset, contentTypes);
 });
 
 // A plain local Steam install has no dashboard-managed mod manifest. Return the
