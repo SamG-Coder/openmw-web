@@ -7,6 +7,22 @@ replaces its active browser renderer with standalone WGSL and WebGPU render
 pipelines. Setup, architecture, validation commands and compatibility limits are
 in [render/webgpu/README.md](render/webgpu/README.md).
 
+## Visual Studio / C# 10 quick run
+
+The WebGPU branch now includes `openmw-web.sln` and a C# 10 ASP.NET Core host.
+Open the solution in Visual Studio 2022 and press **F5**. The host finds an existing
+engine bundle, serves the authored page and `render/webgpu` sources directly, and
+automatically runs the existing WASM link step when no engine bundle is available.
+
+From a terminal the same setup is:
+
+```powershell
+dotnet run --project OpenMW.WebHost
+```
+
+It listens on `http://localhost:8910`. While an engine is being prepared, the same
+server displays build progress; `/status` exposes the current engine/build state.
+
 **Play Morrowind in your browser.** The OpenMW engine, compiled to WebAssembly, by [Virtastic](https://virtastic.app).
 
 <p align="center">
