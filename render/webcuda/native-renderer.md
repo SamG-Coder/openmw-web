@@ -151,6 +151,31 @@ less GPU raster work in these fixtures, not the game's new frame rate. The
 paged kernel passes bundled NVRTC compilation; generated WebGPU artifacts
 are refreshed but this revision has not been run through browser WebGPU.
 
+Filled samples now pass their coverage and top-left edge tests before computing
+interpolation weights and gradients. The old order performed those divisions
+for samples that would immediately be discarded. The surviving-sample arithmetic,
+polygon line/point path, depth/stencil behavior and packet ABI are unchanged.
+All rendering arithmetic remains in `material.cu`.
+
+An optional prior-kernel mode in the coverage/pruning fixtures compares against
+the unmodified rasterizer from commit `b3abd17b`. All 1,800 color/depth/stencil
+comparisons pass exactly on both CPU and native GPU. The material/depth CPU suite,
+39 related host checks and the paged raster kernel's bundled NVRTC compilation
+also pass. Generated WGSL/native artifacts are refreshed and served; engine
+`f7c1bdb71a48` remains current because no engine or host ABI changed.
+
+Paired RTX 5080 medians, with identical compact candidate lists on both sides:
+
+| Synthetic geometry | Shared tile references | Previous raster | Coverage-first raster |
+| --- | ---: | ---: | ---: |
+| Random triangles | 27,750 | 2.379 ms | 1.906 ms |
+| Long thin triangles | 12,384 | 1.648 ms | 1.642 ms |
+
+These use 1280x720, 96 triangles, nine CUDA-event measurements after three
+warmups and alternating test order. The random fixture improves by about 20%;
+the thin fixture is effectively unchanged. Neither measures browser overhead,
+full-game FPS or variable-refresh presentation.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal
@@ -255,6 +280,18 @@ Its NVCC build accepts `--benchmark` for the two isolated raster measurements.
 The CPU build runs correctness checks only. Current logs are
 `D:/OpenMW-local/webcuda-tests/tile-coverage-{cpu,gpu}.log`; the paged compiler
 report is `D:/OpenMW-local/webcuda-tile-coverage-native-compile.json`.
+
+To compare raster revisions, save the preceding artifact's `native.source`
+from `generated/raster_material.native.json` as `reference-material.cu` outside
+the tracked source tree. Build the coverage/pruning fixtures with
+`-DWEBCUDA_REFERENCE_RASTER` and add that directory to the include path. In this
+mode the coverage benchmark uses identical compact lists for both kernels;
+without the flag it retains the all-triangle/rectangular-list binning checks.
+Current comparison logs are
+`D:/OpenMW-local/webcuda-tests/raster-{coverage,pruning}-reference-{cpu,gpu}.log`.
+The baseline for this change used the original `b3abd17b` material source with
+its unchanged helper headers. The compiler report is
+`D:/OpenMW-local/webcuda-raster-coverage-native-compile.json`.
 
 For local serving, `/webcuda/` must expose this directory and `/webcuda-sdk/`
 must expose the SDK checkout, alongside the matching WASM64 engine artifacts,

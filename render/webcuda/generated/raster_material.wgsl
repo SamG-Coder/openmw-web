@@ -3793,21 +3793,6 @@ fn main(
         cw_tmp_45 = ((v_control >> 29u) & 3u);
       }
       var v_polygonMode: u32 = cw_tmp_45;
-      var v_pointFade: f32 = 1.0f;
-      var v_spriteU: f32 = 0.0f;
-      var v_spriteV: f32 = 0.0f;
-      var v_spriteDx: f32 = 0.0f;
-      var v_spriteDy: f32 = 0.0f;
-      var v_spriteMask: u32 = 0u;
-      var v_a: f32 = cw_divide_f32(v_ea, abs(v_area));
-      var v_b: f32 = cw_divide_f32(v_eb, abs(v_area));
-      var v_c: f32 = cw_divide_f32(v_ec, abs(v_area));
-      var v_gradAx: f32 = cw_divide_f32((v_by - v_cy), v_area);
-      var v_gradBx: f32 = cw_divide_f32((v_cy - v_ay), v_area);
-      var v_gradCx: f32 = cw_divide_f32((v_ay - v_by), v_area);
-      var v_gradAy: f32 = cw_divide_f32((v_cx - v_bx), v_area);
-      var v_gradBy: f32 = cw_divide_f32((v_ax - v_cx), v_area);
-      var v_gradCy: f32 = cw_divide_f32((v_bx - v_ax), v_area);
       if ((v_polygonMode == 0u)) {
         if ((v_primitive != 0u)) {
           continue;
@@ -3824,7 +3809,23 @@ fn main(
         if (((v_ec == 0.0f) && (!((((v_by - v_ay) * v_sign) < 0.0f) || ((v_by == v_ay) && (((v_bx - v_ax) * v_sign) > 0.0f)))))) {
           continue;
         }
-      } else {
+      }
+      var v_pointFade: f32 = 1.0f;
+      var v_spriteU: f32 = 0.0f;
+      var v_spriteV: f32 = 0.0f;
+      var v_spriteDx: f32 = 0.0f;
+      var v_spriteDy: f32 = 0.0f;
+      var v_spriteMask: u32 = 0u;
+      var v_a: f32 = cw_divide_f32(v_ea, abs(v_area));
+      var v_b: f32 = cw_divide_f32(v_eb, abs(v_area));
+      var v_c: f32 = cw_divide_f32(v_ec, abs(v_area));
+      var v_gradAx: f32 = cw_divide_f32((v_by - v_cy), v_area);
+      var v_gradBx: f32 = cw_divide_f32((v_cy - v_ay), v_area);
+      var v_gradCx: f32 = cw_divide_f32((v_ay - v_by), v_area);
+      var v_gradAy: f32 = cw_divide_f32((v_cx - v_bx), v_area);
+      var v_gradBy: f32 = cw_divide_f32((v_ax - v_cx), v_area);
+      var v_gradCy: f32 = cw_divide_f32((v_bx - v_ax), v_area);
+      if ((v_polygonMode != 0u)) {
         var v_xs: array<f32, 3>;
         var v_ys: array<f32, 3>;
         v_xs[0i] = v_ax;

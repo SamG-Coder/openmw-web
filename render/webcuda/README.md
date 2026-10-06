@@ -13,10 +13,14 @@ After fixing native atlas growth and reducing default shadow storage, the user
 confirmed visible native gameplay; frame times are still too high. Native
 submission coalescing has passed host regressions and awaits a browser check.
 
-The latest local engine is `61275df13d9f`. Geometry capture and host validation
+The latest local engine is `f7c1bdb71a48`. Terrain blend masks now generate in
+CUDA from immutable land inputs. Geometry capture and host validation
 now avoid repeated state/type checks and full-buffer callback scans. The build
 and regression suites pass; isolated benchmarks are in the native-renderer
 notes. This source branch is a development checkpoint, not a packaged release.
+The CUDA rasterizer now rejects uncovered filled samples before computing
+interpolation weights and gradients. Exact comparisons against the preceding
+kernel and isolated native timings are recorded in the same notes.
 
 See [native-renderer.md](native-renderer.md) for the current native path, memory
 limits, evidence and test commands, and `implementation-priorities.json` for

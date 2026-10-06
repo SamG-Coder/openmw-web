@@ -29,6 +29,7 @@ static void sync(){}
 #endif
 
 #include "material.cu"
+#include "raster-reference.cuh"
 #include "tiles.cu"
 
 template<class T> struct Buffer {
@@ -116,7 +117,7 @@ int main() {
         RUN(clear_attachment,W*H*samples,actual.data,W*H,17664,0,0,0,1,1,1,4,2,4,2,24,1,0,15,W,H,0,0,W,H,samples);
         RUN(clear_attachment,W*H*samples,expected.data,W*H,17664,0,0,0,1,1,1,4,2,4,2,24,1,0,15,W,H,0,0,W,H,samples);
         RUN(raster_material,W*H*samples,vertices.data,triangles.data,counts.data,compact.data,materials.data,texels.data,actual.data,attributes.data,W,H,0,Raster,Boundary,Point,0,0,0,0,0,1,4,2,4,2,24,1,samples);
-        RUN(raster_material,W*H*samples,vertices.data,triangles.data,referenceCounts.data,reference.data,materials.data,texels.data,expected.data,attributes.data,W,H,N,Raster,Boundary,Point,0,0,0,0,0,1,4,2,4,2,24,1,samples);
+        RUN(WEBCUDA_REFERENCE_ENTRY,W*H*samples,vertices.data,triangles.data,referenceCounts.data,reference.data,materials.data,texels.data,expected.data,attributes.data,W,H,N,Raster,Boundary,Point,0,0,0,0,0,1,4,2,4,2,24,1,samples);
         sync();assert(summary[1]==0&&summary[0]<=MaxWords);assert(compact[MaxWords]==0xdeadbeefu);
         if(std::memcmp(actual.data,expected.data,W*H*10*samples*sizeof(float))) {
             std::fprintf(stderr,"Mismatch: case %u samples %u mode %u state %u scissor %u %u %u %u\n",cases,samples,mode,state,scissor[0],scissor[1],scissor[2],scissor[3]);

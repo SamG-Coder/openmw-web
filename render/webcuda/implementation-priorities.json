@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated per-pixel raster work and native fence boundaries. Terrain blend mask generation now runs in authored CUDA and matches the original engine masks in real WASM capture and standalone GPU comparisons. Full-game FPS remains unmeasured.",
+  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated triangle setup and native fence boundaries. The CUDA rasterizer now rejects uncovered filled samples before interpolation work. Its surviving color/depth/stencil output matches the previous kernel in 1800 CPU and native GPU cases. Full-game FPS remains unmeasured.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest staged engine is f7c1bdb71a48. Terrain blend masks now use immutable land inputs and CUDA generation with existing GPU residency. Continue tracing large-pass sizing, triangle setup and native fence boundaries. All four stock postprocess effect names have CUDA routes; custom effects and broader game/lifecycle acceptance remain outside the verified coverage.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Engine f7c1bdb71a48 remains staged with regenerated raster assets. Coverage-first interpolation reduces one isolated random-triangle raster fixture by about 20%, while the thin-triangle fixture is unchanged. Continue the full rendering audit and large-pass sizing/native ownership analysis. Full gameplay, lifecycle and 60-180 Hz acceptance remain incomplete.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -973,5 +973,43 @@
       "D:/OpenMW-local/webcuda-terrain-stage.json"
     ],
     "limits": "Standalone native GPU execution and host/WASM tests. Browser execution of the new terrain kernel, full-game behavior and FPS are not newly verified."
+  },
+  "rasterCoverageOrder": {
+    "baselineCommit": "b3abd17b1cfbc80ecc66dfb648241889f177a3d3",
+    "change": "Run filled coverage and top-left rejection before interpolation weights/gradients in authored material.cu. Keep surviving arithmetic, polygon modes and packet ABI unchanged.",
+    "validation": {
+      "cpuExactComparisons": 1800,
+      "nativeGpuExactComparisons": 1800,
+      "materialDepthCpuSuite": "passed",
+      "relatedHostChecks": 39,
+      "pagedBundledNvrtc": "passed",
+      "matchingServedArtifacts": 49
+    },
+    "benchmark": {
+      "scope": "Standalone native CUDA raster, identical compact lists, direct buffers; excludes binning/browser/game frame time",
+      "width": 1280,
+      "height": 720,
+      "triangles": 96,
+      "measuredSamples": 9,
+      "warmups": 3,
+      "alternatingOrder": true,
+      "randomTriangles": {
+        "tileReferences": 27750,
+        "previousMs": 2.379,
+        "currentMs": 1.906
+      },
+      "longThinTriangles": {
+        "tileReferences": 12384,
+        "previousMs": 1.648,
+        "currentMs": 1.642
+      }
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-tests/raster-coverage-reference-gpu.log",
+      "D:/OpenMW-local/webcuda-tests/raster-pruning-reference-gpu.log",
+      "D:/OpenMW-local/webcuda-raster-coverage-native-compile.json",
+      "D:/OpenMW-local/webcuda-raster-coverage-stage.json"
+    ],
+    "limits": "Native standalone GPU evidence and CPU/host checks; no new browser execution, full-game FPS, variable-refresh or lifecycle acceptance."
   }
 }

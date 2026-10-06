@@ -29,6 +29,7 @@ static void sync(){}
 #endif
 
 #include "material.cu"
+#include "raster-reference.cuh"
 #include "tiles.cu"
 
 template<class T> struct Buffer {
@@ -107,10 +108,16 @@ struct Scene {
         RUN(clear_attachment,width*height*samples,target,width*height,17664,.1f,.2f,.3f,1,1,1,4,2,4,2,24,1,0,15,width,height,0,0,width,height,samples);
     }
     void render(bool optimized,unsigned samples) {
-        RUN(raster_material,width*height*samples,vertices.data,triangles.data,
-            optimized?counts.data:referenceCounts.data,optimized?candidates.data:reference.data,
-            materials.data,texels.data,optimized?actual.data:expected.data,attributes.data,width,height,
-            optimized?0:n,raster,boundary,point,0,0,0,0,0,1,4,2,4,2,24,1,samples);
+        if(optimized) {
+            RUN(raster_material,width*height*samples,vertices.data,triangles.data,counts.data,candidates.data,
+                materials.data,texels.data,actual.data,attributes.data,width,height,
+                0,raster,boundary,point,0,0,0,0,0,1,4,2,4,2,24,1,samples);
+        } else {
+            RUN(WEBCUDA_REFERENCE_ENTRY,width*height*samples,vertices.data,triangles.data,
+                comparePreviousRaster?counts.data:referenceCounts.data,comparePreviousRaster?candidates.data:reference.data,
+                materials.data,texels.data,expected.data,attributes.data,width,height,
+                comparePreviousRaster?0:n,raster,boundary,point,0,0,0,0,0,1,4,2,4,2,24,1,samples);
+        }
     }
     void compare(unsigned samples,unsigned scene) {
         bin(samples);actual[actual.size-1]=expected[expected.size-1]=12345;
@@ -179,8 +186,12 @@ int main(int argc,char** argv) {
                 float ms;checked(cudaEventElapsedTime(&ms,start,end));if(repeat>=3)timings[optimized?1:0].push_back(ms);
             }
             for(auto& values:timings)std::sort(values.begin(),values.end());
-            std::printf("%s: references %u -> %u; median GPU raster %.3f -> %.3f ms (1280x720, 96 triangles, 9 samples)\n",
-                workload==0?"Random triangles":"Long thin triangles",box,tight,timings[0][4],timings[1][4]);
+            if(comparePreviousRaster)
+                std::printf("%s: previous -> current raster, %u identical tile references; median GPU %.3f -> %.3f ms (1280x720, 96 triangles, 9 samples)\n",
+                    workload==0?"Random triangles":"Long thin triangles",tight,timings[0][4],timings[1][4]);
+            else
+                std::printf("%s: references %u -> %u; median GPU raster %.3f -> %.3f ms (1280x720, 96 triangles, 9 samples)\n",
+                    workload==0?"Random triangles":"Long thin triangles",box,tight,timings[0][4],timings[1][4]);
             checked(cudaEventDestroy(start));checked(cudaEventDestroy(end));
         }
     }

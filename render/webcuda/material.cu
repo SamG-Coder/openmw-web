@@ -801,11 +801,6 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
         float eb = ((cx-px)*(ay-py) - (cy-py)*(ax-px)) * sign;
         float ec = ((ax-px)*(by-py) - (ay-py)*(bx-px)) * sign;
         unsigned int polygonMode=front!=0u?(control>>27u)&3u:(control>>29u)&3u;
-        float pointFade=1.0f,spriteU=0.0f,spriteV=0.0f,spriteDx=0.0f,spriteDy=0.0f;
-        unsigned int spriteMask=0u;
-        float a = ea / fabsf(area); float b = eb / fabsf(area); float c = ec / fabsf(area);
-        float gradAx=(by-cy)/area,gradBx=(cy-ay)/area,gradCx=(ay-by)/area;
-        float gradAy=(cx-bx)/area,gradBy=(ax-cx)/area,gradCy=(bx-ax)/area;
         if(polygonMode==0u) {
             if(primitive!=0u)continue;
             if (ea < 0.0f || eb < 0.0f || ec < 0.0f) continue;
@@ -813,7 +808,15 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
             if (ea == 0.0f && !((cy-by)*sign < 0.0f || (cy == by && (cx-bx)*sign > 0.0f))) continue;
             if (eb == 0.0f && !((ay-cy)*sign < 0.0f || (ay == cy && (ax-cx)*sign > 0.0f))) continue;
             if (ec == 0.0f && !((by-ay)*sign < 0.0f || (by == ay && (bx-ax)*sign > 0.0f))) continue;
-        } else {
+        }
+        // Rejected filled samples need no interpolation weights or gradients.
+        // Keep the original arithmetic/order for samples that reach shading.
+        float pointFade=1.0f,spriteU=0.0f,spriteV=0.0f,spriteDx=0.0f,spriteDy=0.0f;
+        unsigned int spriteMask=0u;
+        float a = ea / fabsf(area); float b = eb / fabsf(area); float c = ec / fabsf(area);
+        float gradAx=(by-cy)/area,gradBx=(cy-ay)/area,gradCx=(ay-by)/area;
+        float gradAy=(cx-bx)/area,gradBy=(ax-cx)/area,gradCy=(bx-ax)/area;
+        if(polygonMode!=0u) {
             // Process a perimeter edge/vertex, including coverage outside the
             // filled triangle. Clipping fan diagonals have a zero boundary flag.
             float xs[3],ys[3];xs[0]=ax;xs[1]=bx;xs[2]=cx;ys[0]=ay;ys[1]=by;ys[2]=cy;
