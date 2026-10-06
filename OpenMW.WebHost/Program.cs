@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
@@ -365,6 +366,7 @@ sealed class EngineManager
     private volatile EngineBundle? _current;
     private volatile string _state = "starting";
     private volatile bool _buildFailed;
+    private volatile string? _sourceFingerprint;
 
     public EngineManager(string root, IConfiguration configuration, ILogger log)
     {
@@ -387,6 +389,7 @@ sealed class EngineManager
                     state = _state,
                     engine = _current,
                     buildFailed = _buildFailed,
+                    sourceFingerprint = _sourceFingerprint,
                     log = _buildLog.TakeLast(80).ToArray()
                 };
             }
@@ -397,75 +400,46 @@ sealed class EngineManager
     {
         try
         {
-            _state = "searching";
-            _current = FindEngine();
+            _state = "checking";
+            _sourceFingerprint = ComputeSourceFingerprint();
+            AddLog($"Engine source fingerprint: {_sourceFingerprint}");
+
+            _current = FindFreshEngine(_sourceFingerprint);
             if (_current is not null)
             {
                 _state = "ready";
-                _log.LogInformation("Using OpenMW engine {Version} from {Directory}", _current.Version, _current.Directory);
+                _log.LogInformation("Using current OpenMW engine {Version} from {Directory}", _current.Version, _current.Directory);
                 return;
             }
 
             if (!_configuration.GetValue("OpenMW:BuildEngineWhenMissing", true))
             {
-                Fail("No OpenMW engine bundle was found and automatic engine linking is disabled.");
+                Fail("No current OpenMW WASM build was found and automatic engine building is disabled.");
                 return;
             }
 
             _state = "building";
-            AddLog("No complete engine bundle found. Running wasm-build/link-openmw.sh...");
-            var script = Path.Combine(_root, "wasm-build", "link-openmw.sh");
-            if (!File.Exists(script))
+            AddLog("OpenMW WASM is missing or stale. Running the incremental engine build...");
+            var exitCode = await BuildEngineAsync();
+            if (exitCode != 0)
             {
-                Fail("wasm-build/link-openmw.sh is missing.");
+                Fail($"Engine build exited with code {exitCode}. See /status for build output.");
                 return;
             }
 
-            var psi = new ProcessStartInfo
+            var buildDirectory = Path.Combine(_root, "build-wasm64");
+            if (!Complete(buildDirectory))
             {
-                FileName = OperatingSystem.IsWindows() ? "bash.exe" : "/bin/bash",
-                WorkingDirectory = _root,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false
-            };
-            psi.ArgumentList.Add(script);
-            psi.Environment["ROOT"] = _root;
-
-            using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-            process.OutputDataReceived += (_, e) => { if (e.Data is not null) AddLog(e.Data); };
-            process.ErrorDataReceived += (_, e) => { if (e.Data is not null) AddLog(e.Data); };
-
-            try
-            {
-                process.Start();
-            }
-            catch (Exception ex)
-            {
-                Fail("Could not start the engine build: " + ex.Message);
+                Fail("The engine build completed but build-wasm64/openmw.js, openmw.wasm and openmw.data were not produced.");
                 return;
             }
 
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
-            await process.WaitForExitAsync();
-
-            if (process.ExitCode != 0)
-            {
-                Fail($"Engine build exited with code {process.ExitCode}. See /status for its output.");
-                return;
-            }
-
-            _current = FindEngine();
-            if (_current is null)
-            {
-                Fail("The engine build completed but openmw.js, openmw.wasm and openmw.data were not found.");
-                return;
-            }
-
+            File.WriteAllText(StampPath(buildDirectory), _sourceFingerprint);
+            _current = BundleForDirectory(buildDirectory, "build-wasm64");
+            _buildFailed = false;
             _state = "ready";
             AddLog($"Engine ready: {_current.Version}");
-            _log.LogInformation("OpenMW engine is ready: {Version}", _current.Version);
+            _log.LogInformation("Built and mounted OpenMW engine {Version} directly from {Directory}", _current.Version, _current.Directory);
         }
         catch (Exception ex)
         {
@@ -473,46 +447,173 @@ sealed class EngineManager
         }
     }
 
-    private EngineBundle? FindEngine()
+    private EngineBundle? FindFreshEngine(string fingerprint)
     {
         var requested = _configuration["OpenMW:EngineVersion"]?.Trim();
-        foreach (var parent in new[]
-        {
-            Path.Combine(_root, ".local-runtime", "e"),
-            Path.Combine(_root, "play", "e")
-        })
-        {
-            if (!Directory.Exists(parent)) continue;
-            var directories = Directory.GetDirectories(parent)
-                .OrderByDescending(d => Directory.GetLastWriteTimeUtc(d));
-            foreach (var directory in directories)
-            {
-                var version = Path.GetFileName(directory);
-                if (!String.IsNullOrWhiteSpace(requested) &&
-                    !String.Equals(requested, "auto", StringComparison.OrdinalIgnoreCase) &&
-                    !String.Equals(requested, version, StringComparison.Ordinal))
-                    continue;
-                if (Complete(directory))
-                    return new EngineBundle(version, directory, parent.Contains(".local-runtime") ? ".local-runtime" : "play/e");
-            }
-        }
 
+        // Explicit versions are an escape hatch for reproducing an old bundle.
         if (!String.IsNullOrWhiteSpace(requested) &&
             !String.Equals(requested, "auto", StringComparison.OrdinalIgnoreCase))
-            return null;
-
-        foreach (var candidate in new[]
         {
-            (Directory: Path.Combine(_root, "build-wasm64"), Source: "build-wasm64"),
-            (Directory: Path.Combine(_root, "play"), Source: "play")
-        })
-            if (Complete(candidate.Directory))
-                return new EngineBundle("dev", candidate.Directory, candidate.Source);
+            foreach (var parent in new[] { Path.Combine(_root, ".local-runtime", "e"), Path.Combine(_root, "play", "e") })
+            {
+                var directory = Path.Combine(parent, requested);
+                if (Complete(directory))
+                    return new EngineBundle(requested, directory, parent.Contains(".local-runtime") ? ".local-runtime" : "play/e");
+            }
+            return null;
+        }
+
+        // Prefer the live build tree. It avoids a staging/copy step entirely.
+        var build = Path.Combine(_root, "build-wasm64");
+        if (Complete(build) && StampMatches(build, fingerprint))
+            return BundleForDirectory(build, "build-wasm64");
+
+        // A staged bundle is only considered current when it carries the same
+        // source fingerprint. Old pre-WebHost bundles intentionally do not.
+        foreach (var parent in new[] { Path.Combine(_root, ".local-runtime", "e"), Path.Combine(_root, "play", "e") })
+        {
+            if (!Directory.Exists(parent)) continue;
+            foreach (var directory in Directory.GetDirectories(parent).OrderByDescending(Directory.GetLastWriteTimeUtc))
+            {
+                if (Complete(directory) && StampMatches(directory, fingerprint))
+                    return new EngineBundle(Path.GetFileName(directory), directory,
+                        parent.Contains(".local-runtime") ? ".local-runtime" : "play/e");
+            }
+        }
 
         return null;
     }
 
+    private async Task<int> BuildEngineAsync()
+    {
+        ProcessStartInfo psi;
+        if (OperatingSystem.IsWindows())
+        {
+            var script = Path.Combine(_root, "wasm-build", "build-local-windows.ps1");
+            if (!File.Exists(script)) throw new FileNotFoundException("Windows WASM build wrapper is missing.", script);
+
+            psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                WorkingDirectory = _root,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            psi.ArgumentList.Add("-NoProfile");
+            psi.ArgumentList.Add("-ExecutionPolicy");
+            psi.ArgumentList.Add("Bypass");
+            psi.ArgumentList.Add("-File");
+            psi.ArgumentList.Add(script);
+
+            var toolsRoot = _configuration["OpenMW:ToolsRoot"]?.Trim();
+            if (!String.IsNullOrWhiteSpace(toolsRoot))
+            {
+                psi.ArgumentList.Add("-ToolsRoot");
+                psi.ArgumentList.Add(Environment.ExpandEnvironmentVariables(toolsRoot));
+            }
+        }
+        else
+        {
+            var script = Path.Combine(_root, "wasm-build", "link-openmw.sh");
+            if (!File.Exists(script)) throw new FileNotFoundException("WASM link script is missing.", script);
+            psi = new ProcessStartInfo
+            {
+                FileName = "/bin/bash",
+                WorkingDirectory = _root,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false
+            };
+            psi.ArgumentList.Add(script);
+            psi.Environment["ROOT"] = _root;
+        }
+
+        using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+        process.OutputDataReceived += (_, e) => { if (e.Data is not null) AddLog(e.Data); };
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) AddLog(e.Data); };
+
+        process.Start();
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+        await process.WaitForExitAsync();
+        return process.ExitCode;
+    }
+
+    private string ComputeSourceFingerprint()
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var files = new List<string>();
+
+        void AddTree(string directory)
+        {
+            if (!Directory.Exists(directory)) return;
+            files.AddRange(Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories)
+                .Where(path =>
+                {
+                    var extension = Path.GetExtension(path);
+                    return extension.Equals(".cpp", StringComparison.OrdinalIgnoreCase) ||
+                           extension.Equals(".hpp", StringComparison.OrdinalIgnoreCase) ||
+                           extension.Equals(".h", StringComparison.OrdinalIgnoreCase) ||
+                           extension.Equals(".c", StringComparison.OrdinalIgnoreCase);
+                }));
+        }
+
+        // These are the C++ pieces that define the browser capture ABI and the
+        // viewer selection/frame loop. JS/WGSL changes do not require WASM relink.
+        AddTree(Path.Combine(_root, "openmw", "components", "webcuda"));
+        foreach (var file in new[]
+        {
+            Path.Combine(_root, "openmw", "apps", "openmw", "engine.cpp"),
+            Path.Combine(_root, "openmw", "apps", "openmw", "engine.hpp"),
+            Path.Combine(_root, "openmw", "apps", "openmw", "main.cpp"),
+            Path.Combine(_root, "wasm-build", "link-openmw.sh")
+        })
+            if (File.Exists(file)) files.Add(file);
+
+        foreach (var path in files.Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(p => p, StringComparer.OrdinalIgnoreCase))
+        {
+            var relative = Path.GetRelativePath(_root, path).Replace('\\', '/');
+            var nameBytes = Encoding.UTF8.GetBytes(relative + "\n");
+            hash.AppendData(nameBytes);
+            using var stream = File.OpenRead(path);
+            var buffer = new byte[128 * 1024];
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                hash.AppendData(buffer, 0, read);
+        }
+
+        return Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()[..16];
+    }
+
+    private EngineBundle BundleForDirectory(string directory, string source)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (var name in new[] { "openmw.js", "openmw.wasm", "openmw.data" })
+        {
+            using var stream = File.OpenRead(Path.Combine(directory, name));
+            var buffer = new byte[256 * 1024];
+            int read;
+            while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                hash.AppendData(buffer, 0, read);
+        }
+        var version = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant()[..12];
+        return new EngineBundle(version, directory, source);
+    }
+
+    private static string StampPath(string directory) => Path.Combine(directory, ".webhost-engine-fingerprint");
+
+    private static bool StampMatches(string directory, string fingerprint)
+    {
+        var path = StampPath(directory);
+        if (!File.Exists(path)) return false;
+        try { return String.Equals(File.ReadAllText(path).Trim(), fingerprint, StringComparison.Ordinal); }
+        catch (IOException) { return false; }
+    }
+
     private static bool Complete(string directory) =>
+        Directory.Exists(directory) &&
         File.Exists(Path.Combine(directory, "openmw.js")) &&
         File.Exists(Path.Combine(directory, "openmw.wasm")) &&
         File.Exists(Path.Combine(directory, "openmw.data"));
@@ -540,13 +641,13 @@ sealed class EngineManager
         string[] lines;
         lock (_sync) lines = _buildLog.TakeLast(30).ToArray();
         var escaped = String.Join("\n", lines.Select(System.Net.WebUtility.HtmlEncode));
-        var title = _buildFailed ? "OpenMW engine is not ready" : "Preparing OpenMW";
+        var title = _buildFailed ? "OpenMW engine build failed" : "Building OpenMW";
         var refresh = _buildFailed ? "" : "<meta http-equiv=\"refresh\" content=\"2\">";
         return $@"<!doctype html>
 <html><head><meta charset=""utf-8"">{refresh}<title>{title}</title>
 <style>body{{font-family:Segoe UI,Arial;background:#111;color:#eee;margin:40px}}main{{max-width:1000px;margin:auto}}pre{{background:#1b1b1b;padding:20px;white-space:pre-wrap;border-radius:6px}}a{{color:#d6ad55}}</style>
 </head><body><main><h1>{title}</h1>
-<p>{(_buildFailed ? "The ASP.NET host is running, but the engine could not be prepared." : "The ASP.NET host is running. The game will open automatically when the engine is ready.")}</p>
+<p>{(_buildFailed ? "The ASP.NET host is still running. Fix the build error below and restart F5." : "The C# host detected that the WASM engine is missing or stale. Ninja is rebuilding only what changed, then the game will reload automatically.")}</p>
 <pre>{escaped}</pre><p><a href=""/status"">Build/status JSON</a></p></main></body></html>";
     }
 }
