@@ -28,6 +28,43 @@ app.Use(async (context, next) =>
     await next();
 });
 
+// /index.html is the URL used by the launcher. Intercept it before
+// StaticFileMiddleware so the raw authored page cannot bypass engine selection
+// and renderer stamping. "/" is handled by the endpoint below.
+app.Use(async (context, next) =>
+{
+    if (!String.Equals(context.Request.Path.Value, "/index.html", StringComparison.OrdinalIgnoreCase))
+    {
+        await next();
+        return;
+    }
+
+    var engine = manager.Current;
+    if (engine is null)
+    {
+        context.Response.ContentType = "text/html; charset=utf-8";
+        context.Response.StatusCode = manager.BuildFailed ? 500 : 503;
+        await context.Response.WriteAsync(manager.StartupPage());
+        return;
+    }
+
+    var source = Path.Combine(playRoot, "index.html");
+    if (!File.Exists(source))
+    {
+        context.Response.StatusCode = 500;
+        await context.Response.WriteAsync("play/index.html is missing.");
+        return;
+    }
+
+    var page = await File.ReadAllTextAsync(source, context.RequestAborted);
+    const string rendererMarker = "const rendererDirectory = './' + __ENGINE_DIR + 'webgpu/';";
+    page = page.Replace("__ENGINE_VERSION__", engine.Version, StringComparison.Ordinal)
+               .Replace(rendererMarker, "const rendererDirectory = './webgpu/';", StringComparison.Ordinal);
+    context.Response.ContentType = "text/html; charset=utf-8";
+    context.Response.Headers["Cache-Control"] = "no-store";
+    await context.Response.WriteAsync(page);
+});
+
 if (Directory.Exists(playRoot))
 {
     app.UseStaticFiles(new StaticFileOptions
@@ -79,6 +116,29 @@ app.MapGet("/", async context =>
 });
 
 app.MapGet("/status", () => Results.Json(manager.Status));
+
+app.MapGet("/mwdata-manifest.json", () =>
+{
+    var root = Path.Combine(playRoot, "mwdata");
+    if (!Directory.Exists(root))
+        return Results.Json(Array.Empty<object>());
+
+    var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+        .Where(path =>
+        {
+            var name = Path.GetFileName(path);
+            return !name.StartsWith(".", StringComparison.Ordinal) &&
+                   !name.EndsWith(".br", StringComparison.OrdinalIgnoreCase);
+        })
+        .Select(path => new
+        {
+            p = Path.GetRelativePath(root, path).Replace('\\', '/'),
+            s = new FileInfo(path).Length
+        })
+        .OrderBy(file => file.p, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    return Results.Json(files);
+});
 
 app.MapGet("/e/{version}/{**asset}", async (HttpContext context, string version, string asset) =>
 {
