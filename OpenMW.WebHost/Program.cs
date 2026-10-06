@@ -198,10 +198,7 @@ app.MapGet("/mwdata/{**asset}", async (HttpContext context, string asset) =>
         return;
     }
 
-    if (!contentTypes.TryGetContentType(path, out var type)) type = "application/octet-stream";
-    context.Response.ContentType = type;
-    context.Response.Headers["Cache-Control"] = "no-cache";
-    await context.Response.SendFileAsync(path, 0, null, context.RequestAborted);
+    await SendBinaryFile(context, path, contentTypes);
 });
 
 app.MapGet("/e/{version}/{**asset}", async (HttpContext context, string version, string asset) =>
@@ -236,6 +233,74 @@ app.Logger.LogInformation("WebGPU renderer: {Renderer}", rendererRoot);
 app.Logger.LogInformation("Morrowind Data Files: {GameData}", gameData.Current ?? "(not found)");
 app.Run();
 
+static async Task SendBinaryFile(HttpContext context, string path, FileExtensionContentTypeProvider contentTypes)
+{
+    if (!contentTypes.TryGetContentType(path, out var type)) type = "application/octet-stream";
+    var info = new FileInfo(path);
+    var size = info.Length;
+    context.Response.ContentType = type;
+    context.Response.Headers["Accept-Ranges"] = "bytes";
+    context.Response.Headers["Cache-Control"] = "no-cache";
+
+    var range = context.Request.Headers.Range.ToString();
+    if (!String.IsNullOrWhiteSpace(range))
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(range, @"^bytes=(\d*)-(\d*)$",
+            System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (!match.Success || (match.Groups[1].Length == 0 && match.Groups[2].Length == 0))
+        {
+            context.Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+            context.Response.Headers["Content-Range"] = $"bytes */{size}";
+            return;
+        }
+
+        long start, end;
+        if (match.Groups[1].Length == 0)
+        {
+            if (!Int64.TryParse(match.Groups[2].Value, out var suffix) || suffix <= 0)
+            {
+                context.Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+                context.Response.Headers["Content-Range"] = $"bytes */{size}";
+                return;
+            }
+            start = Math.Max(0, size - suffix);
+            end = size - 1;
+        }
+        else
+        {
+            if (!Int64.TryParse(match.Groups[1].Value, out start))
+            {
+                context.Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+                context.Response.Headers["Content-Range"] = $"bytes */{size}";
+                return;
+            }
+            if (match.Groups[2].Length != 0 && Int64.TryParse(match.Groups[2].Value, out var requestedEnd))
+                end = Math.Min(requestedEnd, size - 1);
+            else
+                end = size - 1;
+        }
+
+        if (size <= 0 || start < 0 || start >= size || end < start)
+        {
+            context.Response.StatusCode = StatusCodes.Status416RangeNotSatisfiable;
+            context.Response.Headers["Content-Range"] = $"bytes */{size}";
+            return;
+        }
+
+        var length = end - start + 1;
+        context.Response.StatusCode = StatusCodes.Status206PartialContent;
+        context.Response.ContentLength = length;
+        context.Response.Headers["Content-Range"] = $"bytes {start}-{end}/{size}";
+        if (!HttpMethods.IsHead(context.Request.Method))
+            await context.Response.SendFileAsync(path, start, length, context.RequestAborted);
+        return;
+    }
+
+    context.Response.ContentLength = size;
+    if (!HttpMethods.IsHead(context.Request.Method))
+        await context.Response.SendFileAsync(path, 0, size, context.RequestAborted);
+}
+
 static async Task SendRepositoryFile(HttpContext context, string root, string asset, FileExtensionContentTypeProvider contentTypes)
 {
     if (String.IsNullOrWhiteSpace(asset) || !Directory.Exists(root))
@@ -250,10 +315,7 @@ static async Task SendRepositoryFile(HttpContext context, string root, string as
         context.Response.StatusCode = 404;
         return;
     }
-    if (!contentTypes.TryGetContentType(path, out var type)) type = "application/octet-stream";
-    context.Response.ContentType = type;
-    context.Response.Headers["Cache-Control"] = "no-cache";
-    await context.Response.SendFileAsync(path, 0, null, context.RequestAborted);
+    await SendBinaryFile(context, path, contentTypes);
 }
 
 sealed record EngineBundle(string Version, string Directory, string Source);
