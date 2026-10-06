@@ -1067,6 +1067,61 @@ The full engine builds and stages as `6f067cc99e82`. Reports use
 FPS improvement, native-browser gameplay acceptance or smooth 60-180 Hz
 presentation. The broader rendering ownership and gameplay audit remains open.
 
+## Raw per-object light preparation
+
+Engine `f9483440294a` moves sun and per-object point-light view transforms,
+point radius scaling and distance color fading into `camera.cu`. The engine
+captures the source uniform values, camera matrices and fade inputs. Raw
+metadata belongs to the winning uniform, preserving child overrides. The
+light-list cache now includes the view matrix; the previous light-ID-only key
+could reuse another camera's view-space positions.
+
+The CUDA preparation consumes its raw marker once, before vertex or pixel
+lighting. It uses the existing `resolve_camera` dispatch with unchanged
+bindings and native parameters. No additional GPU buffer, dispatch or readback
+is introduced. Raw materials carry a variable light-record offset; shadow,
+screen-effect and water extensions follow it. Host validation checks the new
+records without transforming or fading them. The full-pipeline test also
+exposed an optional screen-primitive default being initialized after its first
+use; initialization and shape validation now happen before buffer allocation.
+
+All 14 WASM64 integration suites and 76 host checks pass. The actual OSG
+uniform capture and material table generate 192 fixtures, spanning zero to
+32 point lights, independent sun/point metadata, three cameras, radius scales
+and four fade regions. All packets pass host validation unchanged. Native
+CUDA replay checks 222,792 words, including 6,064 changed fields, repeated
+preparation and buffer guards. Changed floats use the documented tolerance
+against the previous Matrixd-based CPU calculations; unchanged fields remain
+bit-exact. The paged kernel compiles with the browser's NVRTC 13.3. All 379
+generated artifacts reproduce byte-for-byte; only the four `resolve_camera`
+artifacts change, and tracked SDK files remain unchanged.
+
+Reproduce the producer fixtures by setting `WEBCUDA_LIGHT_FIXTURES` to a `.bin`
+path before `wasm-build/test-webcuda-submission.ps1`. Compile
+`render/webcuda/light-input-gpu.test.cpp` with NVCC using
+`-x cu -std=c++17 -O2 --use_fast_math -arch=sm_120`, then pass the fixture file
+to the executable. Both browser validators include the production-pipeline
+light checks in `light-input-gpu-check.js`.
+
+All 90 WebGPU runtime pipelines compile and all 146 GPU checks pass, including
+117 production-pipeline checks. The 16 new cases compare raw inputs against
+independent test-only canonicalization through vertex and pixel lighting,
+both camera orientations and all four fade regions.
+
+The rebuilt WebGPU Seyda Neen run records 277 presentations with zero renderer
+errors, aborted captures or legacy draw attempts. All 120 sampled completed
+scene frames release their captured packets. This is a debug scene check,
+not a matched performance benchmark or native-browser test. Reports use
+`D:/OpenMW-local/webcuda-light-input-*` and
+`D:/OpenMW-local/webcuda-seyda-neen-light-input-2026-10-07`.
+
+This migration covers per-object light preparation. Clustered-light source
+preparation, scene visibility/bounds and upstream sky/camera calculations
+remain in the ownership audit. Custom postprocessing that consumes
+`omw_PointLights` is outside the supported CUDA effects and still needs raw
+light metadata handling. This change does not establish an FPS gain, current
+native-browser gameplay acceptance or smooth 60-180 Hz presentation.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

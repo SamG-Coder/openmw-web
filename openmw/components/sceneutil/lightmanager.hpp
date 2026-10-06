@@ -18,6 +18,7 @@
 #include <components/resource/resourcesystem.hpp>
 #include <components/sceneutil/clusteredlighting.hpp>
 #include <components/sceneutil/nodecallback.hpp>
+#include <components/webcuda/lightinputs.hpp>
 
 namespace SceneUtil
 {
@@ -112,6 +113,8 @@ namespace SceneUtil
 
         size_t mLastAppliedFrame;
 
+        std::array<float, 5> mWebCudaFade{};
+
         bool mEmpty = false;
 
     public:
@@ -155,6 +158,12 @@ namespace SceneUtil
         void setLastAppliedFrame(size_t lastAppliedFrame) { mLastAppliedFrame = lastAppliedFrame; }
 
         size_t getLastAppliedFrame() const { return mLastAppliedFrame; }
+
+        const std::array<float, 5>& getWebCudaFade() const { return mWebCudaFade; }
+        void setWebCudaFade(const osg::Vec3f& center, float start, float end)
+        {
+            mWebCudaFade = {center.x(), center.y(), center.z(), start, end};
+        }
     };
 
     struct LightSettings
@@ -268,9 +277,10 @@ namespace SceneUtil
         // FLOAT_MAT4 uniform for every lit object, on every cull, for every camera pass -- and
         // because each was a NEW uniform pointer, osg::State's per-location upload dedup could
         // never skip the 1KB re-upload either. Objects in one room overwhelmingly share a light
-        // list, so a hit here removes both costs at once. Keyed on the light-source ids, which
-        // are what actually determine the contents. Cleared every frame in update().
-        std::map<std::vector<int>, osg::ref_ptr<osg::StateSet>> mLightListStateSetCache;
+        // list, so a hit here removes both costs at once. Camera matrices also
+        // belong to the key: reflection/preview passes can share light IDs but
+        // require different view-space positions. Cleared every frame in update().
+        std::map<WebCuda::LightListKey, osg::ref_ptr<osg::StateSet>> mLightListStateSetCache;
 
         size_t mLightingMask;
 

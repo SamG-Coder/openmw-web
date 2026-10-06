@@ -351,6 +351,9 @@ export class MaterialPipeline {
       scene.flatColors??=new Uint32Array(triangleCount).fill(0xffffffff);
       if(!(scene.flatColors instanceof Uint32Array)||scene.flatColors.length!==triangleCount
         ||scene.flatColors.some(vertex=>vertex!==0xffffffff&&vertex>=vertexCount))throw RangeError('Invalid provoking vertex packet');
+      scene.screenPrimitives??=new Uint32Array();
+      if(!(scene.screenPrimitives instanceof Uint32Array)||scene.screenPrimitives.length%12)
+        throw RangeError('Invalid screen primitive records');
       if (!allFinite(scene.vertices)||!allFinite(scene.matrices)) throw RangeError('Non-finite vertex or matrix');
       if (scene.matrixIds.some(v=>v>=scene.matrices.length/32)) throw RangeError('Invalid matrix index');
       if(scene.attributes==null&&!compactVertices) {
@@ -500,8 +503,21 @@ export class MaterialPipeline {
         if(sky&&scene.texels[a[m]+8]===5&&!scene.texels[a[m]+9])throw RangeError('Missing sky query identity');
         if(object) {
           const data=a[m];
-          if(data+352>scene.texels.length||scene.texels[data+6]>1024||scene.texels[data+7]!==352||data+352+scene.texels[data+6]*16>scene.texels.length||scene.texels[data+5]>5||scene.texels[data+51]>7)
+          const lightCount=scene.texels[data+6],lightStart=scene.texels[data+7],rawLights=Boolean(scene.texels[data+4]&2147483648);
+          if(data+352>scene.texels.length||lightCount>1024||lightStart!==(rawLights?388+lightCount*5:352)||data+lightStart+lightCount*16>scene.texels.length||scene.texels[data+5]>5||scene.texels[data+51]>7)
             throw RangeError('Invalid object lighting payload');
+          if(rawLights) {
+            const flags=scene.texels[data+352],values=new Float32Array(scene.texels.buffer,scene.texels.byteOffset,scene.texels.length);
+            if(!flags||flags>3||(flags&2)&&!lightCount||values[data+353]<0
+              ||values.subarray(data+353,data+lightStart).some(value=>!Number.isFinite(value)))throw RangeError('Invalid raw light inputs');
+            if((flags&1)&&values.subarray(data+24,data+28).some(value=>!Number.isFinite(value)))throw RangeError('Invalid raw sunlight');
+            if(flags&2)for(let light=0;light<lightCount;light++) {
+              const fade=data+388+light*5;
+              if(values[fade+4]!==0&&values[fade+4]<=values[fade+3])throw RangeError('Invalid raw light fade interval');
+              const record=data+lightStart+light*16;
+              if(values[record+15]<0||values.subarray(record,record+16).some(value=>!Number.isFinite(value)))throw RangeError('Invalid raw point light');
+            }
+          }
           if((scene.texels[data+4]&8388608)&&((scene.texels[data+4]&(2097152|16384|8192))||(scene.texels[data+72]&48)))
             throw RangeError('Vertex lighting conflicts with per-pixel or unlit material features');
           if(scene.texels[data+4]&1073741824) {
@@ -526,7 +542,7 @@ export class MaterialPipeline {
           const cascadeCount=scene.texels[data+324],cascadeStart=scene.texels[data+325];
           if(scene.texels[data+4]&2097152) {
             const water=data+scene.texels[data+321];
-            const expected=352+scene.texels[data+6]*16+cascadeCount*40+((scene.texels[data+4]&6029312)?48:0);
+            const expected=lightStart+lightCount*16+cascadeCount*40+((scene.texels[data+4]&6029312)?48:0);
             if(scene.texels[data+321]!==expected||water+96>scene.texels.length||scene.texels[water+24]>15||scene.texels[water+28]>2)throw RangeError('Invalid water payload');
             for(const offset of [0,4,16,...(scene.texels[water+24]&1?[8,12]:[])]) {
               const t=water+offset,sampler=scene.texels[t+3],base=baseOfTexture(scene.texels[t],sampler);let w=scene.texels[t+1],h=scene.texels[t+2],size=0;
@@ -538,13 +554,13 @@ export class MaterialPipeline {
           const particleFlags=scene.texels[data+4]&6029312;
           if(particleFlags) {
             const particle=data+scene.texels[data+79];
-            if(scene.texels[data+79]!==352+scene.texels[data+6]*16+cascadeCount*40||particle+48>scene.texels.length)throw RangeError('Invalid screen effect payload');
+            if(scene.texels[data+79]!==lightStart+lightCount*16+cascadeCount*40||particle+48>scene.texels.length)throw RangeError('Invalid screen effect payload');
             for(const offset of [...(particleFlags&262144?[0]:[]),...(particleFlags&524288?[12]:[]),...(particleFlags&1048576?[32]:[]),...(particleFlags&4194304?[40]:[])]) {
               const t=particle+offset,w=scene.texels[t+1],h=scene.texels[t+2],sampler=scene.texels[t+3],base=baseOfTexture(scene.texels[t],sampler);
               if(!w||!h||base+w*h*((sampler&32768)?4:1)>scene.texelWordCount||!validSampler(sampler)||((sampler>>5)&7)>5||((offset<32||offset===40)&&!(sampler&8192)))throw RangeError('Invalid screen effect texture');
             }
           }
-          if(cascadeCount>32||(cascadeCount&&(cascadeStart!==352+scene.texels[data+6]*16||data+cascadeStart+cascadeCount*40>scene.texels.length)))
+          if(cascadeCount>32||(cascadeCount&&(cascadeStart!==lightStart+lightCount*16||data+cascadeStart+cascadeCount*40>scene.texels.length)))
             throw RangeError('Invalid shadow cascade payload');
           for(let cascade=0;cascade<cascadeCount;cascade++) {
             const s=data+cascadeStart+cascade*40,w=scene.texels[s+1],h=scene.texels[s+2],sampler=scene.texels[s+3],base=baseOfTexture(scene.texels[s],sampler);
@@ -810,9 +826,6 @@ export class MaterialPipeline {
             {segment_count:count-1,vertex_base:base,triangle_base:triangle,material,line_material,line_width:values[0],
               normal_x:values[1],normal_y:values[2],normal_z:values[3],status_index:tiles,flat_color,point_flags}),groups(count-1)).submit();
       }
-      scene.screenPrimitives??=new Uint32Array();
-      if(!(scene.screenPrimitives instanceof Uint32Array)||scene.screenPrimitives.length%12)
-        throw RangeError('Invalid screen primitive records');
       const screenOutputs=new Set(),screenSources=new Set();
       const screenValues=new Float32Array(scene.screenPrimitives.buffer,scene.screenPrimitives.byteOffset,scene.screenPrimitives.length);
       for(let i=0;i<scene.screenPrimitives.length;i+=12) {

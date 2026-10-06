@@ -3,6 +3,7 @@
 #include "fogtexture.hpp"
 #include "terrainblendimage.hpp"
 #include "shaderdefines.hpp"
+#include "lightinputs.hpp"
 #include <osg/ValueObject>
 #include <limits>
 #include <algorithm>
@@ -974,10 +975,17 @@ namespace WebCuda
         std::array<std::uint32_t,12> record;std::copy_n(mMaterials.begin()+id*12,12,record.begin());
         const auto count=unlit||clustered||composite||enabled("simpleLighting")||(enabled("particle")&&!enabled("particlePointLighting"))?0:integer("PointLightCount",0);
         if(count<0||count>1024)throw std::runtime_error("Invalid object light count");
-        std::vector<std::uint32_t> data(352+count*16);
+        const auto* sun=state.getUniform("sun_position");
+        const auto* lights=state.getUniform("LightBuffer");
+        const auto* rawSun=sun?dynamic_cast<const LightInputs*>(sun->getUserData()):nullptr;
+        const auto* rawPoints=count&&lights?dynamic_cast<const LightInputs*>(lights->getUserData()):nullptr;
+        if((rawSun&&rawSun->kind!=LightInputs::Sun)||(rawPoints&&(rawPoints->kind!=LightInputs::Points
+            ||rawPoints->fades.size()<static_cast<unsigned int>(count))))throw std::runtime_error("Invalid raw light snapshot");
+        const unsigned int lightStart=rawSun||rawPoints?388u+count*5u:352u;
+        std::vector<std::uint32_t> data(lightStart+count*16);
         data[0]=record[0];data[1]=record[1];data[2]=record[2];data[3]=record[11];
         data[4]=(enabled("classicFalloff")?1:0)|(enabled("clamp")?2:0)|(enabled("radialFog")?4:0)|(enabled("exponentialFog")?8:0)|(enabled("additiveBlending")?16:0);
-        data[5]=integer("colorMode",0);data[6]=count;data[7]=352;
+        data[5]=integer("colorMode",0);data[6]=count;data[7]=lightStart;
         if(enabled("alphaToCoverage")) {
             data[4]|=134217728u;
             // The shader alphaTest has already applied the comparison/remap.
@@ -1015,6 +1023,21 @@ namespace WebCuda
         auto vec=[&](unsigned int offset,const osg::Vec4& value){for(unsigned int k=0;k<4;++k)scalar(offset+k,value[k]);};
         auto uniform=[&](unsigned int offset,const char* name,const osg::Vec4& fallback){osg::Vec4 v=fallback;if(const auto* u=state.getUniform(name))if(!u->get(v))throw std::runtime_error(std::string("Invalid vector uniform: ")+name);vec(offset,v);};
         auto number=[&](unsigned int offset,const char* name,float fallback){float v=fallback;if(const auto* u=state.getUniform(name))if(!u->get(v))throw std::runtime_error(std::string("Invalid scalar uniform: ")+name);scalar(offset,v);};
+        if(rawSun||rawPoints) {
+            data[4]|=2147483648u;data[352]=(rawSun?1u:0u)|(rawPoints?2u:0u);
+            auto rawScalar=[&](unsigned int offset,float value) {
+                if(!std::isfinite(value))throw std::runtime_error("Non-finite raw light input");scalar(offset,value);
+            };
+            rawScalar(353,rawPoints?rawPoints->radiusMultiplier:1.f);
+            if(rawPoints&&rawPoints->radiusMultiplier<0.f)throw std::runtime_error("Negative raw light radius multiplier");
+            for(const auto& entry:{std::pair<const LightInputs*,unsigned int>{rawSun,354u},{rawPoints,370u}})
+                if(entry.first)for(unsigned int k=0;k<16;k++)rawScalar(entry.second+k,entry.first->view.ptr()[k]);
+            if(rawPoints)for(int light=0;light<count;light++) {
+                const auto& fade=rawPoints->fades[light];
+                if(fade[4]!=0.f&&fade[4]<=fade[3])throw std::runtime_error("Invalid raw light fade interval");
+                for(unsigned int k=0;k<5;k++)rawScalar(388u+light*5u+k,fade[k]);
+            }
+        }
         if(unlit) {
             bool falloff=false;if(const auto* u=state.getUniform("useFalloff"))u->get(falloff);
             // Unlit disables darkMap, so its descriptor stores the falloff varying inputs.
@@ -1067,7 +1090,6 @@ namespace WebCuda
             inverseView=*context.view;data[4]|=32768; // Raw view matrix; inverse is computed in .cu.
         } else if(!composite)throw std::runtime_error("World material has no camera view matrix");
         for(unsigned int k=0;k<16;++k)scalar(52+k,inverseView.ptr()[k]);
-        const auto* lights=state.getUniform("LightBuffer");
         if(count&&(!lights||lights->getNumElements()<static_cast<unsigned int>(count)))throw std::runtime_error("Missing object light buffer");
         const char* layers[]={"darkMap","detailMap","decalMap","emissiveMap","normalMap","specularMap","diffuseMap","envMap","bumpMap","glossMap","blendMap"};
         for(unsigned int layer=0;layer<11;++layer)if(enabled(layers[layer])) {
@@ -1086,7 +1108,7 @@ namespace WebCuda
             const osg::Matrix matrix=texmat?texmat->getMatrix():osg::Matrix::identity();
             for(unsigned int k=0;k<16;++k)scalar(offset+8+k,matrix.ptr()[k]);
         }
-        for(int light=0;light<count;++light) {osg::Matrixf value;if(!lights->getElement(light,value))throw std::runtime_error("Invalid object light matrix");for(unsigned int k=0;k<16;++k)scalar(352+light*16+k,value.ptr()[k]);}
+        for(int light=0;light<count;++light) {osg::Matrixf value;if(!lights->getElement(light,value))throw std::runtime_error("Invalid object light matrix");for(unsigned int k=0;k<16;++k)scalar(lightStart+light*16+k,value.ptr()[k]);}
         if(!composite&&enabled("shadows_enabled")) {
             data[325]=static_cast<unsigned int>(data.size());
             number(326,"shadowFadeStart",0);number(327,"maximumShadowMapDistance",0);

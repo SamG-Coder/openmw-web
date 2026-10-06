@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: finish the rendering ownership audit and reduce capture, validation/transfers and GPU frame cost. Scissor clipping and alpha/stencil references, depth range, blend constants, sample coverage, fixed fog colors and texture-environment constants now reach CUDA as raw state. Thirteen WASM suites, 74 host checks and 130 WebGPU checks pass; 280 real producer packets match 1042720 native GPU pixel samples exactly. Engine 6f067cc99e82 is built and staged. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete. The rebuilt WebGPU exterior run records 272 presentations with no renderer errors, aborts or legacy draws; all 120 sampled completed frames release packets.",
+  "currentPriority": "P0: finish the rendering ownership audit and reduce capture, validation/transfers and GPU frame cost. Sun and per-object point-light view transforms, distance fading and radius scaling now execute in CUDA; camera-dependent light-list cache identity is corrected. Fourteen WASM suites, 76 host checks and 146 WebGPU checks pass; native GPU replay checks 192 real OSG fixtures and 222792 words. Engine f9483440294a is built and staged. The rebuilt WebGPU exterior check records 277 presentations without renderer errors, aborts or legacy draws. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Raw raster/material state now reaches CUDA without CPU normalization or scissor clipping. Continue the rendering ownership audit through the upstream scene producers and their CUDA consumers, distinguishing simulation, allocation bounds and transport validation from actual rendering calculations. Prioritize remaining per-frame capture/transfer work and raster cost using existing reports. This state migration does not establish an FPS gain. Preserve source binding, cache identity, triangle order and native resource ownership. Native-browser gameplay and physical 60-180 Hz acceptance remain separate gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Continue the rendering ownership audit through clustered-light source preparation, upstream sky/camera calculations and visibility/bounds, distinguishing simulation and transport validation from rendering. Custom postprocessing using omw_PointLights also needs raw-light metadata handling before support. Preserve the original first-camera-per-frame fade semantics and child uniform ownership; no FPS gain is established by these migrations. Prioritize remaining capture/transfer and raster cost from existing reports. Native-browser gameplay and physical 60-180 Hz acceptance remain separate gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1966,5 +1966,108 @@
       "D:\\OpenMW-local\\webcuda-raster-state-stage.json"
     ],
     "limits": "No FPS-gain claim. Standalone native replay does not verify ChromiumRTXCuda gameplay or physical 60-180 Hz presentation. Broader rendering ownership and gameplay acceptance remain incomplete."
+  },
+  "rawLightInputCuda": {
+    "engine": "f9483440294a",
+    "sourceFinding": "Per-object light records previously contained CPU-transformed positions, faded colors and scaled radii. The light-list cache also omitted the camera matrix from its key.",
+    "ownership": "Source uniform metadata retains raw light values, view matrices and fade inputs; camera.cu resolves them before lighting. JavaScript validates/transfers/dispatches without computing transforms or fades. Raw metadata is attached to the winning uniform.",
+    "packet": "Object feature bit31 marks raw metadata starting at word352, light records begin at 388+5*count, and appended effects follow the variable light offset. Existing camera dispatch, binding counts and native kernel parameters are unchanged.",
+    "validation": {
+      "wasm64IntegrationSuites": 14,
+      "hostChecks": 76,
+      "hostProducerValidation": {
+        "status": "passed",
+        "fixtures": 192,
+        "scope": "Real OSG/WASM light/material packets accepted unchanged by production host validation; GPU replay is separate."
+      },
+      "nativeGpu": {
+        "fixtures": 192,
+        "wordChecks": 222792,
+        "changedFields": 6064,
+        "comparison": "Prior OSG CPU transform/fade/radius calculations; changed float tolerance 1e-5 + abs(reference)*3e-6, unchanged words exact; repeat preparation and guards checked.",
+        "compiler": "NVCC sm_120 --use_fast_math",
+        "browserTested": false
+      },
+      "webgpu": {
+        "status": "PASS: 90 runtime kernels validated and compiled",
+        "backend": "WebGPU on NVIDIA Blackwell",
+        "runtimePipelines": 90,
+        "gpuChecks": 146,
+        "productionPipelineChecks": 117,
+        "newLightChecks": 16,
+        "errors": [],
+        "observedFrom": "Existing validate-kernels.html status and results DOM via Codex in-app browser",
+        "newChecks": "Raw versus canonical light inputs: pixel and vertex lighting, identity and rotated cameras, disabled/before/inside/after fade intervals; complete rendered output and guards compared.",
+        "scope": "Production-pipeline fixtures; gameplay and native-browser execution are separate checks."
+      },
+      "artifacts": {
+        "status": "passed",
+        "generatedFiles": 379,
+        "repeatGeneration": "byte-identical",
+        "changedGeneratedArtifacts": [
+          "render/webcuda/generated/resolve_camera.json",
+          "render/webcuda/generated/resolve_camera.native-paged.json",
+          "render/webcuda/generated/resolve_camera.native.json",
+          "render/webcuda/generated/resolve_camera.wgsl"
+        ],
+        "unchangedNativeParameterContracts": [
+          ".native.json",
+          ".native-paged.json"
+        ],
+        "servedModulesMatch": [
+          "pipeline.js",
+          "light-input-gpu-check.js",
+          "pipeline-gpu-check.js",
+          "validate-kernels.js",
+          "validate-native.js",
+          "generated/resolve_camera.json",
+          "generated/resolve_camera.wgsl",
+          "generated/resolve_camera.native.json",
+          "generated/resolve_camera.native-paged.json"
+        ],
+        "trackedSdkChanges": false,
+        "resolveCameraWgslSha256": "68d92554c1aca686879e13f02f4b38b77f53d0bd43b8ad75c1d5934f2940427a"
+      }
+    },
+    "exteriorWebgpu": {
+      "observedAt": "2026-10-06T16:24:01.719Z",
+      "backend": "webgpu",
+      "engine": "f9483440294a",
+      "rasterWgslSha256": "6f978f71142480b8e6ee940b7dd52daa66ecb969efb718671d6e5d2ffe173aab",
+      "savedPresentations": 277,
+      "rendererError": null,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 2594064416,
+      "medians": {
+        "packetCaptureMs": 69.89500004053116,
+        "frameWallMs": 139.0100000500679,
+        "presentationSubmitIntervalMs": 218.61500000953674,
+        "uploadedBytesDuringFrame": 20335684.0,
+        "capturedSceneBytes": 139067758.0
+      },
+      "engineCaptureMedians": {
+        "materialEncodeMs": 36.74956800000029,
+        "geometryEncodeMs": 16.876031999999924
+      },
+      "report": "D:\\OpenMW-local\\webcuda-seyda-neen-light-input-2026-10-07.json",
+      "limits": "Debug WebGPU scene with streaming, not a matched benchmark or native-browser acceptance. Buffer capacity does not measure physical VRAM or process RSS."
+    },
+    "reports": [
+      "D:\\OpenMW-local\\webcuda-light-input-validation.json",
+      "D:\\OpenMW-local\\webcuda-light-input-integration.log",
+      "D:\\OpenMW-local\\webcuda-light-input-host.log",
+      "D:\\OpenMW-local\\webcuda-light-input-host-final.log",
+      "D:\\OpenMW-local\\webcuda-light-input-host-producer.json",
+      "D:\\OpenMW-local\\webcuda-light-input-gpu.log",
+      "D:\\OpenMW-local\\webcuda-light-input-browser.json",
+      "D:\\OpenMW-local\\webcuda-light-input-native-compile.json",
+      "D:\\OpenMW-local\\webcuda-light-input-artifacts.json",
+      "D:\\OpenMW-local\\webcuda-light-input-stage.json",
+      "D:\\OpenMW-local\\webcuda-light-input-engine-final.log"
+    ],
+    "limits": "No FPS-gain claim. Standalone native replay does not verify ChromiumRTXCuda gameplay or physical 60-180 Hz presentation. Clustered-light preparation, scene visibility/bounds, upstream sky/camera work and broader gameplay acceptance remain incomplete."
   }
 }

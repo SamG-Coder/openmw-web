@@ -4,6 +4,7 @@ import { MaterialPipeline } from './pipeline.js';
 import { particleInputReference } from './particle-input-gpu-check.js';
 import { guiInputReference } from './gui-input-gpu-check.js';
 import { checkRasterStateGpu } from './raster-state-gpu-check.js';
+import { checkLightInputGpu } from './light-input-gpu-check.js';
 
 export async function checkPipelineGpu(runtime,kernels) {
   const pipeline=new MaterialPipeline(runtime,kernels),owned=[];
@@ -294,6 +295,7 @@ export async function checkPipelineGpu(runtime,kernels) {
       if(repetition===0)await render(scene(false));
     }
     checks.push(...await checkRasterStateGpu(runtime,kernels));
+    checks.push(...await checkLightInputGpu(runtime,kernels));
     return checks;
   } finally {
     try {await runtime.idle();}

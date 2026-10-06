@@ -296,7 +296,17 @@ namespace SceneUtil
             // Don't use Camera::getViewMatrix, that one might be relative to another camera!
             const osg::RefMatrix* viewMatrix = cv->getCurrentRenderStage()->getInitialViewMatrix();
 
-            stateset->getUniform(OMW_SUN_UNIFORM("position"))->set(sun->getPosition() * (*viewMatrix));
+            auto* sunPosition = stateset->getUniform(OMW_SUN_UNIFORM("position"));
+            if (WebCuda::Viewer::requested())
+            {
+                sunPosition->set(sun->getPosition());
+                sunPosition->setUserData(new WebCuda::LightInputs(WebCuda::LightInputs::Sun, *viewMatrix));
+            }
+            else
+            {
+                sunPosition->set(sun->getPosition() * (*viewMatrix));
+                sunPosition->setUserData(nullptr);
+            }
             stateset->getUniform(OMW_SUN_UNIFORM("diffuse"))->set(sun->getDiffuse());
             stateset->getUniform(OMW_SUN_UNIFORM("ambient"))->set(sun->getAmbient());
             stateset->getUniform(OMW_SUN_UNIFORM("specular"))->set(sun->getSpecular());
@@ -549,10 +559,11 @@ namespace SceneUtil
         // same lamps get the same StateSet object -- which also means osg::State sees the SAME
         // uniform pointer twice in a row and can skip the re-upload. Cleared each frame in
         // update(), so the per-frame values below stay correct.
-        std::vector<int> key;
-        key.reserve(lightList.size());
+        std::vector<int> ids;
+        ids.reserve(lightList.size());
         for (const auto* bound : lightList)
-            key.push_back(bound->mLightSource->getId());
+            ids.push_back(bound->mLightSource->getId());
+        auto key = WebCuda::lightListKey(std::move(ids), *viewMatrix);
 
         auto cached = mLightListStateSetCache.find(key);
         if (cached != mLightListStateSetCache.end())
@@ -560,10 +571,26 @@ namespace SceneUtil
 
         osg::ref_ptr<osg::StateSet> stateset = new osg::StateSet;
         osg::ref_ptr<osg::Uniform> data = generateLightBufferUniform();
+        osg::ref_ptr<WebCuda::LightInputs> raw;
+        if (WebCuda::Viewer::requested())
+        {
+            raw = new WebCuda::LightInputs(WebCuda::LightInputs::Points, *viewMatrix);
+            raw->radiusMultiplier = mPointLightRadiusMultiplier;
+            raw->fades.reserve(lightList.size());
+            data->setUserData(raw);
+        }
 
         for (size_t i = 0; i < lightList.size(); ++i)
         {
             auto* light = lightList[i]->mLightSource->getLight(frameNum);
+            if (raw)
+            {
+                WebCuda::capturePointLight(*data, static_cast<unsigned int>(i), *light,
+                    lightList[i]->mLightSource->getRadius());
+                raw->fades.push_back(mPointLightFadeEnd != 0.f
+                    ? lightList[i]->mLightSource->getWebCudaFade() : std::array<float, 5>{});
+                continue;
+            }
             osg::Matrixf lightMat;
             configurePosition(lightMat, light->getPosition() * (*viewMatrix));
             configureAmbient(lightMat, light->getAmbient());
@@ -594,6 +621,7 @@ namespace SceneUtil
         if (it == mLightsInViewSpace.end())
         {
             it = mLightsInViewSpace.insert(std::make_pair(camPtr, LightSourceViewBoundCollection())).first;
+            const bool rawLighting = WebCuda::Viewer::requested() && !mClusteredLighting;
 
             for (const auto& transform : mLights)
             {
@@ -606,15 +634,28 @@ namespace SceneUtil
 
                 if (transform.mLightSource->getLastAppliedFrame() != frameNum && mPointLightFadeEnd != 0.f)
                 {
-                    const float fadeDelta = mPointLightFadeEnd - mPointLightFadeStart;
-                    const float viewDelta = viewBound.center().length() - mPointLightFadeStart;
-                    float fade = 1 - std::clamp(viewDelta / fadeDelta, 0.f, 1.f);
-                    if (fade == 0.f)
-                        continue;
+                    if (rawLighting)
+                    {
+                        // Keep the scene visibility decision here. Do not bake
+                        // a camera fade into colors used by the CUDA renderer.
+                        if (mPointLightFadeEnd > mPointLightFadeStart
+                            && viewBound.center().length() >= mPointLightFadeEnd)
+                            continue;
+                        transform.mLightSource->setWebCudaFade(
+                            viewBound.center(), mPointLightFadeStart, mPointLightFadeEnd);
+                    }
+                    else
+                    {
+                        const float fadeDelta = mPointLightFadeEnd - mPointLightFadeStart;
+                        const float viewDelta = viewBound.center().length() - mPointLightFadeStart;
+                        float fade = 1 - std::clamp(viewDelta / fadeDelta, 0.f, 1.f);
+                        if (fade == 0.f)
+                            continue;
 
-                    auto* light = transform.mLightSource->getLight(frameNum);
-                    light->setDiffuse(light->getDiffuse() * fade);
-                    light->setSpecular(light->getSpecular() * fade);
+                        auto* light = transform.mLightSource->getLight(frameNum);
+                        light->setDiffuse(light->getDiffuse() * fade);
+                        light->setSpecular(light->getSpecular() * fade);
+                    }
                     transform.mLightSource->setLastAppliedFrame(frameNum);
                 }
 
@@ -687,6 +728,7 @@ namespace SceneUtil
         , mRadius(copy.mRadius)
         , mActorFade(copy.mActorFade)
         , mLastAppliedFrame(copy.mLastAppliedFrame)
+        , mWebCudaFade(copy.mWebCudaFade)
     {
         mId = sLightId++;
 
