@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: continue code-led work on large-pass tile sizing, raster cost and native submission/fence boundaries. Small-pass validation now collects through GPU copies before one frame readback; CPU capture and packet validation have isolated measured reductions and passing regressions.",
+  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated per-pixel raster work and native fence boundaries. CUDA binning now removes scissored or wholly rejected draws before sorting; exact CPU and standalone GPU raster comparisons pass. Small-pass status readbacks are collected at frame completion.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest staged engine remains 61275df13d9f. The served host now batches bounded tile/status and query snapshots at frame completion; larger passes still require exact sizing unless their full proven bound fits retained storage. Continue tracing large-pass tile sizing, per-pass packing, raster work and remaining native fence boundaries. Isolated improvements do not establish gameplay FPS.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest engine remains 61275df13d9f, with regenerated CUDA tile-binning artifacts served separately. Scissor and whole-draw rejection now avoid invisible tile references, verified by 1440 exact CPU and standalone GPU raster comparisons. Continue tracing large-pass sizing, repeated per-pixel raster calculations and native fence boundaries. Isolated work-count reductions do not establish gameplay FPS.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -878,5 +878,29 @@
     },
     "staging": "HTTP-served game-host.js, pipeline.js and frame-readbacks.js match source. No engine or authored/generated kernel changes; engine 61275df13d9f remains current.",
     "pending": "Actual browser frame times and submission totals remain unmeasured. Large-pass exact-sizing waits and broad gameplay acceptance remain open."
+  },
+  "cudaTilePruning": {
+    "change": "Intersect triangle coverage bounds with the scissor before counting/scattering references. Reject empty/offscreen scissors, both-face culling and multisample states with zero surviving samples. Preserve the unused-clipping-slot fast exit and clamp unsigned scissor extents before addition.",
+    "source": "render/webcuda/tiles.cu",
+    "fixture": "render/webcuda/tile-pruning.test.cpp",
+    "validation": {
+      "cpuExactRasterComparisons": 1440,
+      "nativeGpuExactRasterComparisons": 1440,
+      "visibleCasesPerRun": 357,
+      "scope": "Bit-identical full color/depth/stencil buffers from compact tile lists versus all-triangle lists, through the production material rasterizer; guarded list storage, fill/line/point, both windings, 1/2/4/8/16 samples, sample controls and twelve scissor cases.",
+      "existingRandomizedTileScenes": 30,
+      "pagedNvrtcCompilation": "passed",
+      "generatedArtifacts": "Regenerated from authored CUDA with the existing WebCuda SDK"
+    },
+    "controlledScissorCase": {
+      "width": 1024,
+      "height": 1024,
+      "screenTriangles": 2,
+      "scissorPixels": 1,
+      "beforeTileReferences": 8192,
+      "afterTileReferences": 2
+    },
+    "reports": ["D:/OpenMW-local/webcuda-tests/tile-pruning-cpu.log", "D:/OpenMW-local/webcuda-tests/tile-pruning-gpu.log", "D:/OpenMW-local/webcuda-tile-pruning-native-compile.json"],
+    "limits": "Standalone GPU execution validates CUDA arithmetic and list safety, not browser ownership, presentation, game FPS or full-game acceptance. Standard WebGPU artifacts were generated; their new GPU execution was not repeated."
   }
 }

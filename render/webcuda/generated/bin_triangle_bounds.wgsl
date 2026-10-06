@@ -57,8 +57,36 @@ fn main(
     }
   }
   var v_material: u32 = b_indices[((v_t * 4u) + 3u)];
-  var v_control: u32 = b_materials[((v_material * 12u) + 9u)];
+  var v_m: u32 = (v_material * 12u);
+  var v_control: u32 = b_materials[(v_m + 9u)];
   var v_raster: u32 = (cw_params.p_raster_offset + (v_material * 50u));
+  var v_scissorX: u32 = b_materials[(v_m + 5u)];
+  var v_scissorY: u32 = b_materials[(v_m + 6u)];
+  var v_scissorWidth: u32 = b_materials[(v_m + 7u)];
+  var v_scissorHeight: u32 = b_materials[(v_m + 8u)];
+  if (((((v_scissorX >= cw_params.p_width) || (v_scissorY >= cw_params.p_height)) || (v_scissorWidth == 0u)) || (v_scissorHeight == 0u))) {
+    return;
+  }
+  if ((((b_materials[(v_m + 3u)] & 128u) != 0u) && (((v_control >> 14u) & 3u) == 3u))) {
+    return;
+  }
+  if (((cw_params.p_sample_count > 1u) && (b_attributes[(v_raster + 27u)] != 0.0f))) {
+    var v_sampleBits: u32 = ((1u << cw_params.p_sample_count) - 1u);
+    if (((u32(b_attributes[(v_raster + 26u)]) & v_sampleBits) == 0u)) {
+      return;
+    }
+    if ((((b_attributes[(v_raster + 24u)] == 0.0f) && (b_attributes[(v_raster + 25u)] == 0.0f)) || ((b_attributes[(v_raster + 24u)] == 1.0f) && (b_attributes[(v_raster + 25u)] != 0.0f)))) {
+      return;
+    }
+  }
+  var v_scissorEndX: u32 = cw_params.p_width;
+  var v_scissorEndY: u32 = cw_params.p_height;
+  if ((v_scissorWidth < (cw_params.p_width - v_scissorX))) {
+    v_scissorEndX = (v_scissorX + v_scissorWidth);
+  }
+  if ((v_scissorHeight < (cw_params.p_height - v_scissorY))) {
+    v_scissorEndY = (v_scissorY + v_scissorHeight);
+  }
   var v_frontMode: u32 = ((v_control >> 27u) & 3u);
   var v_backMode: u32 = ((v_control >> 29u) & 3u);
   var v_padding: f32 = 0.0f;
@@ -145,10 +173,10 @@ fn main(
   var v_firsty: f32 = ceil((v_miny - v_sampleMax));
   var v_lastx: f32 = floor((v_maxx - v_sampleMin));
   var v_lasty: f32 = floor((v_maxy - v_sampleMin));
-  v_firstx = max(0.0f, v_firstx);
-  v_firsty = max(0.0f, v_firsty);
-  v_lastx = min((f32(cw_params.p_width) - 1.0f), v_lastx);
-  v_lasty = min((f32(cw_params.p_height) - 1.0f), v_lasty);
+  v_firstx = max(f32(v_scissorX), v_firstx);
+  v_firsty = max(f32(v_scissorY), v_firsty);
+  v_lastx = min(f32((v_scissorEndX - 1u)), v_lastx);
+  v_lasty = min(f32((v_scissorEndY - 1u)), v_lasty);
   if (((v_firstx > v_lastx) || (v_firsty > v_lasty))) {
     return;
   }

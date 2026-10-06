@@ -78,6 +78,25 @@ and one native submission instead of 64 of each, with identical dispatch/copy
 ordering and total readback bytes. This isolates host scheduling with simulated
 interop; actual browser submission totals and game FPS remain unmeasured.
 
+The CUDA tile binner now intersects triangle coverage bounds with the material
+scissor before counting or scattering references. Empty/offscreen scissors,
+culling both faces, and multisample states that reject every sample produce no
+references. Unsigned scissor extents clamp before addition, preserving the
+rasterizer's behavior even for `UINT_MAX` extents. Unused clipping slots still
+exit before fetching material state. The rasterizer and draw order are unchanged.
+
+`tile-pruning.test.cpp` compares compact lists with an all-triangle reference
+through the production material rasterizer. All 1,440 cases pass bit-for-bit on
+both the CPU and a standalone native CUDA GPU run: color, depth and stencil,
+fill/line/point modes, both windings, 1/2/4/8/16 samples, partial tiles, sample
+mask/coverage controls and scissor edge cases. A controlled 1024-square case
+with two screen triangles and a one-pixel scissor reduces tile references from
+8,192 to two. This is a work-count reduction, not a measured game speedup.
+Each backend compares its own reference; this does not assert bit identity
+between CPU and GPU floating-point calculations.
+The regenerated paged binner also passes the browser's bundled NVRTC compiler.
+These checks do not exercise browser interop or full-game behavior.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal
@@ -167,6 +186,15 @@ overflow, singular-camera and mapping failures, exact-sizing stalls, retained
 capacity bounds, and presentation gating. This JavaScript-only change uses
 the existing CUDA copy kernel and leaves engine and generated artifacts intact.
 The local server serves the matching pipeline, host and new collector module.
+
+For the tile-pruning regression, compile `render/webcuda/tile-pruning.test.cpp`
+with ordinary C++17 or with NVCC using `-x cu -std=c++17 -O3 --use_fast_math
+--extra-device-vectorization` and the target GPU architecture. This PC uses
+`-arch=sm_120`. NVCC on Windows requires an x64 Visual Studio developer command
+prompt. Both builds execute the same fixture; the NVCC build launches the real
+production CUDA kernels. Current compiler/run logs and executables are under
+`D:/OpenMW-local/webcuda-tests/tile-pruning-*`; the paged compiler report is
+`D:/OpenMW-local/webcuda-tile-pruning-native-compile.json`.
 
 For local serving, `/webcuda/` must expose this directory and `/webcuda-sdk/`
 must expose the SDK checkout, alongside the matching WASM64 engine artifacts,

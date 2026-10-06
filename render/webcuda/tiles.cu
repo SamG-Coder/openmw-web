@@ -126,8 +126,25 @@ __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indice
         float y=(0.5f-clip[i+1u]/w*0.5f)*(float)height;
         minx=fminf(minx,x);miny=fminf(miny,y);maxx=fmaxf(maxx,x);maxy=fmaxf(maxy,y);
     }
-    unsigned int material=indices[t*4u+3u],control=materials[material*12u+9u];
-    unsigned int raster=raster_offset+material*50u;
+    unsigned int material=indices[t*4u+3u],m=material*12u;
+    unsigned int control=materials[m+9u],raster=raster_offset+material*50u;
+    unsigned int scissorX=materials[m+5u],scissorY=materials[m+6u];
+    unsigned int scissorWidth=materials[m+7u],scissorHeight=materials[m+8u];
+    // These tests reject every sample in raster_material. Apply them before
+    // counting references, so invisible draws never reach tile sorting/raster.
+    if(scissorX>=width||scissorY>=height||scissorWidth==0u||scissorHeight==0u)return;
+    if((materials[m+3u]&128u)!=0u&&((control>>14u)&3u)==3u)return;
+    if(sample_count>1u&&attributes[raster+27u]!=0.0f) {
+        unsigned int sampleBits=(1u<<sample_count)-1u;
+        if((((unsigned int)attributes[raster+26u])&sampleBits)==0u)return;
+        if((attributes[raster+24u]==0.0f&&attributes[raster+25u]==0.0f)
+            ||(attributes[raster+24u]==1.0f&&attributes[raster+25u]!=0.0f))return;
+    }
+    // Clamp before addition: the raster's subtraction-based scissor predicate
+    // also accepts UINT_MAX extents without unsigned coordinate wraparound.
+    unsigned int scissorEndX=width,scissorEndY=height;
+    if(scissorWidth<width-scissorX)scissorEndX=scissorX+scissorWidth;
+    if(scissorHeight<height-scissorY)scissorEndY=scissorY+scissorHeight;
     unsigned int frontMode=(control>>27u)&3u,backMode=(control>>29u)&3u;
     // A conservative union of both faces avoids duplicating facing/cull logic.
     // Line and point coverage may extend beyond the polygon's filled bounds.
@@ -170,8 +187,8 @@ __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indice
     }
     float firstx=ceilf(minx-sampleMax),firsty=ceilf(miny-sampleMax);
     float lastx=floorf(maxx-sampleMin),lasty=floorf(maxy-sampleMin);
-    firstx=fmaxf(0.0f,firstx);firsty=fmaxf(0.0f,firsty);
-    lastx=fminf((float)width-1.0f,lastx);lasty=fminf((float)height-1.0f,lasty);
+    firstx=fmaxf((float)scissorX,firstx);firsty=fmaxf((float)scissorY,firsty);
+    lastx=fminf((float)(scissorEndX-1u),lastx);lasty=fminf((float)(scissorEndY-1u),lasty);
     if(firstx>lastx||firsty>lasty)return;
     unsigned int columns=(width+15u)/16u;
     unsigned int x0=(unsigned int)firstx/16u,x1=(unsigned int)lastx/16u;

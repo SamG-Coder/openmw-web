@@ -43,6 +43,7 @@ int main() {
         std::vector<float> packed(triangles*3*10),attributes(50);
         std::vector<unsigned int> packedIndices(triangles*4),compactCounts(tiles+1),offsets(tiles+1);
         unsigned int materials[12]={},summary[2]={},blocks[1]={};
+        materials[7]=width;materials[8]=height;
         for(unsigned int t=0;t<triangles;t++)for(unsigned int v=0;v<3;v++) {
             packedIndices[t*4+v]=t*3+v;
             for(unsigned int k=0;k<4;k++)packed[(t*3+v)*10+k]=clip[(t*3+v)*4+k];
