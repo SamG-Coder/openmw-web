@@ -863,11 +863,15 @@ export class MaterialPipeline {
         .dispatch(k.prefix_tile_blocks.bind({counts,offsets,blocks:prefixBlocks},{tile_count:tiles,max_words}),groups(Math.ceil(tiles/256)))
         .dispatch(k.prefix_tile_block_totals.bind({counts,blocks:prefixBlocks,summary},{tile_count:tiles,max_words}),[1,1,1])
         .dispatch(k.finish_tile_prefix.bind({offsets,blocks:prefixBlocks,summary},{tile_count:tiles}),groups(tiles+1)).submit();
-      // Each clipped triangle can appear at most once per tile. Small passes
-      // can allocate this conservative bound and defer status readback to the
-      // frame boundary; larger passes retain exact compact sizing.
+      // Each clipped triangle can appear at most once per tile. A bound that
+      // fits a small allocation or retained storage can defer status readback
+      // to the frame boundary; other passes retain exact compact sizing.
       const bound=tiles+1+slots*tiles;
-      const bounded=Number.isSafeInteger(bound)&&bound<=Math.min(max_words,1024*1024);
+      const retainedWords=(this.buffers.get('candidates')?.byteLength??0)/4;
+      const bounded=Number.isSafeInteger(bound)&&bound<=Math.min(max_words,Math.max(1024*1024,retainedWords));
+      // Only proven allocation bounds can defer the size check. Reusing last
+      // frame's measured size alone is unsafe when the camera or scene changes.
+      const frameRead=pass.deferCompletion&&typeof pass.readback==='function'?pass.readback:(...args)=>r.read(...args);
       const validateSizes=sizes=>{
         if(sizes[1]===2)throw RangeError('Compact triangle lists exceed GPU buffer capacity');
         if(sizes[1]!==0)throw Error('Camera view matrix is singular');
@@ -875,7 +879,8 @@ export class MaterialPipeline {
         return sizes[0];
       };
       // Attach rejection handling immediately; later passes may still be queued.
-      const sizingCompletion=r.read(summary,Uint32Array,8).then(sizes=>{
+      const sizingRead=bounded?frameRead(summary,Uint32Array,8):r.read(summary,Uint32Array,8);
+      const sizingCompletion=sizingRead.then(sizes=>{
         try{return {words:validateSizes(sizes)};}catch(error){return {error};}
       },error=>({error}));
       let candidateWords=bound;
@@ -928,9 +933,9 @@ export class MaterialPipeline {
           queryEntries.push([id,m/12]);
         }
       }
-      // read() queues its staging copy synchronously, before the next pass can
-      // reuse counts. Resolve only at the frame boundary in the game host.
-      const queryReadback=queryEntries.length?r.read(counts,Uint32Array,scene.materials.length/12*4,(tiles+1)*4).then(samples=>{
+      // Snapshot before another pass reuses counts. The game host collects
+      // these results on the GPU and reads them together at the frame boundary.
+      const queryReadback=queryEntries.length?frameRead(counts,Uint32Array,scene.materials.length/12*4,(tiles+1)*4).then(samples=>{
         const queryResults=new Map();
         for(const [id,index] of queryEntries)queryResults.set(id,(queryResults.get(id)??0)+samples[index]);
         return {queryResults};

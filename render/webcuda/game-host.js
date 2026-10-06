@@ -6,6 +6,7 @@ import { guardLegacyRendering } from './legacy-draw-guard.js';
 import { targetId as canonicalTargetId, targetCommand } from './target-id.js';
 import { NativeRendererRuntime } from './native-runtime.js';
 import { nativeRendererRequested } from './native-permission.js';
+import { FrameReadbacks } from './frame-readbacks.js';
 
 // A frame is accepted before culling starts, retains immutable WASM packets,
 // then uploads directly from their heap views in camera order. At most one
@@ -475,8 +476,10 @@ async function createWebCudaHost(Module,onError,releaseOwnership) {
     timing.engineCapture=Module.webcudaCaptureTimings?{...Module.webcudaCaptureTimings}:null;
     timing.capturedSceneBytes=passes.reduce((total,pass)=>total+Object.values(pass.scene??{})
       .reduce((bytes,value)=>bytes+(ArrayBuffer.isView(value)?value.byteLength:0),0),0);
-    let queueCompleted=false;
+    let queueCompleted=false,readbacks;
     try {
+      readbacks=new FrameReadbacks(runtime,bytes=>pipeline.buffer('frameReadback',bytes));
+      const readback=(...args)=>readbacks.read(...args);
       let result;const depthStack=[], completedQueries=new Map(),queryCompletions=[],passDiagnostics=[];
       for(let passIndex=0;passIndex<passes.length;passIndex++) {
         const pass=passes[passIndex];
@@ -658,14 +661,14 @@ async function createWebCudaHost(Module,onError,releaseOwnership) {
           partialViewport||!(pass.clearMask&16384)||(pass.clearColorMask??15)!==15);
         attachment.colorFormat=pass.colorFormat??0x8058;
         const renderCallStart=performance.now();
-        const rendered=await pipeline.render(pass.scene,pass.width,pass.height,null,{...pass,target:attachment.buffer,sampleTarget:attachment.sampleBuffer,targets,compactDepth:attachment.compactDepth,deferCompletion:true,profileGpu:inspectPasses});
+        const rendered=await pipeline.render(pass.scene,pass.width,pass.height,null,{...pass,target:attachment.buffer,sampleTarget:attachment.sampleBuffer,targets,compactDepth:attachment.compactDepth,deferCompletion:true,profileGpu:inspectPasses,readback});
         // Includes host preparation and any awaited earlier GPU work. This is
         // deliberately not labelled as the duration of this pass on the GPU.
         const renderCallWallMs=performance.now()-renderCallStart;
         if(inspectPasses) {
           // Queue the sample copy now, before later cameras can reuse storage.
           const pixel=Math.floor(pass.height/2)*pass.width+Math.floor(pass.width/2);
-          const sample=runtime.read(attachment.buffer,Float32Array,attachment.compactDepth?4:36,pixel*(attachment.compactDepth?4:36));
+          const sample=readback(attachment.buffer,Float32Array,attachment.compactDepth?4:36,pixel*(attachment.compactDepth?4:36));
           passDiagnostics.push(Promise.all([rendered.queryCompletion,sample]).then(([completed,values])=>({
             targetId:id,width:pass.width,height:pass.height,compactDepth:attachment.compactDepth,
             clearMask:pass.clearMask,clearDepth:pass.clearDepth,depthFormat:pass.depthFormat,
@@ -682,6 +685,7 @@ async function createWebCudaHost(Module,onError,releaseOwnership) {
       const validationStart=performance.now();timing.dispatchPhaseMs=validationStart-start;
       // Deferred tile/status checks must pass before acquiring a canvas texture.
       // A failed GPU preparation must never publish a partially rendered frame.
+      await readbacks.flush();
       for(const completed of await Promise.all(queryCompletions)) {
         if(completed.error)throw completed.error;
         for(const [id,count] of completed.queryResults)completedQueries.set(id,(completedQueries.get(id)??0)+count);
@@ -737,7 +741,7 @@ async function createWebCudaHost(Module,onError,releaseOwnership) {
       publishDiagnostics();
       frameTimings[timingCursor]=timing;timingCursor=(timingCursor+1)%frameTimings.length;
       timingCount=Math.min(timingCount+1,frameTimings.length);
-    }catch(error){for(const pass of passes)if(pass.kind==='image-capture')pass.reject(error);fail(error);}finally{
+    }catch(error){readbacks?.cancel(error);for(const pass of passes)if(pass.kind==='image-capture')pass.reject(error);fail(error);}finally{
       // A packet or shader failure may happen after earlier passes submitted.
       // Drain those commands before exposing the host as idle or disposing it.
       if(!queueCompleted)try{await runtime.idle();pipeline.collectRetired();}catch(error){fail(error);}

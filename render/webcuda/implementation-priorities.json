@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: continue code-led work on tiled rendering, GPU sizing readbacks and native submission/fence costs. CPU capture and packet validation now have measured reductions with unchanged packet checksums and passing regressions.",
+  "currentPriority": "P0: continue code-led work on large-pass tile sizing, raster cost and native submission/fence boundaries. Small-pass validation now collects through GPU copies before one frame readback; CPU capture and packet validation have isolated measured reductions and passing regressions.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest staged engine is 61275df13d9f. Array readers and one resolved state per capture remove repeated type/binding/merge work; host validation folds particle classification into its existing scan. Continue tracing the remaining tile-list sizing waits, per-pass packing and native fence boundaries. Isolated improvements do not establish gameplay FPS.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest staged engine remains 61275df13d9f. The served host now batches bounded tile/status and query snapshots at frame completion; larger passes still require exact sizing unless their full proven bound fits retained storage. Continue tracing large-pass tile sizing, per-pass packing, raster work and remaining native fence boundaries. Isolated improvements do not establish gameplay FPS.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -861,5 +861,22 @@
       ]
     },
     "limits": "Node synthetic host validation, not GPU execution or gameplay FPS. Full frame and 60-180 Hz pacing remain unverified."
+  },
+  "frameReadbackCollection": {
+    "revision": 1,
+    "change": "Collect bounded tile summaries, occlusion query results and existing diagnostic samples by ordered GPU copies, then map up to 64 KiB together at the frame boundary. Excess results retain normal ordered reads. Reuse candidate storage without an inline sizing wait only when it covers the full mathematical upper bound, not merely a previous frame's measured count.",
+    "validation": "46 host checks passed: 35 renderer/storage/validation checks, six frame-lifetime checks and five pacing/guard/target-ID checks. Real pipeline scheduling retains exact-sizing waits for unproven large passes; singular status and mapping failures block presentation. Buffer snapshots, mixed types, bounded staging, cancellation, retained packets and native page bindings are covered.",
+    "syntheticNativeCase": {
+      "scope": "Actual native runtime with a simulated interop API; not GPU timing or game FPS",
+      "passSnapshots": 64,
+      "beforeReadbacks": 64,
+      "afterReadbacks": 1,
+      "beforeNativeSubmissions": 64,
+      "afterNativeSubmissions": 1,
+      "readbackBytes": 512,
+      "dispatchOrderPreserved": true
+    },
+    "staging": "HTTP-served game-host.js, pipeline.js and frame-readbacks.js match source. No engine or authored/generated kernel changes; engine 61275df13d9f remains current.",
+    "pending": "Actual browser frame times and submission totals remain unmeasured. Large-pass exact-sizing waits and broad gameplay acceptance remain open."
   }
 }

@@ -62,6 +62,22 @@ Reports and reproducible sources are under `D:/OpenMW-local/` as
 `webcuda-geometry-capture-benchmark.json` / `geometry-capture-benchmark.cpp` and
 `webcuda-packet-validation-benchmark.json` / `packet-validation-benchmark.mjs`.
 
+Small-pass tile summaries, occlusion query results and existing diagnostic
+samples now collect in a bounded GPU buffer before one readback at the frame
+boundary. Each GPU copy snapshots its source before another pass can reuse
+that storage. Results exceeding the 64 KiB collection budget use ordinary
+ordered reads. Validation and mapping failures still prevent presentation;
+queued GPU work drains before retained WASM packets or buffers are released.
+
+Tile sizing defers only when the full mathematical upper bound fits either
+the small-pass allocation allowance or existing candidate storage. A previous
+frame's measured list size is insufficient proof when geometry moves. Larger
+unproven passes still read the exact count before scattering or rasterizing.
+In a controlled native-runtime test, 64 small pass snapshots use one readback
+and one native submission instead of 64 of each, with identical dispatch/copy
+ordering and total readback bytes. This isolates host scheduling with simulated
+interop; actual browser submission totals and game FPS remain unmeasured.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal
@@ -118,8 +134,9 @@ execution. Compiler checks and fixtures are separate from full-game acceptance.
 Run host regressions from the repository root:
 
 ```powershell
-node --test render/webcuda/packet-validation.test.mjs render/webcuda/native-runtime.test.mjs render/webcuda/texture-residency.test.mjs render/webcuda/atlas-upload.test.mjs render/webcuda/bounded-batch.test.mjs
+node --test render/webcuda/frame-readbacks.test.mjs render/webcuda/pipeline-readbacks.test.mjs render/webcuda/packet-validation.test.mjs render/webcuda/native-runtime.test.mjs render/webcuda/texture-residency.test.mjs render/webcuda/atlas-upload.test.mjs render/webcuda/bounded-batch.test.mjs
 node --experimental-vm-modules --test render/webcuda/game-host-lifetime.test.mjs
+node --test wasm-build/frame-pump.test.mjs render/webcuda/legacy-draw-guard.test.mjs render/webcuda/target-id.test.mjs
 .\wasm-build\test-webcuda-submission.ps1
 ```
 
@@ -142,6 +159,14 @@ the SDK's tracked compiler/runtime files were unchanged. The SDK remains an
 external dependency. All 85 paged runtime/storage kernels passed the bundled
 NVRTC compiler check. This does not repeat the earlier browser GPU checks or
 establish sustained native gameplay performance.
+
+The subsequent readback scheduling change passes 46 host checks: 35 renderer
+and storage checks, six frame-lifetime checks, and five pacing/guard/target-ID
+checks. They include overwritten scratch buffers, mixed result types, staging
+overflow, singular-camera and mapping failures, exact-sizing stalls, retained
+capacity bounds, and presentation gating. This JavaScript-only change uses
+the existing CUDA copy kernel and leaves engine and generated artifacts intact.
+The local server serves the matching pipeline, host and new collector module.
 
 For local serving, `/webcuda/` must expose this directory and `/webcuda-sdk/`
 must expose the SDK checkout, alongside the matching WASM64 engine artifacts,

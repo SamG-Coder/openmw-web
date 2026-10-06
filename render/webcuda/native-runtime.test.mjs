@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {NativeRendererRuntime} from './native-runtime.js';
 import {MaterialPipeline} from './pipeline.js';
+import {FrameReadbacks} from './frame-readbacks.js';
 import {NATIVE_PAGE_BYTES as page,pageRanges,canvasPageCopies} from './native-layout.js';
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
@@ -140,6 +141,28 @@ test('uploads and readbacks divide coalesced groups without reordering either si
   assert.deepEqual(events.filter(name=>['submit','handoff','write','read'].includes(name)),
     ['submit','handoff','write','submit','handoff','read','submit','handoff']);
   await f.runtime.dispose();
+});
+
+test('frame snapshots replace 64 native readback fence boundaries with one ordered read',async()=>{
+  for(const collect of [false,true]) {
+    const f=fixture(),source=f.runtime.createBuffer(8),staging=f.runtime.createBuffer(65536);
+    const kernel=await f.runtime.kernel(artifact),pending=[];
+    const readbacks=new FrameReadbacks(f.runtime,()=>staging);
+    await f.runtime.idle();
+    for(let value=0;value<64;value++) {
+      f.runtime.batch().dispatch(kernel.bind({target:source},{value}),[1,1,1]).submit();
+      pending.push(collect?readbacks.read(source,Uint32Array,8):f.runtime.read(source,Uint32Array,8));
+    }
+    await readbacks.flush();await Promise.all(pending);await f.runtime.idle();
+    assert.equal(f.events.filter(event=>event[0]==='read').length,collect?1:64);
+    assert.equal(f.submissions.length,collect?1:64);
+    const jobs=f.submissions.flat();
+    assert.deepEqual(jobs.filter(job=>job.name==='test').map(job=>job.scalars.value),Array.from({length:64},(_,i)=>i));
+    assert.equal(jobs.filter(job=>job.name==='copy').length,collect?64:0);
+    assert.equal(f.runtime.stats.readbackBytes,512);
+    if(collect)assert.deepEqual(jobs.filter(job=>job.name!=='set_page').map(job=>job.name),Array.from({length:64},()=>['test','copy']).flat());
+    await f.runtime.dispose();
+  }
 });
 
 test('an executing group is immutable and later submits get their own completion',async()=>{
