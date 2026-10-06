@@ -143,7 +143,23 @@ function structure(source) {
   for (let match; (match = pattern.exec(masked));) {
     const open = masked.indexOf('{', pattern.lastIndex), close = pairs.get(open);
     if (close === undefined) throw new Error(`Missing WGSL function body ${match[1]}`);
-    functions.push({name: match[1], start: match.index, open, close, end: close + 1});
+    // WGSL attributes belong to the declaration that follows them. Starting a
+    // removable function at the "fn" token leaves e.g. "@fragment" orphaned,
+    // which is invalid WGSL. Walk backwards over contiguous attribute lines
+    // while preserving comments/other declarations before them.
+    let declarationStart = match.index;
+    let lineStart = masked.lastIndexOf('\n', declarationStart - 1) + 1;
+    while (lineStart > 0) {
+      const previousEnd = lineStart - 1;
+      const previousStart = masked.lastIndexOf('\n', previousEnd - 1) + 1;
+      const previous = masked.slice(previousStart, previousEnd).trim();
+      if (!previous.startsWith('@')) break;
+      declarationStart = previousStart;
+      lineStart = previousStart;
+    }
+    const currentPrefix = masked.slice(lineStart, match.index).trim();
+    if (currentPrefix.startsWith('@')) declarationStart = lineStart;
+    functions.push({name: match[1], start: declarationStart, fnStart: match.index, open, close, end: close + 1});
     pattern.lastIndex = close + 1;
   }
   return {masked, pairs, functions};
