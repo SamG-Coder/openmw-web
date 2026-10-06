@@ -33,7 +33,7 @@ app.Use(async (context, next) =>
 // and renderer stamping. "/" is handled by the endpoint below.
 app.Use(async (context, next) =>
 {
-    if (!context.Request.Path.Equals("/index.html", StringComparison.OrdinalIgnoreCase))
+    if (!String.Equals(context.Request.Path.Value, "/index.html", StringComparison.OrdinalIgnoreCase))
     {
         await next();
         return;
