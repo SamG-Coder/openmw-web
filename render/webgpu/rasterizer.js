@@ -5,6 +5,7 @@
 
 import {specializeMaterialSource} from './shader-specialization.js';
 import {ExactVisibilityCounter,MAX_VISIBILITY_TRIANGLES} from './visibility-counter.js';
+import {nativeCameraAttachments,attachmentBridgeKey} from './attachment-policy.js';
 
 const PARAM_FIELDS = [
   'width','height','capacity','raster_offset','boundary_offset','point_fade_offset',
@@ -213,6 +214,10 @@ export class HardwareRasterizer {
     this.pipelines=new Map();this.shaderModules=new Map();this.bridgePipelines=new Map();this.targets=new Map();this.buffers=new Map();
     this.uniformStride=Math.max(256,this.device.limits.minUniformBufferOffsetAlignment);
     this.disposed=false;this.busy=false;
+    this.materialUniformData=new Uint32Array();
+    this.performanceStats={nativeCameraPasses:0,compatibilityCameraPasses:0,mergedNativeClears:0,
+      materialStateBuilds:0,materialStateReuses:0,uniformHostAllocations:0,uniformUploadBytes:0};
+    this.lastPass=null;
   }
   buffer(name,size,usage) {
     if(!Number.isSafeInteger(size)||size<0||size%4||size>this.device.limits.maxBufferSize)
@@ -265,11 +270,12 @@ export class HardwareRasterizer {
   }
   destroyTextures(target) { for(const key of ['color','normal','depth','stencil'])target[key]?.destroy(); }
   async bridge(config) {
-    let pending=this.bridgePipelines.get(config.key);
+    const key=attachmentBridgeKey(config);
+    let pending=this.bridgePipelines.get(key);
     if(pending)return pending;
     pending=this.createBridge(config);
-    this.bridgePipelines.set(config.key,pending);
-    try{return await pending;}catch(error){this.bridgePipelines.delete(config.key);throw error;}
+    this.bridgePipelines.set(key,pending);
+    try{return await pending;}catch(error){if(this.bridgePipelines.get(key)===pending)this.bridgePipelines.delete(key);throw error;}
   }
   async createBridge(config) {
     const device=this.device;
@@ -420,25 +426,36 @@ export class HardwareRasterizer {
     if(this.busy)throw Error('HardwareRasterizer cannot render overlapping camera passes');
     this.runtime.assertAlive?.();
     this.busy=true;
+    const passStart=performance.now();
     try {
     this.runtime.flush?.();
     const config=this.config(params),device=this.device;
     const native={};for(const [key,value] of Object.entries(buffers))if(value)native[key]=nativeBuffer(value);
     const materialCount=scene.materials.length/12;
     if(!Number.isInteger(materialCount)||!(scene.rasterParams instanceof Float32Array))throw RangeError('Invalid native material metadata');
-    const runs=[];
+    const runs=[],states=new Map();
+    // A material may occur in many ordered runs, especially with split stencil
+    // faces. Cache only within this camera: next frame's changed state is fresh.
+    const getState=(material,face=null)=>{
+      const key=material*3+(face==='front'?1:face==='back'?2:0);
+      if(states.has(key)){this.performanceStats.materialStateReuses++;return states.get(key);}
+      const state=this.state(scene,material,config,params,pass,face);
+      states.set(key,state);this.performanceStats.materialStateBuilds++;return state;
+    };
     for(const run of buildDrawRuns(scene,triangleCount)) {
-      const state=this.state(scene,run.material,config,params,pass);
+      const state=getState(run.material);
       if(!state)continue;
       if(state.splitFaces) {
         // WebGPU has one stencil reference/read/write mask for both faces.
         // Splitting each triangle preserves order even for blending/stencil.
         for(let t=run.first;t<run.first+run.count;t++)for(const face of ['front','back']) {
-          const split=this.state(scene,run.material,config,params,pass,face);
+          const split=getState(run.material,face);
           if(split)runs.push({first:t,count:1,material:run.material,state:split});
         }
       } else runs.push({...run,state});
     }
+    const stateBuildMs=performance.now()-passStart;
+    const pipelineStart=performance.now();
     const queryRuns=runs.filter(run=>run.state.query);
     if(queryRuns.length&&!native.counts)throw TypeError('Occlusion queries require the legacy query counter buffer');
     if(queryRuns.length&&!this.visibilityCounter) {
@@ -470,16 +487,31 @@ export class HardwareRasterizer {
       }
     }));
     for(const run of runs)run.pipeline=compiled.get(run.state.key);
+    const pipelineWaitMs=performance.now()-pipelineStart;
     if(this.disposed)throw Error('HardwareRasterizer was disposed during pipeline compilation');
     this.runtime.assertAlive?.();
     const target=directTarget??this.textures(config);
     const visibilityTarget=queryRuns.length?this.visibilityCounter.target(config):null;
     this.runtime.flush?.();
-    const uniforms=this.buffer('material uniforms',Math.max(1,runs.length)*this.uniformStride,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST);
-    const uniformData=new Uint32Array(Math.max(1,runs.length)*this.uniformStride/4);
-    for(let i=0;i<runs.length;i++)for(let field=0;field<PARAM_FIELDS.length;field++)
-      uniformData[i*this.uniformStride/4+field]=field===19?runs[i].material:field===18?config.samples:(params[PARAM_FIELDS[field]]??0);
-    device.queue.writeBuffer(uniforms,0,uniformData);
+    // Per-camera params are identical for repeated runs of the same material.
+    // Keep their draw order, but share one uniform slot (also for query reduction).
+    const uniformMaterials=new Map();
+    for(const run of runs) {
+      let index=uniformMaterials.get(run.material);
+      if(index===undefined){index=uniformMaterials.size;uniformMaterials.set(run.material,index);}
+      run.uniformIndex=index;
+    }
+    const uniformBytes=Math.max(1,uniformMaterials.size)*this.uniformStride;
+    const uniforms=this.buffer('material uniforms',uniformBytes,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST);
+    if(this.materialUniformData.byteLength<uniformBytes) {
+      this.materialUniformData=new Uint32Array(uniforms.size/4);
+      this.performanceStats.uniformHostAllocations++;
+    }
+    const uniformData=this.materialUniformData;
+    for(const [material,index] of uniformMaterials)for(let field=0;field<PARAM_FIELDS.length;field++)
+      uniformData[index*this.uniformStride/4+field]=field===19?material:field===18?config.samples:(params[PARAM_FIELDS[field]]??0);
+    device.queue.writeBuffer(uniforms,0,uniformData.buffer,0,uniformBytes);
+    this.performanceStats.uniformUploadBytes+=uniformBytes;
     const bindGroup=device.createBindGroup({label:'OpenMW native material draw buffers',layout:this.materialLayout,entries:[
       ...['vertices','triangles','materials','texels','attributes'].map((key,binding)=>({binding,resource:{buffer:native[key]}})),
       {binding:5,resource:{buffer:uniforms,size:80}},
@@ -497,14 +529,20 @@ export class HardwareRasterizer {
       ]});
     }
     const encoder=device.createCommandEncoder({label:'OpenMW WebGPU hardware rendering'});
-    if(directTarget&&pass.nativeFullClear) {
-      // Full target clears can stay entirely inside native WebGPU attachments.
-      // This avoids importing a 40-byte/pixel compatibility buffer before every
-      // main-scene camera pass.
-      const clearPass=encoder.beginRenderPass({label:'OpenMW native attachment clear',
-        ...this.attachments(target,config,'clear',{color:pass.clearColor,depth:pass.clearDepth,stencil:pass.clearStencil})});
+    let clearPending=Boolean(directTarget&&(pass.clearMask??16640));
+    const cameraAttachments=()=>{
+      const attachments=this.attachments(target,config);
+      if(!clearPending)return attachments;
+      clearPending=false;
+      return nativeCameraAttachments(attachments,config,params,pass);
+    };
+    // Merge a plane clear with the first real draw pass, avoiding an extra
+    // clear/store/load cycle. Queries/empty cameras need an explicit clear first.
+    if(clearPending&&(!runs.length||runs[0].state.query)) {
+      const clearPass=encoder.beginRenderPass({label:'OpenMW native attachment clear',...cameraAttachments()});
       clearPass.end();
-    } else if(!directTarget) {
+    }
+    if(!directTarget) {
       // Compatibility fallback: import the legacy attachment buffer only for
       // passes that cannot yet remain native.
       const seed=encoder.beginRenderPass({label:'OpenMW import engine attachments',...this.attachments(target,config,'clear')});
@@ -522,7 +560,7 @@ export class HardwareRasterizer {
     let render=null,drawCalls=0;
     const draw=(pass,run,index,first,count)=>{
       const state=run.state;
-      pass.setPipeline(run.pipeline);pass.setBindGroup(0,bindGroup,[index*this.uniformStride]);
+      pass.setPipeline(run.pipeline);pass.setBindGroup(0,bindGroup,[run.uniformIndex*this.uniformStride]);
       pass.setScissorRect(state.scissor.x,state.scissor.y,state.scissor.width,state.scissor.height);
       pass.setBlendConstant(state.blendConstant);pass.setStencilReference(state.stencilReference);
       pass.draw(count*3,1,first*3,0);drawCalls++;
@@ -540,10 +578,13 @@ export class HardwareRasterizer {
             colorAttachments:[{view:visibilityTarget.view,loadOp:'clear',storeOp:'store',clearValue:[0,0,0,0]}],
             depthStencilAttachment:this.attachments(target,config).depthStencilAttachment});
           draw(query,run,index,first,count);query.end();
-          this.visibilityCounter.encode(encoder,visibilityTarget,{counts:native.counts,uniforms,uniformOffset:index*this.uniformStride});
+          this.visibilityCounter.encode(encoder,visibilityTarget,{counts:native.counts,uniforms,uniformOffset:run.uniformIndex*this.uniformStride});
         }
       } else {
-        if(!render)render=encoder.beginRenderPass({label:'OpenMW native material rasterization',...this.attachments(target,config)});
+        if(!render) {
+          if(clearPending)this.performanceStats.mergedNativeClears++;
+          render=encoder.beginRenderPass({label:'OpenMW native material rasterization',...cameraAttachments()});
+        }
         draw(render,run,index,run.first,run.count);
       }
     }
@@ -568,6 +609,9 @@ export class HardwareRasterizer {
       exportPass.dispatchWorkgroups(Math.ceil(config.width/8),Math.ceil(config.height/8),config.samples);exportPass.end();
     }
     device.queue.submit([encoder.finish()]);
+    if(directTarget)this.performanceStats.nativeCameraPasses++;else this.performanceStats.compatibilityCameraPasses++;
+    this.lastPass={wallMs:performance.now()-passStart,stateBuildMs,pipelineWaitMs,drawCalls,
+      uniqueMaterials:uniformMaterials.size,uniformBytes,nativeDirect:Boolean(directTarget)};
     return {gpuMs:null,drawCalls,occlusionQueries:queryRuns.length,nativeTarget:directTarget??null};
     } finally {this.busy=false;}
   }
@@ -632,6 +676,7 @@ export class HardwareRasterizer {
       cachedAttachmentBridges:this.bridgePipelines.size,
       cachedRenderTargets:this.targets.size,
       cachedBuffers:this.buffers.size,
+      performance:{...this.performanceStats,lastPass:this.lastPass?{...this.lastPass}:null},
     };
   }
   dispose() {
@@ -639,6 +684,7 @@ export class HardwareRasterizer {
     for(const target of this.targets.values())this.destroyTextures(target);
     for(const buffer of this.buffers.values())buffer.destroy();
     this.visibilityCounter?.dispose();
+    this.materialUniformData=new Uint32Array();
     this.targets.clear();this.buffers.clear();this.pipelines.clear();this.shaderModules.clear();this.bridgePipelines.clear();
   }
 }
