@@ -630,6 +630,49 @@ measure physical VRAM/RSS or current native-browser performance. Smooth
 `D:/OpenMW-local/webcuda-seyda-neen-shader-define-cache-2026-10-07.json` and
 `D:/OpenMW-local/webcuda-seyda-neen-shader-define-cache-2026-10-07-summary.json`.
 
+## Shared game draw capture
+
+Engine `5c1d2efa4bbd` routes the real viewer and the standalone capture sink
+through the same geometry/particle submission functions. Source review found
+that the viewer's duplicated path omitted `screenPrimitiveDraw` and the
+polygon-fill override for expanded points and lines. Text decorations had
+the same omission. The CUDA clip kernel uses that marker to retain wide
+footprints after their centres have been clipped; the raster kernel uses it
+to select front stencil state for non-polygon primitives. Inherited wireframe
+and polygon offset must also not apply to their generated support triangles.
+
+Mixed point/line/polygon draws now use the corresponding material variant.
+Point particles additionally select a point material so fixed-function sprite
+coordinate replacement bypasses the texture matrix. Lines and polygon
+particles retain their texture matrices. Connected particles still transport
+separate ribbon and thin-line materials, allowing CUDA to make the existing
+view-dependent selection. Source state remains unchanged and is captured
+again for later draws. This change adds no rendering math outside `.cu`.
+
+All seven WASM64 integration suites pass. The new `draw-capture.test.cpp`
+exercises ordinary and mixed topology, untextured decoration capture, point
+particles, connected ribbons, compact/dense input equivalence and later state
+mutation. It feeds the captured material records into the authored CUDA clip
+body and verifies both retained non-polygon footprints and normal polygon
+clipping. The full engine build and HTTP range/isolation/MIME checks pass.
+CUDA sources, generated kernels, browser host code and the SDK are unchanged.
+Logs are `D:/OpenMW-local/webcuda-shared-draw-capture-tests.log`,
+`D:/OpenMW-local/webcuda-shared-draw-capture-kernel-test.log`,
+`D:/OpenMW-local/webcuda-shared-draw-capture-engine-link.log` and
+`D:/OpenMW-local/webcuda-shared-draw-capture-stage.json`.
+
+The rebuilt Seyda Neen WebGPU run records 296 presentations, no renderer/pass
+errors, no aborted captures and no legacy draw attempts. All 120 sampled
+completed scene frames release their packets. Median capture is 86.528 ms,
+material encoding 33.625 ms, geometry encoding 28.043 ms, renderer wall time
+142.003 ms and presentation submission interval 235.448 ms. The streaming
+workload differs from previous runs, so these are health observations, not a
+matched performance comparison. Reported buffer capacity is 2,002,736,416
+bytes, which is not physical VRAM/RSS. Smooth 60-180 Hz play and current native
+browser gameplay remain unverified. Reports are
+`D:/OpenMW-local/webcuda-seyda-neen-shared-draw-capture-2026-10-07.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-shared-draw-capture-2026-10-07-summary.json`.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

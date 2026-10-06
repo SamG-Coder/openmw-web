@@ -644,20 +644,9 @@ namespace WebCuda
         writableMaterialTable(mTable);
         auto draw=context;
         if(dynamic_cast<const osg::QueryGeometry*>(&geometry))draw.queryId=queryIdentity(&geometry,mPassCamera);
-        bool screen=false;
-        for(unsigned int i=0;i<geometry.getNumPrimitiveSets();i++) {
-            const auto mode=geometry.getPrimitiveSet(i)->getMode();
-            screen=screen||mode==GL_POINTS||mode==GL_LINES||mode==GL_LINE_STRIP||mode==GL_LINE_LOOP;
-        }
-        const auto material=mTable->encode(draw);
-        if(!screen){appendGeometry(mPacket,geometry,draw,material);return;}
-        osg::ref_ptr<osg::StateSet> screenState=new osg::StateSet;
-        screenState->setMode(GL_CULL_FACE,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
-        screenState->setMode(GL_POLYGON_OFFSET_FILL,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
-        auto screenContext=draw;screenContext.states.push_back(screenState);
-        const auto screenMaterial=mTable->encode(screenContext);
-        auto pointContext=screenContext;pointContext.pointDraw=true;
-        appendGeometry(mPacket,geometry,draw,material,screenMaterial,mTable->encode(pointContext));
+        captureGeometry(mPacket,geometry,draw,[this](const DrawContext& c,const osg::Texture2D* texture,bool gui) {
+            return mTable->encode(c,texture,gui);
+        });
     }
     float Viewer::simulationTime() const { return static_cast<float>(getFrameStamp()->getSimulationTime()); }
     unsigned int Viewer::frameNumber() const { return getFrameStamp()->getFrameNumber(); }
@@ -841,14 +830,9 @@ namespace WebCuda
     {
         if (!mTable) throw std::logic_error("WebCuda particles outside stage");
         writableMaterialTable(mTable);
-        // Expanded point/line triangles represent non-polygon primitives.
-        // Polygon culling and polygon-fill offset must not apply to them.
-        osg::ref_ptr<osg::StateSet> screenState=new osg::StateSet;
-        screenState->setMode(GL_CULL_FACE,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
-        screenState->setMode(GL_POLYGON_OFFSET_FILL,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
-        auto particleContext=context;particleContext.particleDraw=true;
-        auto screenContext=particleContext;screenContext.states.push_back(screenState);
-        appendParticles(mPacket,particles,particleContext,mTable->encode(particleContext),mTable->encode(screenContext));
+        captureParticles(mPacket,particles,context,[this](const DrawContext& c,const osg::Texture2D* texture,bool gui) {
+            return mTable->encode(c,texture,gui);
+        });
     }
     void Viewer::text(const osgText::Text& text,const DrawContext& context)
     {
@@ -874,10 +858,6 @@ namespace WebCuda
         }
         // Preserve OSG's decoration-before-glyph ordering and original topology.
         if((text.getDrawMode()&~osgText::TextBase::TEXT)!=0) {
-            osg::ref_ptr<osg::StateSet> lineState=new osg::StateSet;
-            lineState->setMode(GL_CULL_FACE,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
-            lineState->setMode(GL_POLYGON_OFFSET_FILL,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
-            auto lineDraw=draw;lineDraw.states.push_back(lineState);
             for(const auto& primitive:text.getDecorationPrimitives()) {
                 if(!primitive)throw std::runtime_error("Missing text decoration primitive");
                 osg::ref_ptr<osg::Geometry> geometry=new osg::Geometry;
@@ -886,7 +866,9 @@ namespace WebCuda
                 colors->push_back(primitive->getMode()==GL_TRIANGLES?text.getBoundingBoxColor():osg::Vec4(1.f,1.f,1.f,1.f));
                 geometry->setColorArray(colors,osg::Array::BIND_OVERALL);
                 geometry->addPrimitiveSet(primitive);
-                appendGeometry(mPacket,*geometry,draw,mTable->encode(draw,nullptr,true),mTable->encode(lineDraw,nullptr,true));
+                captureGeometry(mPacket,*geometry,draw,[this](const DrawContext& c,const osg::Texture2D* texture,bool gui) {
+                    return mTable->encode(c,texture,gui);
+                },true);
             }
         }
         if((text.getDrawMode()&osgText::TextBase::TEXT)==0)return;

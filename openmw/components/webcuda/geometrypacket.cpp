@@ -858,11 +858,12 @@ namespace WebCuda
     }
 
     void appendParticles(GeometryPacket& packet, const osgParticle::ParticleSystem& system,
-        const DrawContext& context, std::uint32_t material, std::uint32_t screenMaterial)
+        const DrawContext& context, std::uint32_t material, std::uint32_t screenMaterial, std::uint32_t pointMaterial)
     {
         CaptureScope captureScope(CapturePhase::GeometryEncode);
         const auto state=resolveState(context);
         if(screenMaterial==~std::uint32_t(0))screenMaterial=material;
+        if(pointMaterial==~std::uint32_t(0))pointMaterial=screenMaterial;
         if(const auto* ribbon=dynamic_cast<const osgParticle::ConnectedParticleSystem*>(&system)) {
             GeometryPacket draw;matrices(draw,context,*state);
             std::vector<float> particles;
@@ -980,7 +981,7 @@ namespace WebCuda
                 for(unsigned int k=0;k<3;k++)a[21+k]=context.particleNormal[k];
                 draw.attributes.insert(draw.attributes.end(),a.begin(),a.end());
             }
-            const auto particleMaterial=(isPoint||isLine)?screenMaterial:material;
+            const auto particleMaterial=isPoint?pointMaterial:(isLine?screenMaterial:material);
             draw.triangles.insert(draw.triangles.end(),{base,base+1,base+2,particleMaterial,base,base+2,base+3,particleMaterial});
         }
         commit(packet,draw);
@@ -1031,28 +1032,28 @@ namespace WebCuda
         mInPass = false;
         mConsume(stage,mPacket);
     }
-    void GeometrySink::geometry(const osg::Geometry& geometry, const DrawContext& context)
+    void captureGeometry(GeometryPacket& packet,const osg::Geometry& geometry,const DrawContext& context,
+        const MaterialResolver& resolve,bool gui)
     {
-        if (!mInPass) throw std::logic_error("WebCuda geometry outside pass");
         bool screen=false;
         for(unsigned int i=0;i<geometry.getNumPrimitiveSets();i++) {
             const auto mode=geometry.getPrimitiveSet(i)->getMode();
             screen=screen||mode==GL_POINTS||mode==GL_LINES||mode==GL_LINE_STRIP||mode==GL_LINE_LOOP;
         }
-        const auto material=mResolve(context,nullptr,false);
-        if(!screen){appendGeometry(mPacket,geometry,context,material);return;}
+        const auto material=resolve(context,nullptr,gui);
+        if(!screen){appendGeometry(packet,geometry,context,material);return;}
         osg::ref_ptr<osg::StateSet> screenState=new osg::StateSet;
         screenState->setMode(GL_CULL_FACE,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
         screenState->setMode(GL_POLYGON_OFFSET_FILL,osg::StateAttribute::OFF|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
         screenState->setAttribute(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,osg::PolygonMode::FILL),osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
         auto screenContext=context;screenContext.screenPrimitiveDraw=true;screenContext.states.push_back(screenState);
-        const auto screenMaterial=mResolve(screenContext,nullptr,false);
+        const auto screenMaterial=resolve(screenContext,nullptr,gui);
         auto pointContext=screenContext;pointContext.pointDraw=true;
-        appendGeometry(mPacket,geometry,context,material,screenMaterial,mResolve(pointContext,nullptr,false));
+        appendGeometry(packet,geometry,context,material,screenMaterial,resolve(pointContext,nullptr,gui));
     }
-    void GeometrySink::particles(const osgParticle::ParticleSystem& system, const DrawContext& context)
+    void captureParticles(GeometryPacket& packet,const osgParticle::ParticleSystem& system,const DrawContext& context,
+        const MaterialResolver& resolve)
     {
-        if (!mInPass) throw std::logic_error("WebCuda particles outside pass");
         // Expanded point/line triangles represent non-polygon primitives.
         // Polygon culling and polygon-fill offset must not apply to them.
         osg::ref_ptr<osg::StateSet> screenState=new osg::StateSet;
@@ -1061,7 +1062,29 @@ namespace WebCuda
         screenState->setAttribute(new osg::PolygonMode(osg::PolygonMode::FRONT_AND_BACK,osg::PolygonMode::FILL),osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
         auto particleContext=context;particleContext.particleDraw=true;
         auto screenContext=particleContext;screenContext.screenPrimitiveDraw=true;screenContext.states.push_back(screenState);
-        appendParticles(mPacket,system,particleContext,mResolve(particleContext,nullptr,false),mResolve(screenContext,nullptr,false));
+        const auto material=resolve(particleContext,nullptr,false);
+        const auto screenMaterial=resolve(screenContext,nullptr,false);
+        auto pointMaterial=screenMaterial;
+        if(!dynamic_cast<const osgParticle::ConnectedParticleSystem*>(&system)) {
+            bool points=system.getUseShaders();
+            for(int i=0;!points&&i<system.numParticles();i++)
+                points=system.getParticle(i)->isAlive()&&system.getParticle(i)->getShape()==osgParticle::Particle::POINT;
+            if(points) {
+                auto pointContext=screenContext;pointContext.pointDraw=true;
+                pointMaterial=resolve(pointContext,nullptr,false);
+            }
+        }
+        appendParticles(packet,system,particleContext,material,screenMaterial,pointMaterial);
+    }
+    void GeometrySink::geometry(const osg::Geometry& geometry,const DrawContext& context)
+    {
+        if (!mInPass) throw std::logic_error("WebCuda geometry outside pass");
+        captureGeometry(mPacket,geometry,context,mResolve);
+    }
+    void GeometrySink::particles(const osgParticle::ParticleSystem& system,const DrawContext& context)
+    {
+        if (!mInPass) throw std::logic_error("WebCuda particles outside pass");
+        captureParticles(mPacket,system,context,mResolve);
     }
     void GeometrySink::gui(const osg::Array& array, std::size_t count, const osg::Texture2D* texture,
         const DrawContext& context)

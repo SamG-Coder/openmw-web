@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce remaining material/state capture, geometry validation/transfers and GPU frame cost. Shader metadata now uses a bounded exact-content cache; all ten material benchmark cases preserve packet checksums and reduce isolated capture cost by 17-43%. Rebuilt engine 1bc7a744621a reaches 304 exterior presentations without errors. This is not a matched game performance comparison: median submission interval remains 255.9425 ms, with 46.77888 ms in material capture and 31.670528 ms in geometry capture. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: reduce remaining material/state capture, geometry validation/transfers and GPU frame cost. Source review also found and repaired Viewer/capture-sink divergence for points, lines, particles and text decorations. Rebuilt engine 5c1d2efa4bbd reaches 296 exterior presentations without errors and releases all sampled completed packets. This is not a matched performance comparison: median submission interval remains 235.4475 ms, with 33.625344 ms in material capture and 28.043008 ms in geometry capture. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Inspect repeated state resolution within a draw, geometry validation and topology/deformation transport after shader metadata reuse, immutable vertex residency and tile-grouped raster traversal. Preserve exact state invalidation, triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Continue inspecting repeated state resolution within a draw, geometry validation and topology/deformation transport after shader metadata reuse, immutable vertex residency and tile-grouped raster traversal. Audit remaining CPU composition of positioned light/TexGen application matrices against the raw-input CUDA boundary. Viewer and standalone geometry/particle capture now share the same code. Preserve exact state invalidation, triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1275,6 +1275,41 @@
       "D:/OpenMW-local/webcuda-seyda-neen-vertex-input-2026-10-06-summary.json"
     ],
     "limits": "The richer input benchmark has a small CPU regression despite reduced bytes. Expanded GPU working buffers remain, so transport size is not physical VRAM usage. No current native-browser gameplay or physical refresh-rate acceptance."
+  },
+  "sharedDrawCapture": {
+    "engine": "5c1d2efa4bbd",
+    "change": "The real Viewer and standalone sink share geometry/particle capture. Expanded points, lines and decorations carry the CUDA non-polygon marker and polygon-fill override. Point particles use a distinct material for sprite coordinate replacement; polygon and line texture matrices remain unchanged.",
+    "sourceFinding": "Viewer duplicated the tested sink but omitted screenPrimitiveDraw and the forced-fill state. CUDA therefore received polygon clipping/stencil semantics for generated support triangles. Text decorations had the same omission; particle points also shared the line material's texture matrix.",
+    "validation": {
+      "wasm64IntegrationSuites": 7,
+      "drawCaptureCases": "ordinary and mixed topology, decorations, point sprites, ribbon variants, compact/dense inputs, later state edits and prior packet immutability",
+      "authoredCudaClipBody": "captured materials preserve expanded footprints and retain ordinary polygon clipping",
+      "fullEngineBuildAndHttpStaging": "passed",
+      "cudaSourcesGeneratedArtifactsBrowserHostAndSdk": "unchanged"
+    },
+    "exteriorWebgpu": {
+      "savedPresentations": 296,
+      "rendererErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 2002736416,
+      "medianCaptureMs": 86.5275,
+      "medianMaterialEncodeMs": 33.625344,
+      "medianGeometryEncodeMs": 28.043008,
+      "medianRendererWallMs": 142.0025,
+      "medianPresentationSubmitIntervalMs": 235.4475,
+      "limits": "Streaming debug scene, not a matched benchmark. Capacity is not physical VRAM/RSS; native browser gameplay remains unverified."
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-shared-draw-capture-tests.log",
+      "D:/OpenMW-local/webcuda-shared-draw-capture-kernel-test.log",
+      "D:/OpenMW-local/webcuda-shared-draw-capture-engine-link.log",
+      "D:/OpenMW-local/webcuda-shared-draw-capture-stage.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-shared-draw-capture-2026-10-07-summary.json"
+    ],
+    "limits": "Correctness repair from source review. It does not establish a frame-rate improvement or current native-browser gameplay acceptance."
   },
   "shaderDefineCache": {
     "engine": "1bc7a744621a",
