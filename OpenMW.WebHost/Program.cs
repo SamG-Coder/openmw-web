@@ -10,6 +10,8 @@ var repoRoot = Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, ".
 var playRoot = Path.Combine(repoRoot, "play");
 var rendererRoot = Path.Combine(repoRoot, "render", "webgpu");
 var manager = new EngineManager(repoRoot, builder.Configuration, app.Logger);
+var gameData = new GameDataManager(repoRoot, builder.Configuration, app.Logger);
+gameData.Detect();
 var contentTypes = new FileExtensionContentTypeProvider();
 contentTypes.Mappings[".wasm"] = "application/wasm";
 contentTypes.Mappings[".data"] = "application/octet-stream";
@@ -115,12 +117,12 @@ app.MapGet("/", async context =>
     await context.Response.WriteAsync(page);
 });
 
-app.MapGet("/status", () => Results.Json(manager.Status));
+app.MapGet("/status", () => Results.Json(new { engine = manager.Status, gameData = gameData.Status }));
 
 app.MapGet("/mwdata-manifest.json", () =>
 {
-    var root = Path.Combine(playRoot, "mwdata");
-    if (!Directory.Exists(root))
+    var root = gameData.Current;
+    if (root is null)
         return Results.Json(Array.Empty<object>());
 
     var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
@@ -138,6 +140,29 @@ app.MapGet("/mwdata-manifest.json", () =>
         .OrderBy(file => file.p, StringComparer.OrdinalIgnoreCase)
         .ToArray();
     return Results.Json(files);
+});
+
+app.MapGet("/mwdata/{**asset}", async (HttpContext context, string asset) =>
+{
+    var root = gameData.Current;
+    if (root is null || String.IsNullOrWhiteSpace(asset))
+    {
+        context.Response.StatusCode = 404;
+        return;
+    }
+
+    var canonicalRoot = Path.GetFullPath(root);
+    var path = Path.GetFullPath(Path.Combine(canonicalRoot, asset.Replace('/', Path.DirectorySeparatorChar)));
+    if (!path.StartsWith(canonicalRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) || !File.Exists(path))
+    {
+        context.Response.StatusCode = 404;
+        return;
+    }
+
+    if (!contentTypes.TryGetContentType(path, out var type)) type = "application/octet-stream";
+    context.Response.ContentType = type;
+    context.Response.Headers["Cache-Control"] = "no-cache";
+    await context.Response.SendFileAsync(path, 0, null, context.RequestAborted);
 });
 
 app.MapGet("/e/{version}/{**asset}", async (HttpContext context, string version, string asset) =>
@@ -169,6 +194,7 @@ _ = manager.EnsureEngineAsync();
 
 app.Logger.LogInformation("Repository root: {Root}", repoRoot);
 app.Logger.LogInformation("WebGPU renderer: {Renderer}", rendererRoot);
+app.Logger.LogInformation("Morrowind Data Files: {GameData}", gameData.Current ?? "(not found)");
 app.Run();
 
 sealed record EngineBundle(string Version, string Directory, string Source);
@@ -367,4 +393,96 @@ sealed class EngineManager
 <p>{(_buildFailed ? "The ASP.NET host is running, but the engine could not be prepared." : "The ASP.NET host is running. The game will open automatically when the engine is ready.")}</p>
 <pre>{escaped}</pre><p><a href=""/status"">Build/status JSON</a></p></main></body></html>";
     }
+}
+
+
+sealed class GameDataManager
+{
+    private readonly string _root;
+    private readonly IConfiguration _configuration;
+    private readonly ILogger _log;
+    public string? Current { get; private set; }
+    public IReadOnlyList<string> CheckedPaths { get; private set; } = Array.Empty<string>();
+    public object Status => new { path = Current, found = Current is not null, checkedPaths = CheckedPaths };
+
+    public GameDataManager(string root, IConfiguration configuration, ILogger log)
+    {
+        _root = root; _configuration = configuration; _log = log;
+    }
+
+    public void Detect()
+    {
+        var checkedPaths = new List<string>();
+        var configured = _configuration["OpenMW:GameDataPath"]?.Trim();
+        if (!String.IsNullOrWhiteSpace(configured) &&
+            !String.Equals(configured, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            var candidate = Normalize(configured);
+            checkedPaths.Add(candidate);
+            if (Valid(candidate)) { Set(candidate, checkedPaths); return; }
+        }
+
+        // A repo-local play/mwdata remains useful, but a normal Windows dev
+        // checkout can point straight at the installed Steam Data Files.
+        Add(Path.Combine(_root, "play", "mwdata"));
+        foreach (var library in _configuration.GetSection("OpenMW:SteamLibraryPaths").Get<string[]>() ?? Array.Empty<string>())
+            Add(Path.Combine(Environment.ExpandEnvironmentVariables(library), "steamapps", "common", "Morrowind", "Data Files"));
+
+        if (OperatingSystem.IsWindows())
+        {
+            Add(@"C:\Program Files (x86)\Steam\steamapps\common\Morrowind\Data Files");
+            Add(@"C:\Program Files\Steam\steamapps\common\Morrowind\Data Files");
+
+            // Discover additional Steam libraries from libraryfolders.vdf.
+            foreach (var steamRoot in new[] { @"C:\Program Files (x86)\Steam", @"C:\Program Files\Steam" })
+            {
+                var vdf = Path.Combine(steamRoot, "steamapps", "libraryfolders.vdf");
+                if (!File.Exists(vdf)) continue;
+                try
+                {
+                    foreach (var line in File.ReadLines(vdf))
+                    {
+                        var match = System.Text.RegularExpressions.Regex.Match(line, @"^\s*\""path\""s+\""(.+)\""s*$");
+                        if (!match.Success) continue;
+                        var library = match.Groups[1].Value.Replace(@"\\", @"\");
+                        Add(Path.Combine(library, "steamapps", "common", "Morrowind", "Data Files"));
+                    }
+                }
+                catch (IOException) { }
+            }
+
+            // Common custom-library drive roots, including D:\SteamLibrary.
+            foreach (var drive in DriveInfo.GetDrives().Where(d => d.IsReady))
+            {
+                Add(Path.Combine(drive.RootDirectory.FullName, "SteamLibrary", "steamapps", "common", "Morrowind", "Data Files"));
+                Add(Path.Combine(drive.RootDirectory.FullName, "Steam", "steamapps", "common", "Morrowind", "Data Files"));
+            }
+        }
+
+        void Add(string path)
+        {
+            var candidate = Normalize(path);
+            if (checkedPaths.Contains(candidate, StringComparer.OrdinalIgnoreCase)) return;
+            checkedPaths.Add(candidate);
+            if (Current is null && Valid(candidate)) Current = candidate;
+        }
+
+        CheckedPaths = checkedPaths;
+        if (Current is not null)
+            _log.LogInformation("Detected Morrowind Data Files at {Path}", Current);
+        else
+            _log.LogWarning("Morrowind Data Files were not found. Set OpenMW:GameDataPath in appsettings.json.");
+    }
+
+    private void Set(string path, List<string> checkedPaths)
+    {
+        Current = path; CheckedPaths = checkedPaths;
+        _log.LogInformation("Using configured Morrowind Data Files at {Path}", path);
+    }
+
+    private static string Normalize(string path) => Path.GetFullPath(Environment.ExpandEnvironmentVariables(path.Trim().Trim('"')));
+    private static bool Valid(string path) =>
+        Directory.Exists(path) &&
+        File.Exists(Path.Combine(path, "Morrowind.esm")) &&
+        File.Exists(Path.Combine(path, "Morrowind.bsa"));
 }
