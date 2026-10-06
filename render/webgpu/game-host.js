@@ -746,44 +746,87 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         const attachment=planeStorage(id,pass.width,pass.height,pass.sampleCount??1,pass.kind==='ripples'?0:1,compactDepth);
         if(pass.kind==='ripples') {
           if((attachment.sampleCount??1)>1)throw Error('Ripple simulation requires a single-sample attachment');
+          const rippleBuffer=await ensureCompatibility(attachment);
           if(pass.simulate) {
             const scratch=pipeline.buffer('rippleScratch',pass.width*pass.height*40);
             const positions=pipeline.buffer('ripplePositions',Math.max(4,pass.positions.byteLength),pass.positions);
             const groups=dispatchGroups(pass.width*pass.height,runtime.device.limits);
             runtime.batch()
-              .dispatch(pipeline.kernels.ripple_blob.bind({source:attachment.buffer,target:scratch,positions},
+              .dispatch(pipeline.kernels.ripple_blob.bind({source:rippleBuffer,target:scratch,positions},
                 {width:pass.width,height:pass.height,count:pass.positions.length/3,offset_x:pass.ox,offset_y:pass.oy,time:pass.time}),groups)
-              .dispatch(pipeline.kernels.ripple_simulate.bind({source:scratch,target:attachment.buffer},
+              .dispatch(pipeline.kernels.ripple_simulate.bind({source:scratch,target:rippleBuffer},
                 {width:pass.width,height:pass.height}),groups).submit();
+            attachment.authority='compat';
           }
           stats.passes++;continue;
         }
         const v=pass.viewport??[0,0,pass.width,pass.height];
         const partialViewport=v[0]!==0||v[1]!==0||v[2]!==pass.width||v[3]!==pass.height;
-        loadPlane(pass.depthTargetId,attachment,'copy_depth',partialViewport||!(pass.clearMask&256));
-        if([0x88f0,0x8cad].includes(pass.depthFormat))
-          loadPlane(pass.depthTargetId,attachment,'copy_stencil',partialViewport||!(pass.clearMask&1024));
-        loadPlane(pass.stencilTargetId,attachment,'copy_stencil',partialViewport||!(pass.clearMask&1024));
-        loadPlane(pass.normalTargetId,attachment,'copy_normals',
-          partialViewport||!(pass.clearMask&16384)||(pass.clearColorMask??15)!==15);
         attachment.colorFormat=pass.colorFormat??0x8058;
+        attachment.depthFormat=pass.depthFormat??0x81a6;
+        attachment.normalFormat=pass.normalFormat??0x8058;
+
+        // Ensure holders exist for independently named depth/normal planes.
+        if(pass.depthTargetId)planeStorage(pass.depthTargetId,pass.width,pass.height,pass.sampleCount??1,1,false);
+        if(pass.normalTargetId)planeStorage(pass.normalTargetId,pass.width,pass.height,pass.sampleCount??1,1,false);
+        if(pass.stencilTargetId)planeStorage(pass.stencilTargetId,pass.width,pass.height,pass.sampleCount??1,1,false);
+
+        const preserveColor=(pass.clearMask&16384)===0;
+        const preserveDepth=(pass.clearMask&256)===0;
+        const preserveNormal=pass.normalTargetId&&((pass.clearMask&16384)===0||(pass.clearColorMask??15)!==15);
+        const depthHolder=pass.depthTargetId?targets.get(pass.depthTargetId):attachment;
+        const normalHolder=pass.normalTargetId?targets.get(pass.normalTargetId):null;
+        let nativeDirect=nativeTargets.canCamera(pass)
+          &&(!preserveColor||attachment.authority!=='compat')
+          &&(!preserveDepth||depthHolder?.authority!=='compat')
+          &&(!preserveNormal||normalHolder?.authority!=='compat');
+
+        let nativeTarget=null,targetBuffer=null,sampleBuffer=null;
+        if(nativeDirect) {
+          nativeTarget=nativeTargets.cameraTarget(attachment,pass,targets,compactDepth);
+        } else {
+          targetBuffer=await ensureCompatibility(attachment);
+          await loadPlane(pass.depthTargetId,attachment,'copy_depth',partialViewport||preserveDepth);
+          if([0x88f0,0x8cad].includes(pass.depthFormat))
+            await loadPlane(pass.depthTargetId,attachment,'copy_stencil',partialViewport||!(pass.clearMask&1024));
+          await loadPlane(pass.stencilTargetId,attachment,'copy_stencil',partialViewport||!(pass.clearMask&1024));
+          await loadPlane(pass.normalTargetId,attachment,'copy_normals',partialViewport||preserveNormal);
+          if((pass.sampleCount??1)>1) {
+            const bytes=pass.width*pass.height*40*(pass.sampleCount??1);
+            if(!attachment.sampleBuffer||attachment.sampleBuffer.byteLength<bytes) {
+              if(attachment.sampleBuffer)pipeline.retireBuffer(attachment.sampleBuffer);
+              attachment.sampleBuffer=runtime.createBuffer(bytes,{label:'OpenMW compatibility multisample attachment'});
+              pipeline.seedMultisample(targetBuffer,attachment.sampleBuffer,pass.width,pass.height,pass.sampleCount);
+            }
+            sampleBuffer=attachment.sampleBuffer;
+          }
+        }
+
         const renderCallStart=performance.now();
-        const rendered=await pipeline.render(pass.scene,pass.width,pass.height,null,{...pass,target:attachment.buffer,sampleTarget:attachment.sampleBuffer,targets,compactDepth:attachment.compactDepth,deferCompletion:true,profileGpu:inspectPasses,readback});
-        // Includes host preparation and any awaited earlier GPU work. This is
-        // deliberately not labelled as the duration of this pass on the GPU.
+        const rendered=await pipeline.render(pass.scene,pass.width,pass.height,null,{...pass,
+          ...(nativeDirect?{nativeTarget,targetHolder:attachment}:{target:targetBuffer,sampleTarget:sampleBuffer}),
+          targets,compactDepth:attachment.compactDepth,deferCompletion:true,profileGpu:inspectPasses,readback,
+          copyNativePlaneToAtlas:(holder,plane,texels,offset,options)=>nativeTargets.copyPlaneToAtlas(holder,plane,texels,offset,options)
+        });
         const renderCallWallMs=performance.now()-renderCallStart;
         if(inspectPasses) {
-          // Queue the sample copy now, before later cameras can reuse storage.
-          const pixel=Math.floor(pass.height/2)*pass.width+Math.floor(pass.width/2);
-          const sample=readback(attachment.buffer,Float32Array,attachment.compactDepth?4:36,pixel*(attachment.compactDepth?4:36));
-          passDiagnostics.push(Promise.all([rendered.queryCompletion,sample]).then(([completed,values])=>({
+          // Debug mode is allowed to materialize the target; normal gameplay
+          // never pays this full-frame readback bridge.
+          let samplePromise=Promise.resolve(new Float32Array());
+          try {
+            const debugBuffer=await ensureCompatibility(attachment);
+            const pixel=Math.floor(pass.height/2)*pass.width+Math.floor(pass.width/2);
+            samplePromise=readback(debugBuffer,Float32Array,attachment.compactDepth?4:36,pixel*(attachment.compactDepth?4:36));
+          } catch(_) {}
+          passDiagnostics.push(Promise.all([rendered.queryCompletion,samplePromise]).then(([completed,values])=>({
             targetId:id,width:pass.width,height:pass.height,compactDepth:attachment.compactDepth,
-            clearMask:pass.clearMask,clearDepth:pass.clearDepth,depthFormat:pass.depthFormat,
+            clearMask:pass.clearMask,clearDepth:pass.clearDepth,depthFormat:pass.depthFormat,nativeDirect,
             renderCallWallMs,textureDecodeCount:pass.scene.textureDecodes.length/5,
             ...completed.diagnostic,center:Array.from(values),error:completed.error?String(completed.error):null,
           }),error=>({targetId:id,error:String(error)})));
         }
-        storeAttachments(attachment,pass);
+        await storeAttachments(attachment,pass,nativeDirect);
+        if(nativeDirect)attachment.authority='native';else attachment.authority='compat';
         queryCompletions.push(rendered.queryCompletion);
         markScreenWritten(id,attachment,rendered);
         stats.passes++;
@@ -800,27 +843,31 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       timing.validationWaitMs=performance.now()-validationStart;
       if(inspectPasses)canvas.dataset.webcudaPasses=JSON.stringify(await Promise.all(passDiagnostics));
       if(result&&!failed&&!disposed) {
-        // Subsequent off-screen passes reuse the pipeline's pack buffer. Pack
-        // the screen attachment again after all cameras, before presentation.
         const screen=targets.get(0);
-        const bytes=result.row_pixels*result.height*4;
-        if(!presentation||presentation.byteLength<bytes) {
-          const replacement=runtime.createBuffer(bytes,{label:'OpenMW presentation'});
-          if(presentation)pipeline.retireBuffer(presentation);
-          presentation=replacement;
-        }
-        runtime.batch().dispatch(pipeline.kernels.pack_target.bind({target:screen.buffer,pixels:presentation},
-          {width:result.width,height:result.height,row_pixels:result.row_pixels}),
-          dispatchGroups(result.width*result.height,runtime.device.limits)).submit();
+        if(!screen)throw Error('Screen target is unavailable');
         if(canvas.width!==result.width)canvas.width=result.width;
         if(canvas.height!==result.height)canvas.height=result.height;
         position();
-        if(runtime.presentBuffer)await runtime.presentBuffer(presentation,context,result.width,result.height,result.row_pixels);
-        else {
-          const encoder=runtime.device.createCommandEncoder();
-          encoder.copyBufferToTexture({buffer:presentation.gpuBuffer,bytesPerRow:result.row_pixels*4,rowsPerImage:result.height},
-            {texture:context.getCurrentTexture()},[result.width,result.height,1]);
-          runtime.device.queue.submit([encoder.finish()]);
+        if(screen.authority==='native'&&screen.native?.color) {
+          await nativeTargets.present(screen,context,result.width,result.height);
+        } else {
+          const screenBuffer=await ensureCompatibility(screen);
+          const bytes=result.row_pixels*result.height*4;
+          if(!presentation||presentation.byteLength<bytes) {
+            const replacement=runtime.createBuffer(bytes,{label:'OpenMW presentation'});
+            if(presentation)pipeline.retireBuffer(presentation);
+            presentation=replacement;
+          }
+          runtime.batch().dispatch(pipeline.kernels.pack_target.bind({target:screenBuffer,pixels:presentation},
+            {width:result.width,height:result.height,row_pixels:result.row_pixels}),
+            dispatchGroups(result.width*result.height,runtime.device.limits)).submit();
+          if(runtime.presentBuffer)await runtime.presentBuffer(presentation,context,result.width,result.height,result.row_pixels);
+          else {
+            const encoder=runtime.device.createCommandEncoder();
+            encoder.copyBufferToTexture({buffer:presentation.gpuBuffer,bytesPerRow:result.row_pixels*4,rowsPerImage:result.height},
+              {texture:context.getCurrentTexture()},[result.width,result.height,1]);
+            runtime.device.queue.submit([encoder.finish()]);
+          }
         }
         timing.presentationSubmitAt=performance.now();
         timing.presentationSubmitIntervalMs=lastPresentationSubmit===null?null:timing.presentationSubmitAt-lastPresentationSubmit;
