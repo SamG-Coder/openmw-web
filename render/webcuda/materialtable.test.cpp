@@ -5,6 +5,7 @@
 #include <osg/BlendFunc>
 #include <osg/Program>
 #include <osg/Shader>
+#include <osg/ValueObject>
 #include <osg/DisplaySettings>
 #include <components/webcuda/materialtable.hpp>
 int main() {
@@ -197,5 +198,43 @@ int main() {
     assert(firstSnapshot->texels()==firstPrefix && firstSnapshot->textureCopies().size()==4);
     WebCuda::MaterialTable resolvedCopy(*secondSnapshot);
     rejected=false;try{resolvedCopy.encode(attachmentContext);}catch(const std::logic_error&){rejected=true;}assert(rejected);
-    std::puts("WebCuda material table: texture reuse, dirty-image versioning, compact GPU attachment snapshots, mip relocation and unsupported-state rejection passed");
+    // Metadata reuse must not cache changing draw uniforms, or hide edits to
+    // the same shader object. Old material snapshots remain immutable.
+    osg::ref_ptr<osg::Program> variantProgram=new osg::Program;
+    osg::ref_ptr<osg::Shader> variantVertex=new osg::Shader(osg::Shader::VERTEX),variantFragment=new osg::Shader(osg::Shader::FRAGMENT);
+    variantVertex->setName("objects.vert");variantFragment->setName("objects.frag");
+    variantProgram->addShader(variantVertex);variantProgram->addShader(variantFragment);
+    osg::ref_ptr<osg::StateSet> variantState=new osg::StateSet;
+    variantState->setAttribute(variantProgram);
+    osg::ref_ptr<osg::Uniform> variantAlpha=new osg::Uniform("alphaRef",.125f);
+    variantState->addUniform(variantAlpha);
+    osg::Matrixd variantView;
+    WebCuda::DrawContext variantContext;variantContext.states={variantState};variantContext.view=&variantView;
+    WebCuda::MaterialTable variantTable(16,16);
+    variantFragment->setUserValue("webcuda.defines",std::string("classicFalloff=1\n"));
+    const auto firstVariant=variantTable.encode(variantContext);
+    const auto firstData=variantTable.materials()[firstVariant*12];
+    variantAlpha->set(.75f);
+    const auto uniformVariant=variantTable.encode(variantContext);
+    const auto uniformData=variantTable.materials()[uniformVariant*12];
+    float beforeAlpha,afterAlpha;
+    std::memcpy(&beforeAlpha,&variantTable.texels()[firstData+49],4);
+    std::memcpy(&afterAlpha,&variantTable.texels()[uniformData+49],4);
+    assert(beforeAlpha==.125f&&afterAlpha==.75f);
+    assert((variantTable.texels()[firstData+4]&1u)!=0&&(variantTable.texels()[uniformData+4]&1u)!=0);
+    variantFragment->setUserValue("webcuda.defines",std::string("classicFalloff=0\n"));
+    const auto changedVariant=variantTable.encode(variantContext);
+    assert((variantTable.texels()[variantTable.materials()[changedVariant*12]+4]&1u)==0);
+    assert((variantTable.texels()[firstData+4]&1u)!=0);
+    variantVertex->setName("shadowcasting.vert");variantFragment->setName("shadowcasting.frag");
+    variantState->addUniform(new osg::Uniform("useDiffuseMapForShadowAlpha",false));
+    variantFragment->setUserValue("webcuda.defines",std::string("alphaToCoverage=1\n"));
+    const auto coveredShadow=variantTable.encode(variantContext);
+    assert((variantTable.texels()[variantTable.materials()[coveredShadow*12]+7]&4u)!=0);
+    variantFragment->setUserValue("webcuda.defines",std::string("alphaToCoverage=0\n"));
+    const auto uncoveredShadow=variantTable.encode(variantContext);
+    assert((variantTable.texels()[variantTable.materials()[uncoveredShadow*12]+7]&4u)==0);
+    variantFragment->setUserValue("webcuda.defines",42);
+    rejected=false;try{variantTable.encode(variantContext);}catch(const std::runtime_error&){rejected=true;}assert(rejected);
+    std::puts("WebCuda material table: texture reuse, dirty-image versioning, compact GPU attachment snapshots, mip relocation, shader metadata edits, fresh uniforms and unsupported-state rejection passed");
 }

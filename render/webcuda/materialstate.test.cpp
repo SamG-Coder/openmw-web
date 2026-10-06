@@ -16,10 +16,69 @@
 #include <osg/Shader>
 #include <components/webcuda/materialstate.hpp>
 #include <components/webcuda/shaderanalysis.hpp>
+#include <components/webcuda/shaderdefines.hpp>
 #include <string>
+#include <sstream>
 #include <random>
 #include <components/sceneutil/depth.hpp>
 int main() {
+    // Compare the cached parser with the previous getline/map contract,
+    // including duplicate keys, empty fields, carriage returns and embedded NUL.
+    WebCuda::ShaderDefineCache defineCache;
+    std::mt19937 definitionsRandom(7791);
+    for(unsigned int trial=0;trial<300;trial++) {
+        std::string text="same=first\nsame=last\n=empty key\nempty=\ncarriage=false\r\nignored line\n";
+        for(unsigned int i=0;i<250;i++)text+="abc01=\n\r\0"[definitionsRandom()%10];
+        WebCuda::ShaderDefines::Values expected;
+        std::istringstream input(text);std::string line;
+        while(std::getline(input,line)){const auto split=line.find('=');if(split!=std::string::npos)expected[line.substr(0,split)]=line.substr(split+1);}
+        const auto parsed=defineCache.get(text);
+        assert(parsed->values==expected&&parsed==defineCache.get(text));
+        assert(defineCache.entryCount()<=256&&defineCache.retainedBytes()<=2u*1024u*1024u);
+    }
+    std::string metadata="classicFalloff=1\n";
+    const auto initialDefines=defineCache.get(metadata);const auto* metadataAddress=metadata.data();
+    metadata[metadata.find('1')]='0';
+    const auto editedDefines=defineCache.get(metadata);
+    assert(metadata.data()==metadataAddress&&initialDefines!=editedDefines);
+    assert(initialDefines->enabled("classicFalloff")&&!editedDefines->enabled("classicFalloff"));
+    WebCuda::ShaderDefineCache lru(8192,2);
+    const auto a=lru.get("A=1"),b=lru.get("B=2");
+    assert(lru.get("A=1")==a);lru.get("C=3");
+    assert(lru.entryCount()==2&&lru.get("B=2")!=b&&b->value("B")=="2");
+    WebCuda::ShaderDefineCache measure;
+    measure.get("A=1");const auto entryBytes=measure.retainedBytes();
+    WebCuda::ShaderDefineCache bounded(entryBytes*2-1);
+    bounded.get("A=1");bounded.get("B=2");
+    assert(bounded.entryCount()==1&&bounded.retainedBytes()<=entryBytes*2-1);
+    const std::string large="large="+std::string(entryBytes*4,'x');
+    const auto transient=bounded.get(large);
+    assert(transient!=bounded.get(large)&&bounded.entryCount()==1);
+    assert(transient->value("large").size()==entryBytes*4);
+    const std::string features="diffuseMap=1\nnormalMap=1\nspecularMap=1\ndetailMap=1\nemissiveMap=1\nforcePPL=1\nalphaToCoverage=1\nlightingMethodClustered=1\n";
+    using DC=WebCuda::ShaderDefineCache;
+    const auto regular=defineCache.get(features),terrain=defineCache.get(features,DC::Terrain),
+        composite=defineCache.get(features,DC::Terrain|DC::Composite),water=defineCache.get(features,DC::Water),
+        grass=defineCache.get(features,DC::Groundcover),unlit=defineCache.get(features,DC::Unlit),
+        bethesda=defineCache.get(features,DC::Bethesda);
+    assert(regular->enabled("specularMap")&&!terrain->enabled("specularMap")&&terrain->terrainSpecular);
+    assert(!terrain->vertexLighting&&!composite->vertexLighting&&!composite->enabled("alphaToCoverage")&&!composite->enabled("normalMap"));
+    assert(!water->enabled("diffuseMap")&&!water->enabled("normalMap")&&!water->vertexLighting);
+    assert(grass->enabled("normalMap")&&!grass->enabled("forcePPL")&&!grass->enabled("emissiveMap"));
+    assert(!unlit->enabled("normalMap")&&!unlit->enabled("lightingMethodClustered")&&!unlit->vertexLighting);
+    assert(bethesda->enabled("normalMap")&&bethesda->enabled("emissiveMap")&&!bethesda->enabled("specularMap"));
+    osg::ref_ptr<osg::Shader> metadataShader=new osg::Shader(osg::Shader::FRAGMENT);
+    assert(!WebCuda::shaderDefines(*metadataShader));
+    metadataShader->setUserValue("webcuda.defines",17);assert(!WebCuda::shaderDefines(*metadataShader));
+    metadataShader->setUserValue("webcuda.defines",metadata);
+    const auto owned=WebCuda::shaderDefines(*metadataShader);
+    osg::ref_ptr<osg::Shader> sameMetadata=new osg::Shader(osg::Shader::FRAGMENT);
+    sameMetadata->setUserValue("webcuda.defines",metadata);
+    assert(owned==WebCuda::shaderDefines(*sameMetadata));
+    metadataShader->setUserValue("webcuda.defines",std::string("classicFalloff=1\n"));
+    assert(WebCuda::shaderDefines(*metadataShader)->enabled("classicFalloff")&&!owned->enabled("classicFalloff"));
+    metadataShader=nullptr;assert(owned->value("classicFalloff")=="0");
+    std::puts("Shader define cache: 300 parser comparisons, exact edits, independent profiles, shared ownership and bounded LRU passed");
     // Exercise the real dependency producer, including unnamed shaders. An
     // edited stock source and extra stages must not inherit the stock route.
     const auto previousHint=osg::DisplaySettings::instance()->getShaderHint();

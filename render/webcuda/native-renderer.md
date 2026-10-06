@@ -564,6 +564,72 @@ comparison or a physical VRAM/RSS measurement. Native-browser gameplay and
 `D:/OpenMW-local/webcuda-seyda-neen-raster-tile-order-2026-10-07.json` and
 `D:/OpenMW-local/webcuda-seyda-neen-raster-tile-order-2026-10-07-summary.json`.
 
+## Reused shader-variant metadata
+
+Engine `1bc7a744621a` reuses parsed shader-variant metadata across draws and
+passes. The old material path copied the `webcuda.defines` string and rebuilt a
+map for every object and shadow draw. A content-keyed cache now owns the parsed
+map and applies the material profile once. Ordinary objects, terrain, composite
+maps, water, groundcover and Bethesda profiles retain their previous feature
+selection order, including the pre-terrain specular/vertex-lighting selectors.
+Numeric rendering still runs in the unchanged authored CUDA kernels.
+
+The cache compares complete metadata strings, so same-length edits, shader
+replacement and hot reload cannot reuse a stale metadata entry. It does not
+retain shader objects. Callers hold immutable shared results while the cache
+evicts old entries. Each capture thread retains at most 256 entries and 2 MiB of accounted
+strings, values and container bookkeeping; allocator overhead, a newly parsed
+entry and results still held by callers are outside that accounting. Oversized
+metadata is parsed for its current call without entering the cache. Uniforms,
+textures, inherited raster state and material packet snapshots remain per draw.
+
+All six WASM64 integration suites and 59 host checks pass. Cache checks include
+300 comparisons against the old parser, duplicate/empty fields, carriage
+returns, embedded NUL, same-address edits, missing/wrong metadata types,
+profile isolation, ownership after eviction and byte/entry limits. Material
+fixtures also change alpha uniforms and object/shadow metadata between draws
+while checking that previously captured packets retain their values. The full
+engine rebuild and HTTP range/isolation/MIME staging checks pass. CUDA sources,
+generated artifacts and SDK source are unchanged.
+
+The reusable `material-capture.bench.cpp` compares packet checksums with the
+preceding material encoder from `39846f74`. All ten cases match. Each case uses
+640 draws, 16 shader variants, six state layers, two warmups and nine measured
+WASM64 O3 samples. Old/new process order alternates by case:
+
+| Material case | Previous capture | Cached metadata |
+| --- | ---: | ---: |
+| Objects, one layer | 9.436 ms | 7.038 ms |
+| Objects, multiple layers | 10.951 ms | 8.340 ms |
+| Terrain | 11.517 ms | 7.796 ms |
+| Terrain composite | 9.235 ms | 7.632 ms |
+| Groundcover | 10.371 ms | 7.549 ms |
+| Bethesda unlit | 9.852 ms | 7.014 ms |
+| Bethesda default | 10.672 ms | 8.683 ms |
+| Water | 11.314 ms | 7.807 ms |
+| Shadow casting | 8.103 ms | 5.615 ms |
+| Depth clipped | 9.741 ms | 5.519 ms |
+
+These are isolated capture measurements, not gameplay FPS. Run
+`wasm-build/benchmark-material-capture.ps1 -BaselineSource <saved-materialtable.cpp>`
+with the previous source outside the checkout. The report is
+`D:/OpenMW-local/material-define-benchmark/report.json`; integration and build
+logs are `D:/OpenMW-local/webcuda-shader-define-cache-tests.log` and
+`D:/OpenMW-local/webcuda-shader-define-cache-engine-link.log`.
+
+The rebuilt exterior run records 304 WebGPU presentations with no renderer/pass
+errors, aborted captures or legacy draw attempts. All 120 sampled completed
+scene frames release their retained packets. Median capture is 104.788 ms,
+material encoding 46.779 ms, geometry encoding 31.671 ms, renderer wall time
+145.012 ms and presentation submission interval 255.942 ms. Uploads are
+25,083,370 bytes/frame and captured scene data is 189,566,870 bytes/frame.
+Saved buffer capacity is 1,998,756,384 bytes. Different streaming workloads
+prevent a matched comparison with the previous run; these totals also do not
+measure physical VRAM/RSS or current native-browser performance. Smooth
+60-180 Hz play remains incomplete. The report and summary are
+`D:/OpenMW-local/webcuda-seyda-neen-shader-define-cache-2026-10-07.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-shader-define-cache-2026-10-07-summary.json`.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

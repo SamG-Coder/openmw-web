@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce material capture, remaining topology/deformation transfers and GPU frame cost. CUDA raster pixels now visit each tile consecutively; 1,800 before/after comparisons match exactly on CPU and RTX 5080. Isolated native raster time falls 9% for random triangles and 38% for thin triangles, with identical candidate lists. WebGPU passes 88 kernel compilations, 45 output checks and 267 exterior presentations without errors. This is not a matched game performance comparison: median submission interval remains 262.610 ms, with 50.513 ms in material capture. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: reduce remaining material/state capture, geometry validation/transfers and GPU frame cost. Shader metadata now uses a bounded exact-content cache; all ten material benchmark cases preserve packet checksums and reduce isolated capture cost by 17-43%. Rebuilt engine 1bc7a744621a reaches 304 exterior presentations without errors. This is not a matched game performance comparison: median submission interval remains 255.9425 ms, with 46.77888 ms in material capture and 31.670528 ms in geometry capture. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Focus on material capture and remaining topology/deformation transport after immutable vertex residency and tile-grouped raster traversal. Preserve exact state invalidation, triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Inspect repeated state resolution within a draw, geometry validation and topology/deformation transport after shader metadata reuse, immutable vertex residency and tile-grouped raster traversal. Preserve exact state invalidation, triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1275,6 +1275,68 @@
       "D:/OpenMW-local/webcuda-seyda-neen-vertex-input-2026-10-06-summary.json"
     ],
     "limits": "The richer input benchmark has a small CPU regression despite reduced bytes. Expanded GPU working buffers remain, so transport size is not physical VRAM usage. No current native-browser gameplay or physical refresh-rate acceptance."
+  },
+  "shaderDefineCache": {
+    "engine": "1bc7a744621a",
+    "referenceCommit": "39846f741616834251117fee102aae50ff2e2b38",
+    "change": "Reuse immutable parsed shader metadata by exact source text and material profile. Uniforms, textures, inherited raster state and material packet snapshots remain fresh each draw; all numeric rendering remains in the unchanged CUDA kernels.",
+    "accountedRetainedByteBudget": 2097152,
+    "entryLimit": 256,
+    "cacheScope": "capture thread",
+    "validation": {
+      "wasm64IntegrationSuites": 6,
+      "parserReferenceComparisons": 300,
+      "hostChecks": 59,
+      "materialCasesWithMatchingPacketChecksums": 10,
+      "fullEngineBuildAndHttpStaging": "passed",
+      "cudaSourcesAndGeneratedArtifacts": "unchanged",
+      "metadataCases": "same-address edits, duplicate and empty fields, embedded NUL, wrong types, profile isolation, ownership after eviction and byte/entry limits",
+      "drawStateCases": "fresh alpha uniforms and edited object/shadow metadata preserve previous snapshots"
+    },
+    "benchmark": {
+      "scope": "Isolated WASM64 O3 capture; process order alternates by case, not a game FPS measurement",
+      "draws": 640,
+      "variants": 16,
+      "stateLayers": 6,
+      "warmups": 2,
+      "measuredSamples": 9,
+      "objects": {"previousMs":9.435904,"currentMs":7.037952},
+      "objectsMultipleLayers": {"previousMs":10.951424,"currentMs":8.339968},
+      "terrain": {"previousMs":11.517184,"currentMs":7.795968},
+      "terrainComposite": {"previousMs":9.235456,"currentMs":7.631616},
+      "groundcover": {"previousMs":10.371072,"currentMs":7.549440},
+      "bethesdaUnlit": {"previousMs":9.851904,"currentMs":7.013888},
+      "bethesdaDefault": {"previousMs":10.672128,"currentMs":8.683008},
+      "water": {"previousMs":11.313664,"currentMs":7.807232},
+      "shadowCasting": {"previousMs":8.103424,"currentMs":5.615360},
+      "depthClipped": {"previousMs":9.740800,"currentMs":5.518592}
+    },
+    "exteriorWebgpu": {
+      "savedPresentations": 304,
+      "rendererErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 1998756384,
+      "medianUploadedBytes": 25083370,
+      "medianCapturedSceneBytes": 189566870,
+      "medianCaptureMs": 104.7875,
+      "medianMaterialEncodeMs": 46.77888,
+      "medianGeometryEncodeMs": 31.670528,
+      "medianRendererWallMs": 145.0125,
+      "medianPresentationSubmitIntervalMs": 255.9425,
+      "limits": "Streaming debug scene, not a matched benchmark. Capacity is not physical VRAM/RSS; native browser gameplay remains unverified."
+    },
+    "reports": [
+      "D:/OpenMW-local/material-define-benchmark/report.json",
+      "D:/OpenMW-local/webcuda-shader-define-cache-tests.log",
+      "D:/OpenMW-local/webcuda-shader-define-cache-host.log",
+      "D:/OpenMW-local/webcuda-shader-define-cache-engine-link.log",
+      "D:/OpenMW-local/webcuda-shader-define-cache-stage.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-shader-define-cache-2026-10-07-summary.json"
+    ],
+    "limits": "The budget accounts retained strings, values and container bookkeeping; allocator overhead, a new entry and results still held by callers are outside it. Native browser gameplay and 60-180 Hz presentation remain unverified."
   },
   "rasterTileTraversal": {
     "engine": "92c47a9a3f5b",

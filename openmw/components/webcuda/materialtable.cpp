@@ -2,6 +2,7 @@
 #include "maptexture.hpp"
 #include "fogtexture.hpp"
 #include "terrainblendimage.hpp"
+#include "shaderdefines.hpp"
 #include <osg/ValueObject>
 #include <limits>
 #include <algorithm>
@@ -940,36 +941,18 @@ namespace WebCuda
     }
     std::uint32_t MaterialTable::encodeObjects(const DrawContext& context,const osg::StateSet& state,const osg::Shader& fragment,bool terrain,bool composite,bool water,bool groundcover,bool unlit,bool bethesda)
     {
-        std::string variant;
-        if(!fragment.getUserValue("webcuda.defines",variant))throw std::runtime_error("Objects shader lacks WebCuda variant metadata");
-        std::map<std::string,std::string> defines;
-        std::istringstream input(variant);std::string line;
-        while(std::getline(input,line)) {auto split=line.find('=');if(split!=std::string::npos)defines[line.substr(0,split)]=line.substr(split+1);}
-        auto enabled=[&](const char* name){const auto found=defines.find(name);return found!=defines.end()&&found->second!="0"&&found->second!="false";};
-        if(water)for(const char* name:{"diffuseMap","normalMap","darkMap","detailMap","decalMap","emissiveMap","specularMap","envMap","bumpMap","glossMap","parallax","diffuseParallax","adjustCoverage"})defines[name]="0";
-        if(groundcover)for(const char* name:{"darkMap","detailMap","decalMap","emissiveMap","specularMap","envMap","bumpMap","glossMap","blendMap",
-            "parallax","diffuseParallax","adjustCoverage","forcePPL","softParticles","particleOcclusion","skyBlending","simpleLighting","particle","preLightEnv","additiveBlending"})defines[name]="0";
+        const unsigned int profile=(terrain?ShaderDefineCache::Terrain:0u)|(composite?ShaderDefineCache::Composite:0u)
+            |(water?ShaderDefineCache::Water:0u)|(groundcover?ShaderDefineCache::Groundcover:0u)
+            |(unlit?ShaderDefineCache::Unlit:0u)|(bethesda?ShaderDefineCache::Bethesda:0u);
+        const auto parsed=shaderDefines(fragment,profile);
+        if(!parsed)throw std::runtime_error("Objects shader lacks WebCuda variant metadata");
+        const auto& defines=parsed->values;
+        auto enabled=[&](const char* name){return parsed->enabled(name);};
         if(unlit) {
             bool falloff=false;
             if(const auto* uniform=state.getUniform("useFalloff"))if(!uniform->get(falloff))throw std::runtime_error("Invalid unlit falloff enable");
-
-            // This shader has only diffuse color; inherited object material maps
-            // and lighting defines must not activate absent shader operations.
-            for(const char* name:{"normalMap","specularMap","darkMap","detailMap","decalMap","emissiveMap","envMap","bumpMap","glossMap","blendMap",
-                "parallax","diffuseParallax","preLightEnv","lightingMethodClustered","particleOcclusion"})defines[name]="0";
         }
-        if(bethesda) {
-            // bs/default owns diffuse, normal and multiplicative emission only.
-            for(const char* name:{"specularMap","darkMap","detailMap","decalMap","envMap","bumpMap","glossMap","blendMap",
-                "parallax","diffuseParallax","preLightEnv","softParticles","particleOcclusion","simpleLighting","particle"})defines[name]="0";
-        }
-        const bool vertexLighting=!bethesda&&!unlit&&!water&&!composite&&!enabled("normalMap")&&!enabled("specularMap")&&!enabled("forcePPL");
-        const bool terrainSpecular=terrain&&enabled("specularMap");
-        if(terrain) {defines["diffuseMap"]="1";defines["diffuseMapUV"]="0";defines["normalMapUV"]="0";defines["specularMap"]="0";}
-        if(composite)for(const char* name:{"darkMap","detailMap","decalMap","emissiveMap","normalMap","envMap","bumpMap","glossMap",
-            "parallax","diffuseParallax","adjustCoverage","alphaToCoverage"})defines[name]="0";
-
-
+        const bool vertexLighting=parsed->vertexLighting,terrainSpecular=parsed->terrainSpecular;
         const bool clustered=!unlit&&!composite&&enabled("lightingMethodClustered");
         const auto clusterSnapshot=clustered?captureClusterLights(context,state):0u;
         auto integer=[&](const char* name,int fallback){int v=fallback;if(const auto* u=state.getUniform(name))if(!u->get(v))throw std::runtime_error(std::string("Invalid object uniform: ")+name);return v;};
@@ -1019,7 +1002,7 @@ namespace WebCuda
         }
         if(enabled("adjustCoverage"))data[4]|=64;
         if(enabled("useGPUShader4"))data[4]|=128;
-        data[51]=defines.count("alphaFunc")?static_cast<unsigned int>(std::stoul(defines["alphaFunc"],nullptr,0))-512:7;
+        data[51]=defines.count("alphaFunc")?static_cast<unsigned int>(std::stoul(parsed->value("alphaFunc"),nullptr,0))-512:7;
         if(data[51]>7)throw std::runtime_error("Invalid object alpha function");
         auto scalar=[&](unsigned int offset,float value){std::memcpy(&data[offset],&value,4);};
         auto vec=[&](unsigned int offset,const osg::Vec4& value){for(unsigned int k=0;k<4;++k)scalar(offset+k,value[k]);};
@@ -1088,7 +1071,7 @@ namespace WebCuda
             const auto layerId=encodeResolved(context,state,layerTexture,true),offset=layer==10?328:80+layer*24;
             data[offset]=mMaterials[layerId*12];data[offset+1]=mMaterials[layerId*12+1];data[offset+2]=mMaterials[layerId*12+2];data[offset+3]=mMaterials[layerId*12+11];
             const std::string uvKey=std::string(layers[layer])+"UV";
-            const auto uv=terrain?0:(defines.count(uvKey)?std::stoul(defines[uvKey]):0);
+            const auto uv=terrain?0:(defines.count(uvKey)?std::stoul(parsed->value(uvKey)):0);
             if(uv>3)throw std::runtime_error("Object layer UV set exceeds current attribute packet");
             data[offset+4]=uv;data[72]|=1u<<layer;
             const auto matrixUnit=terrain&&layer==10?1:uv;
@@ -1100,7 +1083,7 @@ namespace WebCuda
         if(!composite&&enabled("shadows_enabled")) {
             data[325]=static_cast<unsigned int>(data.size());
             number(326,"shadowFadeStart",0);number(327,"maximumShadowMapDistance",0);
-            std::istringstream indices(defines["shadow_texture_unit_list"]);std::string index;
+            std::istringstream indices(parsed->value("shadow_texture_unit_list"));std::string index;
             while(std::getline(indices,index,',')) {
                 if(index.empty())continue;
                 const auto ordinal=std::stoul(index);
@@ -1119,7 +1102,7 @@ namespace WebCuda
                 data[offset+5]=(enabled("perspectiveShadowMaps")?1u:0u)|(enabled("useShadowDebugOverlay")?2u:0u)|(enabled("limitShadowMapDistance")?4u:0u);
                 const auto depthFormat=shadowTexture->getInternalFormat();
                 if(depthFormat==0x8CAC||depthFormat==0x8CAD)data[offset+5]|=8u;
-                scalar(offset+6,enabled("disableNormalOffsetShadows")?0.f:std::stof(defines["shadowNormalOffset"]));data[offset+7]=ordinal%3;
+                scalar(offset+6,enabled("disableNormalOffsetShadows")?0.f:std::stof(parsed->value("shadowNormalOffset")));data[offset+7]=ordinal%3;
                 const auto matrix=[&](const std::string& name,unsigned int destination) {
                     osg::Matrixf value;const auto* uniform=state.getUniform(name);
                     // ShadowManager disables shadows with a constant ALWAYS
@@ -1212,10 +1195,10 @@ namespace WebCuda
     }
     std::uint32_t MaterialTable::encodeShadow(const DrawContext& context,const osg::StateSet& state,const osg::Shader& fragment,bool depthClipped)
     {
-        std::string variant;if(!fragment.getUserValue("webcuda.defines",variant))throw std::runtime_error("Shadow material has no variant metadata");
-        std::map<std::string,std::string> defines;std::istringstream input(variant);std::string line;
-        while(std::getline(input,line)){const auto split=line.find('=');if(split!=std::string::npos)defines[line.substr(0,split)]=line.substr(split+1);}
-        const bool alphaCoverage=!depthClipped&&defines.count("alphaToCoverage")&&defines["alphaToCoverage"]!="0"&&defines["alphaToCoverage"]!="false";
+        const auto parsed=shaderDefines(fragment);
+        if(!parsed)throw std::runtime_error("Shadow material has no variant metadata");
+        const auto& defines=parsed->values;
+        const bool alphaCoverage=!depthClipped&&parsed->enabled("alphaToCoverage");
         auto boolean=[&](const char* name,bool fallback){bool value=fallback;if(const auto* u=state.getUniform(name))if(!u->get(value))throw std::runtime_error(std::string("Invalid shadow uniform: ")+name);return value;};
         int colorMode=0;if(const auto* u=state.getUniform("colorMode"))if(!u->get(colorMode))throw std::runtime_error("Invalid shadow color mode");
         const bool textured=depthClipped||boolean("useDiffuseMapForShadowAlpha",true);
@@ -1237,7 +1220,7 @@ namespace WebCuda
         const float alpha=material->getDiffuse(osg::Material::FRONT).a();std::memcpy(&data[6],&alpha,4);
         data[7]=(boolean("useTreeAnim",false)?1u:0u)|(boolean("alphaTestShadows",true)?2u:0u)|(alphaCoverage?4u:0u);
         if(alphaCoverage)record[9]=(record[9]&~240u)|(7u<<4);
-        data[8]=defines.count("alphaFunc")?static_cast<unsigned int>(std::stoul(defines["alphaFunc"],nullptr,0))-512:7;
+        data[8]=defines.count("alphaFunc")?static_cast<unsigned int>(std::stoul(parsed->value("alphaFunc"),nullptr,0))-512:7;
         if(data[8]>7)throw std::runtime_error("Invalid shadow alpha function");
         if(depthClipped) {
             const float threshold=0.499f;std::memcpy(&data[4],&threshold,4);data[7]=0;data[8]=6;
