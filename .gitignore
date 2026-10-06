@@ -185,3 +185,8 @@ wasm-build/harness-out/
 /Start-OpenMW.ps1
 /Stop-OpenMW.ps1
 /Start OpenMW.bat
+
+# .NET / Visual Studio local build output
+**/bin/
+**/obj/
+.vs/
