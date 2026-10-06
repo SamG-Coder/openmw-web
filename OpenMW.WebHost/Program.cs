@@ -92,7 +92,15 @@ if (Directory.Exists(rendererRoot))
         FileProvider = new PhysicalFileProvider(rendererRoot),
         RequestPath = "/webgpu",
         ContentTypeProvider = contentTypes,
-        ServeUnknownFileTypes = false
+        ServeUnknownFileTypes = false,
+        OnPrepareResponse = context =>
+        {
+            // Renderer/WGSL edits are the normal development loop. Never let a
+            // browser 304 hide a newly pulled shader or host fix.
+            context.Context.Response.Headers["Cache-Control"] = "no-store, no-cache, must-revalidate";
+            context.Context.Response.Headers["Pragma"] = "no-cache";
+            context.Context.Response.Headers["Expires"] = "0";
+        }
     });
 }
 
