@@ -158,6 +158,20 @@ app.MapPost("/clientlog", async (HttpContext context) =>
     return Results.NoContent();
 });
 
+app.MapGet("/dev/assets", () =>
+{
+    var root = gameData.Current;
+    var checks = new[] { "Morrowind.esm", "Morrowind.bsa", "Tribunal.esm", "Tribunal.bsa", "Bloodmoon.esm", "Bloodmoon.bsa" }
+        .Select(name =>
+        {
+            var path = root is null ? null : Path.Combine(root, name);
+            return new { name, exists = path is not null && File.Exists(path), bytes = path is not null && File.Exists(path) ? new FileInfo(path).Length : 0 };
+        }).ToArray();
+    return Results.Json(new { root, files = checks,
+        optionalAssetPack = new[] { Path.Combine(playRoot, "moddata", "openmw-web-assets.bsa"), Path.Combine(repoRoot, "data", "openmw-web-assets.bsa"), Path.Combine(playRoot, "data", "openmw-web-assets.bsa") }
+            .Where(File.Exists).ToArray() });
+});
+
 app.MapGet("/mwdata-manifest.json", () =>
 {
     var root = gameData.Current;
