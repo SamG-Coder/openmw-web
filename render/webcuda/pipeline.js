@@ -408,7 +408,11 @@ export class MaterialPipeline {
       }
       // Word 23 is an opaque uint atlas address, not a floating-point value.
       // Validate its range below through the integer view when fog is enabled.
-      if(!(scene.rasterParams instanceof Float32Array)||scene.rasterParams.length!==scene.materials.length/12*50||scene.rasterParams.some((v,index)=>index%50!==23&&!Number.isFinite(v)))
+      // Raw depth ranges and blend constants may contain infinities: GL clamps
+      // them, now in CUDA. NaNs and other non-finite numeric fields are invalid.
+      if(!(scene.rasterParams instanceof Float32Array)||scene.rasterParams.length!==scene.materials.length/12*50||scene.rasterParams.some((v,index)=>{
+        const field=index%50;return field!==23&&(field>=2&&field<=7?Number.isNaN(v):!Number.isFinite(v));
+      }))
         throw RangeError('Invalid raster parameters');
       if(scene.uvMatrices && (!(scene.uvMatrices instanceof Float32Array)||scene.uvMatrices.length!==scene.matrices.length/2||!allFinite(scene.uvMatrices)))
         throw RangeError('Invalid UV matrices');
@@ -416,6 +420,7 @@ export class MaterialPipeline {
         for (let c=0;c<3;c++) if (scene.triangles[t*4+c]>=vertexCount) throw RangeError('Invalid vertex index');
         if (scene.triangles[t*4+3]>=scene.materials.length/12) throw RangeError('Invalid material index');
       }
+      const materialFloats=new Float32Array(scene.materials.buffer,scene.materials.byteOffset,scene.materials.length);
       for (let m=0;m<scene.materials.length;m+=12) {
         const a=scene.materials;
         if(scene.rasterParams[m/12*50+37]<=0||scene.rasterParams[m/12*50+38]<=0)throw RangeError('Invalid polygon size');
@@ -426,8 +431,8 @@ export class MaterialPipeline {
           ||scene.rasterParams[pointBase+44]<scene.rasterParams[pointBase+43])throw RangeError('Invalid polygon point parameters');
         const sampleMask=scene.rasterParams[m/12*50+26],multisample=scene.rasterParams[m/12*50+27];
         if(!Number.isInteger(sampleMask)||sampleMask<0||sampleMask>65535||(multisample!==0&&multisample!==1))throw RangeError('Invalid multisample controls');
-        const coverage=scene.rasterParams[m/12*50+24],invertCoverage=scene.rasterParams[m/12*50+25];
-        if(coverage<0||coverage>1||(invertCoverage!==0&&invertCoverage!==1))throw RangeError('Invalid sample coverage parameters');
+        const invertCoverage=scene.rasterParams[m/12*50+25];
+        if(invertCoverage!==0&&invertCoverage!==1)throw RangeError('Invalid sample coverage parameters');
         const normalMask=scene.rasterParams[m/12*50+22];
         if(a[m+3]&32768) {
           const pointer=new Uint32Array(scene.rasterParams.buffer,scene.rasterParams.byteOffset,scene.rasterParams.length)[m/12*50+23];
@@ -439,15 +444,18 @@ export class MaterialPipeline {
             if(!Number.isFinite(coordinate))throw RangeError('Invalid constant fog coordinate');
           }
           const values=new Float32Array(scene.texels.buffer,scene.texels.byteOffset+(pointer+1)*4,7);
-          if(values.some(value=>!Number.isFinite(value))||values[0]<0||values.subarray(3).some(value=>value<0||value>1))
+          if(values.some(value=>!Number.isFinite(value))||values[0]<0)
             throw RangeError('Invalid fixed-function fog parameters');
         }
         if(!Number.isInteger(normalMask)||normalMask<0||normalMask>15)throw RangeError('Invalid normal attachment mask');
         if(a[m+3]&8192)for(const face of [8,15]) {
           const base=m/12*50+face;
           for(let field=0;field<7;field++) {
-            const value=scene.rasterParams[base+field],maximum=field===0||field>=4?7:255;
-            if(!Number.isInteger(value)||value<0||value>maximum)throw RangeError('Invalid stencil material parameters');
+            const value=scene.rasterParams[base+field],minimum=field===1?-2147483648:0;
+            // Converting INT_MAX to the float transport rounds to 2^31; CUDA
+            // clamps it before any integer conversion, so no reference bits are lost.
+            const maximum=field===1?2147483648:field===0||field>=4?7:255;
+            if(!Number.isInteger(value)||value<minimum||value>maximum)throw RangeError('Invalid stencil material parameters');
           }
         }
         const sky=Boolean(a[m+3]&1024);
@@ -472,7 +480,7 @@ export class MaterialPipeline {
               throw RangeError('First texture stage does not match material');
             const constants=new Float32Array(scene.texels.buffer,scene.texels.byteOffset+(data+4)*4,4);
             const matrix=new Float32Array(scene.texels.buffer,scene.texels.byteOffset+(data+28)*4,16);
-            if(constants.some(value=>!Number.isFinite(value)||value<0||value>1)||matrix.some(value=>!Number.isFinite(value)))
+            if(constants.some(value=>scene.texels[data+1]===5?!Number.isFinite(value):Number.isNaN(value))||matrix.some(value=>!Number.isFinite(value)))
               throw RangeError('Invalid texture environment color or matrix');
             stages.push(data);enabled|=1<<unit;previousUnit=unit;data=scene.texels[data+3];
           }
@@ -559,7 +567,9 @@ export class MaterialPipeline {
         const rawBase=sky||object||shadow||environment?scene.texels[a[m]]:a[m];
         const base=(a[m+3]&1)?baseOfTexture(rawBase,a[m+11]):rawBase;
         if ((a[m+3]&1) && (!a[m+1]||!a[m+2]||base+a[m+1]*a[m+2]>scene.texelWordCount)) throw RangeError('Invalid texture atlas range');
-        if (a[m+3]&~16777215) throw RangeError('Unsupported material flags');
+        if (a[m+3]&~33554431) throw RangeError('Unsupported material flags');
+        if((a[m+3]&16777216)&&(!(a[m+3]&128)||a[m+7]>2147483647||a[m+8]>2147483647))
+          throw RangeError('Invalid raw GL scissor');
         if(a[m+3]&524288) {
           const r=m/12*50,shadow=scene.rasterParams[r+30];
           if(![0,1,2].includes(shadow)||scene.rasterParams[r+28]<=0||scene.rasterParams[r+29]<=0)throw RangeError('Invalid glyph backdrop parameters');
@@ -583,6 +593,7 @@ export class MaterialPipeline {
           if(maskBase+size>scene.texelWordCount)throw RangeError('Invalid moon mask mip range');
         }
         if (a[m+3]&128) {
+          if(Number.isNaN(materialFloats[m+4]))throw RangeError('Invalid alpha reference');
           const control=a[m+9], factors=a[m+10];
           if ((control&15)>7||((control>>4)&15)>7||((control>>8)&7)>4||((control>>11)&7)>4||control>2147483647||((control>>>27)&3)>2||((control>>>29)&3)>2||factors>65535)
             throw RangeError('Invalid material comparison or blend equation');

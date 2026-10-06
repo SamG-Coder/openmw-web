@@ -195,6 +195,8 @@ fn f_store_color_value(cw_arg_value: f32, cw_arg_channel: u32, cw_arg_channels: 
 
 
 
+
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,

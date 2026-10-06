@@ -973,7 +973,7 @@ The full engine builds and stages as `7cafe0e295d6`. Reports use
 `D:/OpenMW-local/webcuda-color-input-*`; the consolidated result is
 `D:/OpenMW-local/webcuda-color-input-validation.json`. Set
 `WEBCUDA_VERTEX_FIXTURES` to an output `.bin` path before running
-`wasm-build/test-webcuda-submission.ps1`; the final color suite writes these
+`wasm-build/test-webcuda-submission.ps1`; the color suite writes these
 fixtures. Replay them with the NVCC-built `vertex-input.test.cpp` executable
 and flags above. This change moves rendering calculations to CUDA; it does
 not reduce the size of ordinary vertex input records or establish an FPS gain.
@@ -990,6 +990,82 @@ These observations include streaming and debug overhead; they are not a
 matched performance comparison, physical VRAM measurement or refresh-rate
 acceptance. Reports use
 `D:/OpenMW-local/webcuda-seyda-neen-color-input-2026-10-07`.
+
+## Raw raster and material state in CUDA
+
+`materialstate.cpp` and `materialtable.cpp` now capture the original scissor,
+alpha reference, stencil reference, depth range, blend constant, sample
+coverage, fixed-function fog color and texture-environment constants. The
+CUDA consumers apply their rendering rules. Host code still validates enums,
+masks, bounds and numeric inputs; it no longer clips these rectangles or
+clamps these values before upload.
+
+Material flag24 (`16777216`) marks a raw GL scissor. Words5/6 contain the
+signed bottom-left origin as uint32 bits, and words7/8 contain nonnegative
+GLsizei extents. `tiles.cu` intersects the rectangle with the framebuffer;
+`material.cu` tests fragment coordinates against the original rectangle.
+Unsigned differences avoid overflow at INT_MIN/INT_MAX. Existing packets
+without flag24 retain their top-left scissor convention. Record sizes, native
+kernel parameters and bridge bindings are unchanged; no preprocessing buffer
+or extra dispatch is added.
+
+The raster kernel clamps fixed-state values at their consumers, before depth
+mapping, alpha/stencil comparison, texture combination, fog or blending.
+Tile pruning handles raw coverage below zero and above one consistently with
+the raster kernel. Depth ranges, blend constants, fixed texture-environment
+colors and alpha references retain the previous infinity-clamping behavior.
+NaNs are rejected. Fog, sample coverage and texture-combiner constants retain
+their stricter finite-input requirements. Stencil references are clamped
+before integer conversion, including INT_MAX rounded to float32's 2^31.
+Validation reads one shared float view of material words per pass, without a
+new view allocation for each material.
+
+All thirteen WASM64 integration suites and 74 host checks pass. The new
+`raster-state-input.test.cpp` captures 280 real OSG packets and asserts that
+source values reach the transport unchanged. Every packet also passes the
+production host validator without mutation. The native
+`raster-state.test.cpp` replays those packets through the authored binner and
+rasterizer, comparing against independently canonicalized state with
+exhaustive triangle lists. Both windings and 1,042,720 pixel samples match
+exactly across color, depth, normal, stencil, clipped lists and buffer guards.
+This includes 1/4/16-sample targets, partial tiles, empty and extreme scissors,
+all alpha/stencil comparison functions, both stencil faces, all constant
+blend factors, reversed depth ranges, coverage inversion and texture/fog
+constants. The GPU build uses NVCC sm_120 with `--use_fast_math` on the RTX 5080.
+
+To reproduce producer capture, set `WEBCUDA_RASTER_FIXTURES` to an output
+`.bin` path before running `wasm-build/test-webcuda-submission.ps1`. Compile
+`render/webcuda/raster-state.test.cpp` using
+`nvcc -x cu -std=c++17 -O2 --use_fast_math -arch=sm_120`, then pass the saved
+fixture file to the executable. The same source also supports an ordinary
+C++ reference build. Browser checks in `raster-state-gpu-check.js` run through
+the production pipeline and are included in both validator pages.
+
+Both changed native paged kernels compile with the browser's NVRTC 13.3.
+All 90 WebGPU runtime pipelines compile and 130 GPU checks pass, including
+101 production-pipeline checks. The 39 new checks cover raw state through the
+production host, tile construction and rasterization, with exact scissor
+boundaries, infinity handling, preserved attachments and multisample planes.
+The main raster WGSL hash is
+`6f978f71142480b8e6ee940b7dd52daa66ecb969efb718671d6e5d2ffe173aab`.
+All 379 generated files reproduce byte-for-byte. The 104 changed artifacts
+come from the two edited CUDA translation units; all 78 native parameter
+contracts remain unchanged. Only `raster_material` and `bin_triangle_bounds`
+have substantive WGSL changes; the others have generated whitespace or
+consistent temporary renaming. Tracked SDK files are unchanged.
+
+The rebuilt WebGPU Seyda Neen check records 272 presentations, zero renderer
+errors, zero aborted captures and zero legacy draw attempts. All 120 sampled
+completed scene frames release their captured packets. This exercises the
+rebuilt engine and current generated kernels together. It is a debug scene
+with streaming, not a matched performance benchmark or native-browser check.
+The saved game report and summary use
+`D:/OpenMW-local/webcuda-seyda-neen-raster-state-2026-10-07`.
+
+The full engine builds and stages as `6f067cc99e82`. Reports use
+`D:/OpenMW-local/webcuda-raster-state-*`. This migration does not establish an
+FPS improvement, native-browser gameplay acceptance or smooth 60-180 Hz
+presentation. The broader rendering ownership and gameplay audit remains open.
 
 ## Running
 

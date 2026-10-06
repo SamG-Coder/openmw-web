@@ -681,8 +681,8 @@ namespace WebCuda
                     default:throw std::runtime_error("Unsupported texture environment mode");
                 }
                 for(unsigned int channel=0;channel<4;channel++) {
-                    const float value=std::clamp(env->getColor()[channel],0.f,1.f);
-                    if(!std::isfinite(value))throw std::runtime_error("Non-finite texture environment color");
+                    const float value=env->getColor()[channel];
+                    if(std::isnan(value))throw std::runtime_error("Invalid texture environment color");
                     std::memcpy(&environment[4+channel],&value,4);
                 }
             } else if(const auto* combine=dynamic_cast<const osg::TexEnvCombine*>(attribute)) {
@@ -735,7 +735,7 @@ namespace WebCuda
                 for(unsigned int channel=0;channel<4;channel++) {
                     const float raw=combine->getConstantColor()[channel];
                     if(!std::isfinite(raw))throw std::runtime_error("Non-finite combine constant");
-                    const float value=std::clamp(raw,0.f,1.f);std::memcpy(&environment[4+channel],&value,4);
+                    std::memcpy(&environment[4+channel],&raw,4);
                 }
             } else if(attribute)throw std::runtime_error("Unsupported texture environment attribute");
             const auto* image=texture->getImage();
@@ -812,7 +812,7 @@ namespace WebCuda
         if((state->getMode(0x80A0)&osg::StateAttribute::ON)!=0) {
             if(const auto* samples=dynamic_cast<const osg::Multisample*>(state->getAttribute(osg::StateAttribute::MULTISAMPLE))) {
                 if(!std::isfinite(samples->getCoverage()))throw std::runtime_error("Non-finite sample coverage");
-                params[24]=std::clamp(samples->getCoverage(),0.f,1.f);
+                params[24]=samples->getCoverage();
                 params[25]=samples->getInvert()?1.f:0.f;
             }
         }
@@ -843,7 +843,7 @@ namespace WebCuda
             const float values[]{fog->getDensity(),fog->getStart(),fog->getEnd(),fog->getColor().r(),fog->getColor().g(),fog->getColor().b(),fog->getColor().a()};
             for(unsigned int i=0;i<7;i++) {
                 if(!std::isfinite(values[i]))throw std::runtime_error("Non-finite fog parameter");
-                const float value=i>=3?std::clamp(values[i],0.f,1.f):values[i];std::memcpy(&data[i+1],&value,4);
+                std::memcpy(&data[i+1],&values[i],4);
             }
             auto found=mFogRecords.find(data);
             if(found==mFogRecords.end()) {
@@ -865,10 +865,17 @@ namespace WebCuda
             |(!normalMask->getBlueMask()?4u:0u)|(!normalMask->getAlphaMask()?8u:0u);
         const auto stencil=encodeStencilState(*state);std::copy(stencil.begin(),stencil.end(),params.begin()+8);
         if(const auto* blend=dynamic_cast<const osg::BlendColor*>(state->getAttribute(osg::StateAttribute::BLENDCOLOR)))
-            for(unsigned int channel=0;channel<4;channel++)params[4+channel]=std::clamp(blend->getConstantColor()[channel],0.f,1.f);
+            for(unsigned int channel=0;channel<4;channel++) {
+                const float value=blend->getConstantColor()[channel];
+                if(std::isnan(value))throw std::runtime_error("Invalid blend constant");
+                params[4+channel]=value;
+            }
         if((state->getMode(GL_POLYGON_OFFSET_FILL)&osg::StateAttribute::ON)!=0)
             if(const auto* offset=dynamic_cast<const osg::PolygonOffset*>(state->getAttribute(osg::StateAttribute::POLYGONOFFSET))) {params[0]=offset->getFactor();params[1]=offset->getUnits();}
-        if(const auto* depth=dynamic_cast<const osg::Depth*>(state->getAttribute(osg::StateAttribute::DEPTH))) {params[2]=std::clamp(float(depth->getZNear()),0.f,1.f);params[3]=std::clamp(float(depth->getZFar()),0.f,1.f);}
+        if(const auto* depth=dynamic_cast<const osg::Depth*>(state->getAttribute(osg::StateAttribute::DEPTH))) {
+            params[2]=static_cast<float>(depth->getZNear());params[3]=static_cast<float>(depth->getZFar());
+            if(std::isnan(params[2])||std::isnan(params[3]))throw std::runtime_error("Invalid depth range");
+        }
         if(context.screenPrimitiveDraw)record[3]|=4194304u;
         std::array<std::uint32_t,62> key{};std::copy(record.begin(),record.end(),key.begin());std::memcpy(key.data()+12,params.data(),sizeof(params));
         auto found=mRecords.find(key);

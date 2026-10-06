@@ -123,6 +123,21 @@ __device__ unsigned int tile_outside_edge(float ax,float ay,float bx,float by,
     float edge=((ax-x)*(by-y)-(ay-y)*(bx-x))*sign;
     return edge < -margin?1u:0u;
 }
+// Intersect raw signed GL coordinates without overflowing x + width. Negative
+// origins are transported as unsigned bits; extents fit nonnegative GLsizei.
+__device__ unsigned int tile_scissor_begin(unsigned int origin,unsigned int limit) {
+    if((origin&2147483648u)!=0u)return 0u;
+    return origin<limit?origin:limit;
+}
+__device__ unsigned int tile_scissor_end(unsigned int origin,unsigned int extent,unsigned int limit) {
+    if((origin&2147483648u)!=0u) {
+        unsigned int distance=0u-origin;
+        unsigned int end=extent>distance?extent-distance:0u;
+        return end<limit?end:limit;
+    }
+    if(origin>=limit)return limit;
+    return origin+(extent<limit-origin?extent:limit-origin);
+}
 __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indices,
     unsigned int* counts,unsigned int* candidates,const unsigned int* offsets,const unsigned int* summary,
     const unsigned int* materials,const float* attributes,unsigned int width,unsigned int height,
@@ -145,6 +160,11 @@ __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indice
     unsigned int control=materials[m+9u],raster=raster_offset+material*50u;
     unsigned int scissorX=materials[m+5u],scissorY=materials[m+6u];
     unsigned int scissorWidth=materials[m+7u],scissorHeight=materials[m+8u];
+    if((materials[m+3u]&16777216u)!=0u) {
+        unsigned int x0=tile_scissor_begin(scissorX,width),x1=tile_scissor_end(scissorX,scissorWidth,width);
+        unsigned int y0=tile_scissor_begin(scissorY,height),y1=tile_scissor_end(scissorY,scissorHeight,height);
+        scissorX=x0;scissorY=height-y1;scissorWidth=x1-x0;scissorHeight=y1-y0;
+    }
     // These tests reject every sample in raster_material. Apply them before
     // counting references, so invisible draws never reach tile sorting/raster.
     if(scissorX>=width||scissorY>=height||scissorWidth==0u||scissorHeight==0u)return;
@@ -152,8 +172,8 @@ __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indice
     if(sample_count>1u&&attributes[raster+27u]!=0.0f) {
         unsigned int sampleBits=(1u<<sample_count)-1u;
         if((((unsigned int)attributes[raster+26u])&sampleBits)==0u)return;
-        if((attributes[raster+24u]==0.0f&&attributes[raster+25u]==0.0f)
-            ||(attributes[raster+24u]==1.0f&&attributes[raster+25u]!=0.0f))return;
+        if((attributes[raster+24u]<=0.0f&&attributes[raster+25u]==0.0f)
+            ||(attributes[raster+24u]>=1.0f&&attributes[raster+25u]!=0.0f))return;
     }
     // Clamp before addition: the raster's subtraction-based scissor predicate
     // also accepts UINT_MAX extents without unsigned coordinate wraparound.

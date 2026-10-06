@@ -34,8 +34,9 @@ namespace WebCuda
         std::vector<const osg::StateSet*> mStack;
         osg::ref_ptr<const osg::StateSet> mState;
     };
-    // Encode fixed raster state; texture fields 0..2 are filled by the resource
-    // table. Shader/material lighting and uniforms remain a separate translation.
+    // Capture fixed raster state; texture fields 0..2 are filled by the resource
+    // table. CUDA clamps reference values and clips raw GL scissor rectangles
+    // (flag24, signed xy bit patterns and nonnegative wh in words5..8).
     std::array<std::uint32_t,12> encodeRasterState(const osg::StateSet&, std::uint32_t width,
         std::uint32_t height, bool normalizedTarget = true);
     std::array<float,14> encodeStencilState(const osg::StateSet&);

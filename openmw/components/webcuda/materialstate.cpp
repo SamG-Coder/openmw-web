@@ -8,6 +8,7 @@
 #include <limits>
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 #include <stdexcept>
 #include <osg/AlphaFunc>
 #include <osg/BlendFunc>
@@ -137,7 +138,7 @@ namespace WebCuda
         auto pack=[&](unsigned int face,unsigned int function,int reference,unsigned int readMask,unsigned int writeMask,
             unsigned int fail,unsigned int depthFail,unsigned int pass) {
             const auto offset=face*7;
-            result[offset]=static_cast<float>(compareCode(function));result[offset+1]=static_cast<float>(std::clamp(reference,0,255));
+            result[offset]=static_cast<float>(compareCode(function));result[offset+1]=static_cast<float>(reference);
             result[offset+2]=static_cast<float>(readMask&255u);result[offset+3]=static_cast<float>(writeMask&255u);
             result[offset+4]=operation(fail);result[offset+5]=operation(depthFail);result[offset+6]=operation(pass);
         };
@@ -181,7 +182,8 @@ namespace WebCuda
         float reference=0;
         if(enabled(GL_ALPHA_TEST))
             if(auto* alpha=dynamic_cast<const osg::AlphaFunc*>(state.getAttribute(osg::StateAttribute::ALPHAFUNC))) {
-                alphaFunction=alpha->getFunction();reference=std::clamp(alpha->getReferenceValue(),0.f,1.f);
+                alphaFunction=alpha->getFunction();reference=alpha->getReferenceValue();
+                if(std::isnan(reference))throw std::runtime_error("Invalid alpha reference");
             }
         std::memcpy(&result[4],&reference,4);
         result[9]=compareCode(depthFunction)|(compareCode(alphaFunction)<<4);
@@ -234,10 +236,11 @@ namespace WebCuda
         if(enabled(GL_SCISSOR_TEST)) {
             if(auto* scissor=dynamic_cast<const osg::Scissor*>(state.getAttribute(osg::StateAttribute::SCISSOR))) {
                 if(scissor->width()<0 || scissor->height()<0)throw std::runtime_error("Invalid WebCuda scissor");
-                std::int64_t x=scissor->x(),y=scissor->y(),w=scissor->width(),h=scissor->height();
-                auto x0=std::clamp<std::int64_t>(x,0,width),x1=std::clamp<std::int64_t>(x+w,0,width);
-                auto y0=std::clamp<std::int64_t>(y,0,height),y1=std::clamp<std::int64_t>(y+h,0,height);
-                result[5]=x0;result[6]=height-y1;result[7]=x1-x0;result[8]=y1-y0;
+                // Preserve signed bottom-left origins as uint bits. CUDA owns
+                // framebuffer intersection and the top-left conversion.
+                result[3]|=16777216u;
+                result[5]=static_cast<std::uint32_t>(scissor->x());result[6]=static_cast<std::uint32_t>(scissor->y());
+                result[7]=static_cast<std::uint32_t>(scissor->width());result[8]=static_cast<std::uint32_t>(scissor->height());
             }
         }
         return result;

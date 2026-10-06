@@ -3,6 +3,7 @@
 import { MaterialPipeline } from './pipeline.js';
 import { particleInputReference } from './particle-input-gpu-check.js';
 import { guiInputReference } from './gui-input-gpu-check.js';
+import { checkRasterStateGpu } from './raster-state-gpu-check.js';
 
 export async function checkPipelineGpu(runtime,kernels) {
   const pipeline=new MaterialPipeline(runtime,kernels),owned=[];
@@ -292,6 +293,7 @@ export async function checkPipelineGpu(runtime,kernels) {
       equal(`Pipeline CUDA terrain generation and sampling ${repetition?'after residency restore':'on cache miss'}`,result,expected);
       if(repetition===0)await render(scene(false));
     }
+    checks.push(...await checkRasterStateGpu(runtime,kernels));
     return checks;
   } finally {
     try {await runtime.idle();}

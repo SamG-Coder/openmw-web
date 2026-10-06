@@ -14,6 +14,16 @@
 // sourceRGB,destinationRGB,sourceAlpha,destinationAlpha as four 4-bit factors.
 // Control bit26 enables blending for normal attachment 1 independently of color.
 // Flag256 clamps fragment/blend output for normalized render targets.
+// Flag16777216 carries an unclipped GL scissor: signed origin bits and positive
+// extents in words5..8. Other packets retain their top-left xywh convention.
+__device__ float raster_unit_value(float value) {
+    return fminf(1.0f,fmaxf(0.0f,value));
+}
+__device__ unsigned int raw_scissor_axis(unsigned int pixel,unsigned int origin,unsigned int extent) {
+    // Unsigned subtraction represents pixel - signed_origin exactly whenever
+    // pixel is not below a positive origin. It avoids signed overflow at INT_MIN.
+    return ((origin&2147483648u)!=0u||pixel>=origin)&&pixel-origin<extent;
+}
 // Signed area of the disk inside the rectangle from (0,0) to (x,y).
 __device__ float point_disk_integral(float x,float y,float radius) {
     float sx=x<0.0f?-1.0f:1.0f,sy=y<0.0f?-1.0f:1.0f;
@@ -146,7 +156,7 @@ __device__ unsigned int apply_stencil(float* target,const float* attributes,unsi
     unsigned int pixel,unsigned int pixel_count,unsigned int front,unsigned int depth_pass,unsigned int target_offset) {
     unsigned int base=raster+(front!=0u?8u:15u);
     unsigned int previous=(unsigned int)target[target_offset+pixel_count*9u+pixel]&255u;
-    unsigned int reference=(unsigned int)attributes[base+1u],mask=(unsigned int)attributes[base+2u];
+    unsigned int reference=(unsigned int)fminf(255.0f,fmaxf(0.0f,attributes[base+1u])),mask=(unsigned int)attributes[base+2u];
     unsigned int passed=compare_value((float)(reference&mask),(float)(previous&mask),(unsigned int)attributes[base]);
     unsigned int operation=(unsigned int)attributes[base+(passed==0u?4u:(depth_pass==0u?5u:6u))];
     unsigned int value=previous;
@@ -172,10 +182,10 @@ __device__ float blend_factor(unsigned int factor, float source, float dest, flo
     if(factor==7)return 1.0f-da;
     if(factor==8)return dest;
     if(factor==9)return 1.0f-dest;
-    if(factor==11)return constant;
-    if(factor==12)return 1.0f-constant;
-    if(factor==13)return constantAlpha;
-    if(factor==14)return 1.0f-constantAlpha;
+    if(factor==11)return raster_unit_value(constant);
+    if(factor==12)return 1.0f-raster_unit_value(constant);
+    if(factor==13)return raster_unit_value(constantAlpha);
+    if(factor==14)return 1.0f-raster_unit_value(constantAlpha);
     return channel==3?1.0f:fminf(sa,1.0f-da);
 }
 __device__ float blend_value(float source, float dest, float sf, float df, unsigned int equation) {
@@ -771,11 +781,14 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
             if((((unsigned int)attributes[raster+26]>>sample)&1u)==0u)continue;
             // Monotonic coverage; inversion complements this exact sample set.
             unsigned int rank=(sample+(x*3u+y*5u)%sample_count)%sample_count;
-            unsigned int covered=attributes[raster+24]>=((float)rank+0.5f)/(float)sample_count?1u:0u;
+            unsigned int covered=raster_unit_value(attributes[raster+24])>=((float)rank+0.5f)/(float)sample_count?1u:0u;
             if(attributes[raster+25]!=0.0f)covered=1u-covered;
             if(covered==0u)continue;
         }
-        if (x < materials[m+5] || y < materials[m+6]
+        if((flags&16777216u)!=0u) {
+            if(raw_scissor_axis(x,materials[m+5u],materials[m+7u])==0u
+                ||raw_scissor_axis(height-1u-y,materials[m+6u],materials[m+8u])==0u)continue;
+        } else if (x < materials[m+5] || y < materials[m+6]
             || x - materials[m+5] >= materials[m+7] || y - materials[m+6] >= materials[m+8]) continue;
         unsigned int ia = triangles[t] * 10;
         unsigned int ib = triangles[t+1] * 10;
@@ -957,7 +970,7 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
         float depthBias=(flags&8388608u)!=0u?0.0f:0.5f;
         float z = (a*vertices[ia+2]/aw + b*vertices[ib+2]/bw + c*vertices[ic+2]/cw)*depthScale+depthBias;
         if((flags&262144u)==0u&&(z < 0.0f || z > 1.0f))continue;
-        float nearDepth=attributes[raster+2],farDepth=attributes[raster+3];
+        float nearDepth=raster_unit_value(attributes[raster+2]),farDepth=raster_unit_value(attributes[raster+3]);
         z=nearDepth+z*(farDepth-nearDepth);
         float dzdx=((by-cy)*vertices[ia+2]/aw+(cy-ay)*vertices[ib+2]/bw+(ay-by)*vertices[ic+2]/cw)/area*depthScale*(farDepth-nearDepth);
         float dzdy=((cx-bx)*vertices[ia+2]/aw+(ax-cx)*vertices[ib+2]/bw+(bx-ax)*vertices[ic+2]/cw)/area*depthScale*(farDepth-nearDepth);
@@ -1145,7 +1158,7 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
                     unsigned int source=texels[descriptor],operand=texels[descriptor+3u],channel=operand>=2u?3u:k;
                     // All samples are ready, including references to later units.
                     float value=source==0u?samples[unit*4u+channel]:(source==1u?primary[channel]:
-                        (source==2u?__uint_as_float(texels[environment+4u+channel]):
+                        (source==2u?raster_unit_value(__uint_as_float(texels[environment+4u+channel])):
                         (source==3u?color[channel]:samples[(source-4u)*4u+channel])));
                     arguments[k*3u+argument]=(operand&1u)!=0u?1.0f-value:value;
                 }
@@ -1161,7 +1174,7 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
                     color[k]=fminf(1.0f,fmaxf(0.0f,value*(float)scale));
                 }
             } else for(unsigned int k=0;k<4;k++)color[k]=fminf(1.0f,fmaxf(0.0f,texture_environment(color[k],samples[unit*4u+k],samples[unit*4u+3u],
-                __uint_as_float(texels[environment+4u+k]),texels[environment+1u],texels[environment+2u],k)));
+                raster_unit_value(__uint_as_float(texels[environment+4u+k])),texels[environment+1u],texels[environment+2u],k)));
             environment=texels[environment+3u];
             }
         }
@@ -1533,11 +1546,11 @@ __global__ void raster_material(const float* vertices, const unsigned int* trian
             if(mode==0u)factor=end!=start?(end-distance)/(end-start):(distance<end?1.0f:0.0f);
             else {float exponent=density*distance;if(mode==2u)exponent*=exponent;factor=expf(-exponent);}
             factor=fminf(1.0f,fmaxf(0.0f,factor));
-            for(unsigned int k=0;k<3;k++)color[k]=factor*color[k]+(1.0f-factor)*__uint_as_float(texels[fog+4u+k]);
+            for(unsigned int k=0;k<3;k++)color[k]=factor*color[k]+(1.0f-factor)*raster_unit_value(__uint_as_float(texels[fog+4u+k]));
         }
         if((flags&256)!=0)for(unsigned int k=0;k<4;k++)color[k]=fminf(1.0f,fmaxf(0.0f,color[k]));
         color[3]*=pointFade;
-        if((flags&128)!=0) {if(compare_value(color[3],__uint_as_float(materials[m+4]),(control>>4)&15)==0)continue;}
+        if((flags&128)!=0) {if(compare_value(color[3],raster_unit_value(__uint_as_float(materials[m+4])),(control>>4)&15)==0)continue;}
         else if (color[3] < (float)materials[m+4]/255.0f) continue;
         if(multisample!=0u&&(flags&65536u)!=0u) {
             // A stable per-pixel ordering gives monotonic coverage as alpha

@@ -158,7 +158,8 @@ int main() {
     assert((encoded[9]&15)==6 && ((encoded[9]>>4)&15)==4 && ((encoded[9]>>14)&3)==1);
     assert(encoded[10]==0x5154);
     float reference;std::memcpy(&reference,&encoded[4],4);assert(reference==.333f);
-    assert(encoded[5]==0 && encoded[6]==3 && encoded[7]==4 && encoded[8]==4);
+    assert((encoded[3]&16777216u)!=0);
+    assert(encoded[5]==static_cast<unsigned int>(-2) && encoded[6]==1 && encoded[7]==6 && encoded[8]==4);
     osg::ref_ptr<osg::Image> image=new osg::Image;
     image->allocateImage(1,2,1,GL_RGB,GL_UNSIGNED_BYTE,4);
     image->data(0,0)[0]=10;image->data(0,0)[1]=20;image->data(0,0)[2]=30;

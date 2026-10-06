@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: finish the rendering ownership audit and reduce capture, validation/transfers and GPU frame cost. Ordinary and retained primary/secondary byte colors now remain raw through capture and normalize in authored CUDA, including generated vertices, particles and ribbons. Fifty-nine real producer fixtures match 55998 expanded vertices exactly in WASM and native CUDA fast-math. Twelve WASM suites, 70 host checks and 91 WebGPU checks pass. Engine 7cafe0e295d6 is built and staged. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete. The rebuilt WebGPU exterior run records 345 presentations with no renderer errors, aborts or legacy draws; all 120 sampled completed frames release packets.",
+  "currentPriority": "P0: finish the rendering ownership audit and reduce capture, validation/transfers and GPU frame cost. Scissor clipping and alpha/stencil references, depth range, blend constants, sample coverage, fixed fog colors and texture-environment constants now reach CUDA as raw state. Thirteen WASM suites, 74 host checks and 130 WebGPU checks pass; 280 real producer packets match 1042720 native GPU pixel samples exactly. Engine 6f067cc99e82 is built and staged. Broad gameplay, current native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete. The rebuilt WebGPU exterior run records 272 presentations with no renderer errors, aborts or legacy draws; all 120 sampled completed frames release packets.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Ordinary, GUI and retained byte-color normalization now runs in CUDA. Continue the ownership audit at materialtable.cpp and materialstate.cpp: distinguish transport validation/packing from texture-environment, fog, blend, depth-range and alpha/stencil state calculations still evaluated on the CPU. Trace their CUDA consumers before changing semantics or validation. Prioritize remaining per-frame capture/transfer work and raster cost using the existing reports; this color migration does not establish an FPS gain. Preserve source binding, cache identity, triangle order and native resource ownership. Native-browser gameplay and physical 60-180 Hz acceptance remain separate gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Raw raster/material state now reaches CUDA without CPU normalization or scissor clipping. Continue the rendering ownership audit through the upstream scene producers and their CUDA consumers, distinguishing simulation, allocation bounds and transport validation from actual rendering calculations. Prioritize remaining per-frame capture/transfer work and raster cost using existing reports. This state migration does not establish an FPS gain. Preserve source binding, cache identity, triangle order and native resource ownership. Native-browser gameplay and physical 60-180 Hz acceptance remain separate gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1867,5 +1867,104 @@
       "D:/OpenMW-local/webcuda-color-input-stage.json"
     ],
     "limits": "No input-size or FPS-gain claim. Controlled native GPU and WebGPU checks do not establish native-browser gameplay, physical refresh-rate behavior or broad gameplay correctness."
+  },
+  "rawRasterStateCuda": {
+    "engine": "6f067cc99e82",
+    "sourceFinding": "MaterialState and MaterialTable clipped GL scissors and clamped raster/material values on the CPU. Capture now preserves original source values; authored material.cu and tiles.cu apply the rendering rules.",
+    "packet": "Material flag24 marks raw GL scissor origins in words5/6 and nonnegative extents in words7/8. Existing top-left scissor packets remain supported. Record sizes, bridge bindings and native kernel parameters are unchanged; no preprocessing buffer or extra dispatch is added.",
+    "ownership": "JavaScript validates raw records without normalizing them. CUDA owns framebuffer intersection, alpha/stencil and depth clamps, blend and texture-environment constants, sample coverage and fixed fog color clamps. NaN rejection and source-specific finite-input requirements remain enforced.",
+    "validation": {
+      "wasm64IntegrationSuites": 13,
+      "hostChecks": 74,
+      "realProducerFixtures": 280,
+      "realProducerHostValidation": {
+        "status": "passed",
+        "fixtures": 280,
+        "kinds": {
+          "scissor": 54,
+          "alpha": 105,
+          "depth": 6,
+          "blend": 8,
+          "coverage": 27,
+          "stencil": 56,
+          "fog": 3,
+          "environment": 3
+        },
+        "scope": "Real OSG/WASM material, raster-parameter and texture-descriptor packets accepted unchanged by production host validation; GPU replay is separate."
+      },
+      "nativeGpu": {
+        "fixtures": 280,
+        "windings": 2,
+        "pixelSamples": 1042720,
+        "changedPixelSamples": 351428,
+        "comparison": "Exact color/depth/normal/stencil output, conservative clipped bins and buffer guards against independent state canonicalization and exhaustive triangle lists",
+        "compiler": "NVCC sm_120 --use_fast_math",
+        "browserTested": false
+      },
+      "browserRuntimePipelines": 90,
+      "browserGpuChecks": 130,
+      "browserProductionPipelineChecks": 101,
+      "newRawStateGpuChecks": 39,
+      "nativePagedKernelCompilation": [
+        {
+          "entry": "raster_material",
+          "status": "passed",
+          "compileMs": 9796.041700057685,
+          "cubinBytes": 1378904
+        },
+        {
+          "entry": "bin_triangle_bounds",
+          "status": "passed",
+          "compileMs": 273.04149989504367,
+          "cubinBytes": 91776
+        }
+      ],
+      "generatedFiles": 379,
+      "repeatGeneration": "byte-identical",
+      "changedGeneratedArtifacts": 104,
+      "unchangedNativeParameterContracts": 78,
+      "trackedSdkChanges": false,
+      "fullEngineBuildAndHttpStaging": "passed"
+    },
+    "exteriorWebgpu": {
+      "observedAt": "2026-10-06T16:00:36.792Z",
+      "backend": "webgpu",
+      "engine": "6f067cc99e82",
+      "rasterWgslSha256": "6f978f71142480b8e6ee940b7dd52daa66ecb969efb718671d6e5d2ffe173aab",
+      "savedPresentations": 272,
+      "rendererError": null,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 1898420512,
+      "medians": {
+        "packetCaptureMs": 70.10249996185303,
+        "frameWallMs": 138.1700000166893,
+        "presentationSubmitIntervalMs": 217.5199999809265,
+        "uploadedBytesDuringFrame": 20073500.0,
+        "capturedSceneBytes": 138852046.0
+      },
+      "engineCaptureMedians": {
+        "materialEncodeMs": 36.87424000000024,
+        "geometryEncodeMs": 16.64460799999992
+      },
+      "report": "D:\\OpenMW-local\\webcuda-seyda-neen-raster-state-2026-10-07.json",
+      "limits": "Debug WebGPU scene with streaming, not a matched benchmark or native-browser acceptance. Buffer capacity does not measure physical VRAM or process RSS."
+    },
+    "reports": [
+      "D:\\OpenMW-local\\webcuda-raster-state-validation.json",
+      "D:\\OpenMW-local\\webcuda-raster-state-integration.log",
+      "D:\\OpenMW-local\\webcuda-raster-state-host.log",
+      "D:\\OpenMW-local\\webcuda-raster-state-host-final.log",
+      "D:\\OpenMW-local\\webcuda-raster-state-host-producer.json",
+      "D:\\OpenMW-local\\webcuda-raster-state-gpu.log",
+      "D:\\OpenMW-local\\webcuda-raster-state-browser.json",
+      "D:\\OpenMW-local\\webcuda-raster-state-native-compile.json",
+      "D:\\OpenMW-local\\webcuda-raster-state-tiles-native-compile.json",
+      "D:\\OpenMW-local\\webcuda-raster-state-artifacts.json",
+      "D:\\OpenMW-local\\webcuda-raster-state-stage.json"
+    ],
+    "limits": "No FPS-gain claim. Standalone native replay does not verify ChromiumRTXCuda gameplay or physical 60-180 Hz presentation. Broader rendering ownership and gameplay acceptance remain incomplete."
   }
 }
