@@ -287,6 +287,14 @@ export class NativeAttachmentStore {
     pass.setPipeline(pipeline);pass.setBindGroup(0,bind);pass.draw(3);pass.end();
     this.device.queue.submit([encoder.finish()]);
   }
+  clearDepth(holder,value=1){
+    const depth=holder?.native?.depth;if(!depth)throw Error('Native depth target is unavailable');
+    const encoder=this.device.createCommandEncoder({label:'OpenMW native depth clear'});
+    const pass=encoder.beginRenderPass({colorAttachments:[],depthStencilAttachment:{view:depth.renderView,
+      depthLoadOp:'clear',depthStoreOp:'store',depthClearValue:value,
+      ...(depth.format.includes('stencil')?{stencilLoadOp:'clear',stencilStoreOp:'store',stencilClearValue:0}:{})}});
+    pass.end();this.device.queue.submit([encoder.finish()]);
+  }
   async copyDepth(source,destination,clearDepth=1){
     if(!source?.depth?.sampleView||!destination?.depth?.renderView)throw Error('Native depth copy requires depth textures');
     if(source.depth.samples!==1||destination.depth.samples!==1)throw Error('Native depth copy requires single-sample depth');
