@@ -12,7 +12,7 @@
   #status{font-weight:600}small{color:#a9bdd3}
 </style>
 <h1>OpenMW native CUDA validation</h1>
-<p>Compile the renderer’s authored CUDA with ChromiumRTXCuda’s NVRTC compiler and run the small raster and depth checks on the GPU.</p>
+<p>Compile the renderer’s authored CUDA with ChromiumRTXCuda’s NVRTC compiler and run GPU output checks. All runtime kernels with paged storage also exercise the production pipeline.</p>
 <p>This checks kernel compatibility. It does not switch the game renderer or establish full-game native performance.</p>
 <p id="availability" role="status">Checking native CUDA availability…</p>
 <label for="scope">Kernels </label>

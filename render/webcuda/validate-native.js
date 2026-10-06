@@ -5,6 +5,7 @@ import { checkDepthImageGpu } from './depth-image-gpu-check.js';
 import { checkCompactDepthGpu } from './compact-depth-gpu-check.js';
 import { NativeRendererRuntime } from './native-runtime.js';
 import { checkNativeStorageGpu } from './native-storage-gpu-check.js';
+import { checkPipelineGpu } from './pipeline-gpu-check.js';
 
 const run=document.querySelector('#run'),save=document.querySelector('#save');
 const availability=document.querySelector('#availability'),status=document.querySelector('#status');
@@ -26,7 +27,7 @@ run.addEventListener('click',async()=>{
   run.disabled=true;scope.disabled=true;storage.disabled=true;save.disabled=true;results.textContent='';
   report={schema:1,startedAt:new Date().toISOString(),backend:'native-cuda',
     scope:scope.value,storage:storage.value,userAgent:navigator.userAgent,kernels:[],checks:[],status:'running',
-    limits:'Small kernel checks only; no full-game native renderer or frame-rate claim.'};
+    limits:'Kernel and controlled pipeline checks; no full-game correctness or frame-rate claim.'};
   let runtime,stage='Requesting native CUDA permission',stageStarted=performance.now();
   const setStage=value=>{stage=value;stageStarted=performance.now();status.textContent=stage;};
   const log=value=>{results.textContent+=value+'\n';};
@@ -51,6 +52,7 @@ run.addEventListener('click',async()=>{
     report.runtime=runtime.describe();
     const entries=kernelManifest.filter(item=>item.runtime&&(scope.value==='all'||item.entry==='raster_material'));
     entries.sort((a,b)=>Number(b.entry==='raster_material')-Number(a.entry==='raster_material'));
+    const kernels={};
     for(const {entry} of entries) {
       setStage(`${entry}: fetching original CUDA`);
       const response=await fetch(`generated/${entry}${runtime.artifactSuffix??'.native.json'}`);
@@ -62,6 +64,7 @@ run.addEventListener('click',async()=>{
       setStage(`${entry}: NVRTC compilation and module load`);
       const started=performance.now();
       const kernel=await runtime.kernel(artifact);
+      kernels[entry]=kernel;
       const elapsedMs=performance.now()-started;
       report.kernels.push({entry,sourceSha256:hash,sourceBytes:bytes.length,compileAndLoadMs:elapsedMs});
       log(`${entry}: native CUDA ready in ${(elapsedMs/1000).toFixed(3)} s; source SHA-256 ${hash}`);
@@ -70,6 +73,10 @@ run.addEventListener('click',async()=>{
       if(entry==='compact_depth_to_texture'){setStage('Native depth layout checks');await checks(checkCompactDepthGpu,kernel);}
     }
     if(storage.value==='paged'){setStage('Native large-buffer and presentation checks');await checks(checkNativeStorageGpu);}
+    if(storage.value==='paged'&&scope.value==='all') {
+      setStage('Native production pipeline GPU checks');
+      await checks((runtime)=>checkPipelineGpu(runtime,kernels));
+    }
     await runtime.idle();
     report.status='passed';report.stats={...runtime.stats};
     setStage(`PASS: ${report.kernels.length} native kernels, ${report.checks.length} GPU checks`);

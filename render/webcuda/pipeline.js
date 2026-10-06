@@ -927,13 +927,18 @@ export class MaterialPipeline {
         throw RangeError('Invalid camera clear color mask');
       if(clear.length!==4||!clear.every(Number.isFinite)||!Number.isFinite(depth)||!Number.isInteger(clearMask)||(clearMask&~17664))
         throw RangeError('Unsupported camera clear state');
-      const rasterTimer=gpuTimedBatch(r,pass.profileGpu===true,'OpenMW clear and raster');
-      let rasterTiming;
-      try { rasterTimer.batch
-        .dispatch(k.clear_attachment.bind({target:rasterTarget},{pixel_count:width*height,mask:clearMask,red:clear[0],green:clear[1],blue:clear[2],alpha:clear[3],depth,normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,stencil_clear,clear_color_mask,width,height,...viewportArgs,sample_count}),groups(width*height*sample_count))
-        .dispatch(k.raster_material.bind({vertices,triangles:output_triangles,counts,candidates,materials,texels,target:rasterTarget,attributes:clippedAttributes},{width,height,capacity,raster_offset,boundary_offset,point_fade_offset,lighting_offset,cluster_offset,fixed_offset,falloff_offset,fixed_enabled,normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,sample_count}),groups(width*height*sample_count));
-        rasterTiming=rasterTimer.submit();
-      } catch(error){rasterTimer.dispose();throw error;}
+      // A zero clear mask has no attachment side effects, and an empty packet
+      // cannot produce fragments. Keep texture preparation, status validation
+      // and resolves: an empty camera can still clear or publish an attachment.
+      let rasterTiming=Promise.resolve({gpuMs:null});
+      if(clearMask!==0||triangleCount!==0) {
+        const rasterTimer=gpuTimedBatch(r,pass.profileGpu===true,'OpenMW clear and raster');
+        try {
+          if(clearMask!==0)rasterTimer.batch.dispatch(k.clear_attachment.bind({target:rasterTarget},{pixel_count:width*height,mask:clearMask,red:clear[0],green:clear[1],blue:clear[2],alpha:clear[3],depth,normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,stencil_clear,clear_color_mask,width,height,...viewportArgs,sample_count}),groups(width*height*sample_count));
+          if(triangleCount!==0)rasterTimer.batch.dispatch(k.raster_material.bind({vertices,triangles:output_triangles,counts,candidates,materials,texels,target:rasterTarget,attributes:clippedAttributes},{width,height,capacity,raster_offset,boundary_offset,point_fade_offset,lighting_offset,cluster_offset,fixed_offset,falloff_offset,fixed_enabled,normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,sample_count}),groups(width*height*sample_count));
+          rasterTiming=rasterTimer.submit();
+        } catch(error){rasterTimer.dispose();throw error;}
+      }
       if(sample_count!==1)this.resolveMultisample(rasterTarget,target,width,height,sample_count,
         {mask:16384|256|1024,colorFormat:pass.colorFormat,depthFormat:pass.depthFormat,normalFormat:pass.normalFormat,normals:normal_enabled!==0,stencil:stencil_enabled!==0});
       if(!pass.deferCompletion||context)r.batch().dispatch(k.pack_target.bind({target,pixels},{width,height,row_pixels}),groups(width*height)).submit();

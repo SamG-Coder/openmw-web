@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated triangle setup and native fence boundaries. The CUDA rasterizer now rejects uncovered filled samples before interpolation work. Its surviving color/depth/stencil output matches the previous kernel in 1800 CPU and native GPU cases. Full-game FPS remains unmeasured.",
+  "currentPriority": "P0: verify the staged engine through broader game scenes and its zero-WebGL-draw report. The current WebGPU browser harness compiles all 84 runtime kernels and passes 34 GPU output checks, including 16 through the production pipeline. Empty-camera and zero-clear dispatches are removed. Full-game performance and 60-180 Hz pacing remain unverified.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Engine f7c1bdb71a48 remains staged with regenerated raster assets. Coverage-first interpolation reduces one isolated random-triangle raster fixture by about 20%, while the thin-triangle fixture is unchanged. Continue the full rendering audit and large-pass sizing/native ownership analysis. Full gameplay, lifecycle and 60-180 Hz acceptance remain incomplete.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Use the staged engine f7c1bdb71a48 and its existing runtime report for integrated acceptance. Reuse the source audit and production-pipeline fixtures; do not treat kernel compilation as game coverage. Continue large-pass sizing/native ownership analysis when runtime evidence identifies those costs. Full gameplay, lifecycle and 60-180 Hz acceptance remain incomplete.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1011,5 +1011,30 @@
       "D:/OpenMW-local/webcuda-raster-coverage-stage.json"
     ],
     "limits": "Native standalone GPU evidence and CPU/host checks; no new browser execution, full-game FPS, variable-refresh or lifecycle acceptance."
+  },
+  "productionPipelineChecks": {
+    "change": "Skip zero-mask clear and empty-packet raster dispatches while retaining texture work, status validation, resolves and presentation. Replace obsolete validation entrypoint fixtures with the current harness.",
+    "fixture": "render/webcuda/pipeline-gpu-check.js",
+    "validation": {
+      "webgpuAdapter": "nvidia blackwell",
+      "compiledRuntimeKernels": 84,
+      "webgpuOutputChecks": 34,
+      "productionPipelineChecks": 16,
+      "relatedHostChecks": 40,
+      "legacyValidationRedirect": "passed",
+      "rasterWgslSha256": "e01b373562a1921cc1c3d205fb7920faee2f6ff1532401184ab594e4c7d8b48a"
+    },
+    "coverage": [
+      "Empty-camera attachment preservation and trailing guards",
+      "Selective color/depth/stencil clears inside partial viewports at 1x and 4x sampling",
+      "Actual transform, clipping, tile assembly, blending and equal-depth rejection",
+      "CUDA terrain mask generation, raster sampling and immutable residency restore"
+    ],
+    "rasterPipelineCompileSeconds": [324.58, 245.94],
+    "reports": [
+      "D:/OpenMW-local/webcuda-empty-pass-host-tests.log",
+      "D:/OpenMW-local/webcuda-production-pipeline-validation.json"
+    ],
+    "limits": "Controlled WebGPU fixtures; new native paged pipeline fixtures are wired but not executed in the native browser. Compilation time is startup work, not frame time. Broad gameplay, lifecycle and refresh-rate acceptance remain incomplete."
   }
 }

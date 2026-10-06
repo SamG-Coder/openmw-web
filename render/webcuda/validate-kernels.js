@@ -4,6 +4,7 @@ import { checkRasterGpu } from './raster-gpu-check.js';
 import { checkDepthImageGpu } from './depth-image-gpu-check.js';
 import { checkCompactDepthGpu, checkFullSizeDepthGpu } from './compact-depth-gpu-check.js';
 import { checkBoundedBatchGpu } from './bounded-batch-gpu-check.js';
+import { checkPipelineGpu } from './pipeline-gpu-check.js';
 const button=document.querySelector('#run'),status=document.querySelector('#status'),results=document.querySelector('#results');
 button.addEventListener('click',async()=>{
   button.disabled=true;results.textContent='';
@@ -22,6 +23,7 @@ button.addEventListener('click',async()=>{
     const entries=kernelManifest.filter(entry=>entry.runtime&&(!only||entry.entry===only));
     if(!entries.length)throw Error(`Unknown runtime kernel: ${only}`);
     entries.sort((a,b)=>(b.entry==='raster_material')-(a.entry==='raster_material'));
+    const kernels={};
     for(const {entry} of entries){
       setStage(`${entry}: fetching artifact`);
       const response=await fetch(`generated/${entry}.json`);
@@ -41,6 +43,7 @@ button.addEventListener('click',async()=>{
       // Exercise the same explicit layouts, feature checks and error scopes as
       // the game. This includes runtime WGSL validation again, not only driver time.
       const kernel=await runtime.kernel(artifact);
+      kernels[entry]=kernel;
       report(`${entry}: runtime pipeline created in ${((performance.now()-started)/1000).toFixed(2)} s`);
       if(entry==='raster_material'){
         setStage(`${entry}: GPU output checks`);
@@ -59,6 +62,10 @@ button.addEventListener('click',async()=>{
         for(const check of await checkFullSizeDepthGpu(runtime,kernel))report(`PASS: ${check}`);
         for(const check of await checkBoundedBatchGpu(runtime,kernel))report(`PASS: ${check}`);
       }
+    }
+    if(!only) {
+      setStage('Production pipeline GPU checks');
+      for(const check of await checkPipelineGpu(runtime,kernels))report(`PASS: ${check}`);
     }
     setStage(`PASS: ${entries.length} runtime kernels validated and compiled`);
   }catch(error){setStage('FAIL');report(String(error?.stack??error));}
