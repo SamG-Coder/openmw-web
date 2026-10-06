@@ -523,6 +523,22 @@ export class HardwareRasterizer {
     return {gpuMs:null,drawCalls,occlusionQueries:queryRuns.length};
     } finally {this.busy=false;}
   }
+  snapshot() {
+    // Diagnostics only. Rendering is performed by native WebGPU render passes;
+    // this object does not implement the old CUDA/software rasterizer.
+    return {
+      backend:'webgpu',
+      mode:'native-render-pipeline',
+      hardwareRasterization:true,
+      active:!this.disposed,
+      busy:this.busy,
+      cachedRenderPipelines:this.pipelines.size,
+      cachedShaderVariants:this.shaderModules.size,
+      cachedAttachmentBridges:this.bridgePipelines.size,
+      cachedRenderTargets:this.targets.size,
+      cachedBuffers:this.buffers.size,
+    };
+  }
   dispose() {
     if(this.disposed)return;this.disposed=true;
     for(const target of this.targets.values())this.destroyTextures(target);
