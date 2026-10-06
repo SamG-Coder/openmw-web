@@ -87,17 +87,22 @@ fn bilinear(tex:texture_2d<f32>,uv:vec2<f32>,size:vec2<u32>)->vec4<f32>{
 @fragment fn post(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{
   var uv=p.xy/vec2<f32>(params.destinationSize);
   uv*=params.scale;
-  var sampleUv=uv;
-  var occlusion=1.0;
+  let direct=params.sourceSize==params.destinationSize&&params.scale.x==1.0&&params.scale.y==1.0;
+  var original:vec4<f32>;
+  if(direct){
+    let xy=clamp(vec2<i32>(p.xy),vec2<i32>(0),vec2<i32>(params.sourceSize)-vec2<i32>(1));
+    original=textureLoad(sourceTex,xy,0);
+  }else{
+    original=bilinear(sourceTex,uv,params.sourceSize);
+  }
+  var color=original;
   if(params.useDistortion!=0u){
     let d=bilinear(distortionTex,uv,params.distortionSize);
     let delta=clamp(d.xy*0.14,vec2<f32>(-1.0),vec2<f32>(1.0));
-    occlusion=bilinear(distortionTex,uv+delta,params.distortionSize).z;
-    sampleUv=uv+delta;
+    let occlusion=bilinear(distortionTex,uv+delta,params.distortionSize).z;
+    let distorted=bilinear(sourceTex,uv+delta,params.sourceSize);
+    color=distorted*(1.0-occlusion)+original*occlusion;
   }
-  let distorted=bilinear(sourceTex,sampleUv,params.sourceSize);
-  let original=bilinear(sourceTex,uv,params.sourceSize);
-  var color=distorted*(1.0-occlusion)+original*occlusion;
   if(params.useAdjust!=0u){
     color.rgb=max((color.rgb-vec3<f32>(0.5))*params.contrast+vec3<f32>(0.5),vec3<f32>(0.0));
     if(params.gamma==0.0){
@@ -275,6 +280,14 @@ export class NativeAttachmentStore {
   async resolveColor(source,destination,{scaleX=1,scaleY=1,gamma=1,contrast=1,adjust=false,distortion=null,clear=false}={}){
     if(!source?.color?.sampleView||!destination?.color?.renderView)throw Error('Native color resolve requires color textures');
     if(destination.color.samples!==1)throw Error('Native postprocess destination must be single-sample');
+    if(!adjust&&!distortion&&scaleX===1&&scaleY===1
+      &&source.color.width===destination.color.width&&source.color.height===destination.color.height
+      &&source.color.format===destination.color.format&&source.color.sampleTexture&&destination.color.renderTexture) {
+      const encoder=this.device.createCommandEncoder({label:'OpenMW native direct color copy'});
+      encoder.copyTextureToTexture({texture:source.color.sampleTexture},{texture:destination.color.renderTexture},
+        [source.color.width,source.color.height,1]);
+      this.device.queue.submit([encoder.finish()]);this.stats.postPasses++;return;
+    }
     const pipeline=await this.postPipeline(destination.color.format);
     const params=new ArrayBuffer(48),u32=new Uint32Array(params),f32=new Float32Array(params);
     u32[0]=source.color.width;u32[1]=source.color.height;u32[2]=destination.color.width;u32[3]=destination.color.height;
@@ -313,11 +326,18 @@ export class NativeAttachmentStore {
   }
   async present(holder,context,width,height){
     if(!holder?.native?.color)throw Error('Screen target has no native color texture');
-    const source={color:holder.native.color};
-    const current=context.getCurrentTexture();
-    const destination={color:{renderTexture:current,renderView:current.createView(),sampleTexture:current,sampleView:null,
-      format:'rgba8unorm',samples:1,width,height}};
-    await this.resolveColor(source,destination,{clear:true});this.stats.presentations++;
+    const color=holder.native.color,current=context.getCurrentTexture();
+    if(color.sampleTexture&&color.format==='rgba8unorm'&&color.width===width&&color.height===height) {
+      const encoder=this.device.createCommandEncoder({label:'OpenMW direct WebGPU presentation'});
+      encoder.copyTextureToTexture({texture:color.sampleTexture},{texture:current},[width,height,1]);
+      this.device.queue.submit([encoder.finish()]);
+    } else {
+      const source={color};
+      const destination={color:{renderTexture:current,renderView:current.createView(),sampleTexture:current,sampleView:null,
+        format:'rgba8unorm',samples:1,width,height}};
+      await this.resolveColor(source,destination,{clear:true});
+    }
+    this.stats.presentations++;
   }
   async atlasPipeline(depth=false){
     const key=depth?'depth':'color';let pending=this.atlasPipelines.get(key);if(pending)return pending;
