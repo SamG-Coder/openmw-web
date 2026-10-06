@@ -180,6 +180,7 @@ namespace MWGui
         bool exportFonts, const std::string& versionDescription, Files::ConfigurationManager& cfgMgr)
         : mOldUpdateMask(0)
         , mOldCullMask(0)
+        , mSceneDisabled(false)
         , mStore(nullptr)
         , mResourceSystem(resourceSystem)
         , mWorkQueue(workQueue)
@@ -655,19 +656,34 @@ namespace MWGui
 
     void WindowManager::enableScene(bool enable)
     {
-        unsigned int disablemask = MWRender::Mask_GUI | MWRender::Mask_PreCompile;
-        if (!enable && getCullMask() != disablemask)
+        const unsigned int disablemask = MWRender::Mask_GUI | MWRender::Mask_PreCompile;
+
+        // Do not infer whether the scene is disabled from the camera's CURRENT
+        // cull mask. On the browser the intro video is cooperative: startNewGame
+        // continues building the world while the movie is still playing, and
+        // other systems may legitimately update camera masks in that interval.
+        // The old equality check then failed to restore the saved world mask,
+        // leaving only GUI/PreCompile visible forever while simulation/audio
+        // continued normally.
+        if (!enable)
         {
+            if (mSceneDisabled)
+                return;
+
             mOldUpdateMask = mViewer->getUpdateVisitor()->getTraversalMask();
             mOldCullMask = getCullMask();
+            mSceneDisabled = true;
             mViewer->getUpdateVisitor()->setTraversalMask(disablemask);
             setCullMask(disablemask);
+            return;
         }
-        else if (enable && getCullMask() == disablemask)
-        {
-            mViewer->getUpdateVisitor()->setTraversalMask(mOldUpdateMask);
-            setCullMask(mOldCullMask);
-        }
+
+        if (!mSceneDisabled)
+            return;
+
+        mViewer->getUpdateVisitor()->setTraversalMask(mOldUpdateMask);
+        setCullMask(mOldCullMask);
+        mSceneDisabled = false;
     }
 
     void WindowManager::updateConsoleObjectPtr(const MWWorld::Ptr& currentPtr, const MWWorld::Ptr& newPtr)
