@@ -136,9 +136,19 @@ export class MaterialPipeline {
   retireBuffer(resource) {
     if(resource)this.retired.add(resource);
   }
+  deferRetired(completion) {
+    const buffers=[...this.retired];this.retired.clear();
+    const textures=this.textureResidency.detachRetired();
+    const vertices=this.vertexResidency.detachRetired();
+    Promise.resolve(completion).then(()=>{
+      for(const resource of buffers)this.runtime.destroyBufferCompleted(resource);
+      this.textureResidency.collectDetached(textures);
+      this.vertexResidency.collectDetached(vertices);
+    }).catch(()=>{});
+  }
   // The caller must have completed the queue covering all retired resources.
   collectRetired() {
-    for(const resource of this.retired)this.runtime.destroyBuffer(resource);
+    for(const resource of this.retired)this.runtime.destroyBufferCompleted(resource);
     this.retired.clear();
     this.textureResidency.collectRetired();
     this.vertexResidency.collectRetired();
