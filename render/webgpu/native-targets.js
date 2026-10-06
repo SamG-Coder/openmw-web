@@ -178,6 +178,7 @@ export class NativeAttachmentStore {
     this.compatColorModule=this.device.createShaderModule({label:'OpenMW native compatibility color export',code:COMPAT_COLOR_WGSL});
     this.compatDepthModule=this.device.createShaderModule({label:'OpenMW native compatibility depth export',code:COMPAT_DEPTH_WGSL});
     this.postPipelines=new Map();this.depthPipelines=new Map();this.atlasPipelines=new Map();this.compatPipelines=new Map();
+    this.stats={postPasses:0,presentations:0,atlasCopies:0,compatibilityMaterializations:0,depthCopies:0};
     this.uniformStride=Math.max(256,this.device.limits.minUniformBufferOffsetAlignment);
     this.postUniform=this.device.createBuffer({label:'OpenMW native postprocess uniforms',size:this.uniformStride,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
     this.atlasUniform=this.device.createBuffer({label:'OpenMW native atlas-copy uniforms',size:this.uniformStride,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
@@ -305,7 +306,7 @@ export class NativeAttachmentStore {
       depthLoadOp:'clear',depthStoreOp:'store',depthClearValue:clearDepth,
       ...(destination.depth.format.includes('stencil')?{stencilLoadOp:'load',stencilStoreOp:'store'}:{})}});
     pass.setPipeline(pipeline);pass.setBindGroup(0,bind);pass.draw(3);pass.end();
-    this.device.queue.submit([encoder.finish()]);
+    this.device.queue.submit([encoder.finish()]);this.stats.depthCopies++;
   }
   async present(holder,context,width,height){
     if(!holder?.native?.color)throw Error('Screen target has no native color texture');
@@ -313,7 +314,7 @@ export class NativeAttachmentStore {
     const current=context.getCurrentTexture();
     const destination={color:{renderTexture:current,renderView:current.createView(),sampleTexture:current,sampleView:null,
       format:'rgba8unorm',samples:1,width,height}};
-    await this.resolveColor(source,destination,{clear:true});
+    await this.resolveColor(source,destination,{clear:true});this.stats.presentations++;
   }
   async atlasPipeline(depth=false){
     const key=depth?'depth':'color';let pending=this.atlasPipelines.get(key);if(pending)return pending;
@@ -330,6 +331,7 @@ export class NativeAttachmentStore {
   }
   async materializeCompatibility(holder,buffer){
     if(!holder?.native)return;
+    this.stats.compatibilityMaterializations++;
     const gpuBuffer=buffer?.gpuBuffer??buffer?.gpu??buffer;
     const encoder=this.device.createCommandEncoder({label:'OpenMW native compatibility materialization'});
     const encodeColor=async(resource,base)=>{
@@ -388,8 +390,9 @@ export class NativeAttachmentStore {
     const encoder=this.device.createCommandEncoder({label:'OpenMW native render texture to material atlas'});
     const pass=encoder.beginComputePass();pass.setPipeline(pipeline);pass.setBindGroup(0,bind);
     pass.dispatchWorkgroups(Math.ceil(resource.width/8),Math.ceil(resource.height/8));pass.end();
-    this.device.queue.submit([encoder.finish()]);
+    this.device.queue.submit([encoder.finish()]);this.stats.atlasCopies++;
   }
+  snapshot(){return {...this.stats,postPipelines:this.postPipelines.size,atlasPipelines:this.atlasPipelines.size,compatPipelines:this.compatPipelines.size};}
   dispose(){
     this.postUniform.destroy();this.atlasUniform.destroy();this.compatUniform.destroy();
     this.postPipelines.clear();this.depthPipelines.clear();this.atlasPipelines.clear();this.compatPipelines.clear();
