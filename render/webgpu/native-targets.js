@@ -82,7 +82,7 @@ fn bilinear(tex:texture_2d<f32>,uv:vec2<f32>,size:vec2<u32>)->vec4<f32>{
              mix(textureLoad(tex,p01,0),textureLoad(tex,p11,0),f.x),f.y);
 }
 @fragment fn post(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{
-  var uv=(p.xy+vec2<f32>(0.5))/vec2<f32>(params.destinationSize);
+  var uv=p.xy/vec2<f32>(params.destinationSize);
   uv*=params.scale;
   var sampleUv=uv;
   var occlusion=1.0;
@@ -184,7 +184,7 @@ export class NativeAttachmentStore {
     }
     return plane;
   }
-  canCamera(pass){
+  canCamera(pass,compact=false){
     const samples=pass.sampleCount??1;
     if(samples!==1&&samples!==4)return false;
     // Separate stencil storage cannot be represented independently from WebGPU's
@@ -193,10 +193,16 @@ export class NativeAttachmentStore {
     const v=pass.viewport??[0,0,pass.width,pass.height];
     const full=v[0]===0&&v[1]===0&&v[2]===pass.width&&v[3]===pass.height;
     const mask=pass.clearMask??16640;
-    // Native load or native full clears are fast. Component/partial clears use
-    // the compatibility path until they get their own scissored clear pipeline.
-    if(mask!==0&&!full)return false;
-    if((mask&16384)&&((pass.clearColorMask??15)!==15))return false;
+    // Native load (mask=0) or a complete attachment clear is fast. Partial
+    // component/depth clears still use the compatibility path.
+    if(mask!==0){
+      if(!full)return false;
+      if(!compact&&!(mask&16384))return false;
+      if(!(mask&256))return false;
+      const stencilBits=pass.stencilBits??([0x88f0,0x8cad].includes(pass.depthFormat)?8:0);
+      if(stencilBits&&!(mask&1024))return false;
+      if(!compact&&(pass.clearColorMask??15)!==15)return false;
+    }
     return true;
   }
   cameraTarget(holder,pass,targets,compact=false){
