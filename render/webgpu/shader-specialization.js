@@ -5,7 +5,7 @@
 // Unknown expressions remain intact; no source text is executed as JavaScript.
 
 const UNKNOWN = Symbol('unknown WGSL expression');
-const roots = ['vertex_main', 'fragment_color', 'fragment_normal', 'fragment_depth', 'fragment_query'];
+const allRoots = ['vertex_main', 'fragment_color', 'fragment_normal', 'fragment_depth', 'fragment_query'];
 const binaryPrecedence = new Map([
   ['||', 1], ['&&', 2], ['|', 3], ['^', 4], ['&', 5], ['==', 6], ['!=', 6],
   ['<', 7], ['<=', 7], ['>', 7], ['>=', 7], ['<<', 8], ['>>', 8],
@@ -191,7 +191,7 @@ function foldFunction(source, parsed, fn, constants) {
   return source.slice(fn.start, fn.open + 1) + block(fn.open + 1, fn.close) + '}';
 }
 
-function pruneFunctions(source) {
+function pruneFunctions(source, roots = allRoots) {
   const parsed = structure(source), functions = new Map(parsed.functions.map(fn => [fn.name, fn]));
   const live = new Set(), pending = roots.filter(name => functions.has(name));
   while (pending.length) {
@@ -209,7 +209,7 @@ function pruneFunctions(source) {
   return result + source.slice(cursor);
 }
 
-export function specializeMaterialSource(source, values) {
+export function specializeMaterialSource(source, values, fragmentEntryPoint = null) {
   if (typeof source !== 'string' || !values || typeof values !== 'object') throw new TypeError('Expected WGSL and material constants');
   const constants = new Map();
   for (const [name, number] of Object.entries(values)) {
@@ -244,5 +244,10 @@ export function specializeMaterialSource(source, values) {
     result += source.slice(cursor, fn.start) + foldFunction(source, parsed, fn, local); cursor = fn.end;
   }
   result += source.slice(cursor);
-  return pruneFunctions(result);
+  const roots = fragmentEntryPoint
+    ? ['vertex_main', fragmentEntryPoint]
+    : allRoots;
+  if (fragmentEntryPoint && !allRoots.includes(fragmentEntryPoint))
+    throw new RangeError(`Unknown material fragment entry point ${fragmentEntryPoint}`);
+  return pruneFunctions(result, roots);
 }
