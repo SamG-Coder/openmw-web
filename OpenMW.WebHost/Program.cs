@@ -168,6 +168,13 @@ app.MapPost("/clientlog", async (HttpContext context) =>
     return Results.NoContent();
 });
 
+app.MapPost("/dev/clear-cache", () => Results.Json(new
+{
+    ok = true,
+    revision = localAssetRevision,
+    message = "Reload the game page. Local StreamFS URLs use this revision and no longer reuse older cached chunks."
+}));
+
 app.MapGet("/dev/assets", () =>
 {
     var root = gameData.Current;
