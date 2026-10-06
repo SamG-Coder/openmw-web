@@ -453,22 +453,23 @@ export class HardwareRasterizer {
       if(directTarget.config.key!==expected)throw Error('Native logical render target does not match camera configuration');
     }
     const bridge=directTarget?null:await this.bridge(config);
-    // Compile each unique native pipeline once. A real Morrowind scene contains
-    // many runs that share material state; compiling per-run created hundreds of
-    // duplicate awaiters and made the first 3D frame appear to hang.
-    const pipelineByKey=new Map();
-    for(const run of runs) {
-      let pending=pipelineByKey.get(run.state.key),created=false;
-      if(!pending) {
-        pending=this.pipeline(run.state);
-        pipelineByKey.set(run.state.key,pending);
-        created=true;
+    // Compile unique material pipelines concurrently. Serial async pipeline
+    // creation was a major first-world hitch because Morrowind can introduce
+    // dozens of shader/state variants in the first visible cell.
+    const uniqueStates=new Map();
+    for(const run of runs)if(!uniqueStates.has(run.state.key))uniqueStates.set(run.state.key,run.state);
+    const entries=[...uniqueStates.entries()],compiled=new Map();
+    let compileCursor=0;
+    const workers=Math.min(8,entries.length);
+    await Promise.all(Array.from({length:workers},async()=>{
+      for(;;){
+        const index=compileCursor++;
+        if(index>=entries.length)return;
+        const [key,state]=entries[index];
+        compiled.set(key,await this.pipeline(state));
       }
-      run.pipeline=await pending;
-      // Yield between genuinely new pipelines so the browser can paint the
-      // loading screen and report validation errors during first-world warmup.
-      if(created)await new Promise(resolve=>setTimeout(resolve,0));
-    }
+    }));
+    for(const run of runs)run.pipeline=compiled.get(run.state.key);
     if(this.disposed)throw Error('HardwareRasterizer was disposed during pipeline compilation');
     this.runtime.assertAlive?.();
     const target=directTarget??this.textures(config);
