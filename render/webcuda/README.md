@@ -1,5 +1,9 @@
 # OpenMW WebCuda renderer replacement
 
+On `codex/webgpu-renderer`, this directory is the previous implementation kept
+for comparison. The active browser renderer and editable WGSL sources are in
+[../webgpu](../webgpu/README.md). The notes below describe the CUDA source branch.
+
 The target is the full `.cu -> WebCuda -> WGSL -> WebGPU` rendering path.
 C++ retains gameplay, assets and scene submission; JavaScript owns GPU resources,
 dispatch and presentation. Rendering arithmetic belongs in `.cu`.

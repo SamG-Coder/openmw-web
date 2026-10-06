@@ -1,5 +1,12 @@
 # openmw-web
 
+## Native WebGPU renderer branch
+
+`codex/webgpu-renderer` starts from `codex/webcuda-renderer` at `95d9814` and
+replaces its active browser renderer with standalone WGSL and WebGPU render
+pipelines. Setup, architecture, validation commands and compatibility limits are
+in [render/webgpu/README.md](render/webgpu/README.md).
+
 **Play Morrowind in your browser.** The OpenMW engine, compiled to WebAssembly, by [Virtastic](https://virtastic.app).
 
 <p align="center">

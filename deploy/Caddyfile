@@ -42,7 +42,7 @@
 
 	# Caching: the engine binaries are content-built and effectively immutable; the HTML is the only
 	# thing that should re-fetch. (Cloudflare's Cache Rule mirrors this at the edge.)
-	@immutable path *.wasm *.data *.js *.br *.bsa *.esm *.tar
+	@immutable path *.wasm *.data *.js *.wgsl *.br *.bsa *.esm *.tar
 	header @immutable Cache-Control "public, max-age=31536000, immutable"
 	# "/" MUST be in this matcher. The rewrite above serves launcher.html for the bare root, but
 	# this matcher tests the REQUEST path, which is still "/" — so the root shipped with no

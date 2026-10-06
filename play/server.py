@@ -148,6 +148,24 @@ def _is_gateway_path(path):
 class H(http.server.SimpleHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
 
+    def translate_path(self, path):
+        resolved = super().translate_path(path)
+        # Unstamped source checkouts load /webgpu/ directly. Packaged and staged
+        # renderer files already live inside the served web root and win first.
+        if os.path.isfile(resolved):
+            return resolved
+        url_path = urllib.parse.unquote(urllib.parse.urlsplit(path).path)
+        if url_path.startswith('/webgpu/'):
+            renderer = os.path.realpath(os.path.join(os.path.dirname(__file__), '..', 'render', 'webgpu'))
+            candidate = os.path.realpath(os.path.join(renderer, url_path[len('/webgpu/'):]))
+            try:
+                inside = os.path.commonpath((renderer, candidate)) == renderer
+            except ValueError:
+                inside = False
+            if inside and candidate.endswith(('.js', '.wgsl')):
+                return candidate
+        return resolved
+
     def _relay_to_gateway(self):
         """Splice this connection to the MP gateway, verbatim in both directions."""
         host, _, port = MP_UPSTREAM.partition(':')

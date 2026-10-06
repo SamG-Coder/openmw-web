@@ -1811,10 +1811,10 @@ window.omw = (function(){
            mid:  { vd: '12288', minSize: '0.01',  shadowDist: '768',  rtt: '1024', actors: '7168', lru: 96 },
            high: { vd: '16384', minSize: '0.005', shadowDist: '1024', rtt: '1024', actors: '7168', lru: 192 }
          }[__tier];
-         // The CUDA rasterizer keeps both a depth target and its sampling atlas.
-         // An 8192 shadow map costs 256 MiB for EACH copy. Browser system-RAM
-         // hints do not describe the native session's shared GPU budget.
-         // Use 2048 (16 MiB per copy) by default; explicit shadowres still wins.
+         // The renderer keeps depth buffers, sampling atlases and native depth
+         // attachments. Each 32-bit plane of an 8192 shadow map costs 256 MiB.
+         // Browser system-RAM hints do not describe the shared GPU budget.
+         // Use 2048 (16 MiB per plane) by default; explicit shadowres still wins.
          var shadowResolution = (/[?&]shadowres=(\d+)/.exec(location.search)||[])[1] || '2048';
          // actors: the engine's "actors processing range" also decides which actors are DRAWN
          // (348). Player puppets are exempt in actors.cpp, but peer-moved NPCs are not, so
@@ -3910,17 +3910,18 @@ window.omw = (function(){
   // Load the version-stamped engine loader from the versioned dir; its wasm/data follow via
   // Module.locateFile. (streamfs.js above is unversioned + loaded first — StreamFS is used in preRun.)
   (async function(){
-    // This fork requires the CUDA-authored WebGPU renderer before the engine
-    // starts. A missing query parameter must not silently select OpenGL.
+    // Prepare native WebGPU rendering before starting the capture-only engine.
+    // The renderer and shaders share the engine's content-versioned directory.
     {
       try {
-        const backend = await import('./webcuda/game-host.js');
-        await backend.installWebCuda(Module, {onError: function(error) {
-          append('[WebCuda] ' + String(error && error.stack || error), 'err');
-          fatalOverlay('WebCuda renderer stopped', String(error && error.message || error));
+        const rendererDirectory = './' + __ENGINE_DIR + 'webgpu/';
+        const backend = await import(rendererDirectory + 'game-host.js');
+        await backend.installWebGPU(Module, {onError: function(error) {
+          append('[WebGPU] ' + String(error && error.stack || error), 'err');
+          fatalOverlay('WebGPU renderer stopped', String(error && error.message || error));
         }});
       } catch(error) {
-        fatalOverlay('WebCuda could not start', String(error && error.message || error));
+        fatalOverlay('WebGPU could not start', String(error && error.message || error));
         return;
       }
     }

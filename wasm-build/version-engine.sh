@@ -38,19 +38,32 @@ cd "$PLAY"
 #
 # openmw.js has the same problem for a different reason: it carries the preload manifest, whose
 # byte offsets shift whenever openmw.data changes.
-VER=$( { cat openmw.wasm openmw.js openmw.data streamfs.js 2>/dev/null || true; } | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-12 )
+# Native WebGPU modules and WGSL are part of the published engine bundle. A
+# shader-only edit must produce a new immutable URL, just like a WASM edit.
+VER=$( {
+    cat openmw.wasm openmw.js openmw.data streamfs.js frame-pump.js 2>/dev/null || true
+    if [ -d webgpu ]; then
+        find webgpu -type f \( -name '*.js' -o -name '*.wgsl' \) | LC_ALL=C sort |
+        while IFS= read -r shader; do
+            printf '%s\n' "$shader"
+            cat "$shader"
+        done
+    fi
+} | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-12 )
 [ -n "$VER" ] || { echo "version-engine: could not hash engine files" >&2; exit 1; }
 
 DIR="e/$VER"
 mkdir -p "$DIR"
-for f in openmw.js openmw.wasm openmw.data openmw.js.br openmw.wasm.br openmw.data.br streamfs.js; do
+for f in openmw.js openmw.wasm openmw.data openmw.js.br openmw.wasm.br openmw.data.br streamfs.js frame-pump.js; do
   [ -f "$f" ] && mv -f "$f" "$DIR/$f" || true
 done
+if [ -d webgpu ]; then mv webgpu "$DIR/webgpu"; fi
 
 # Stamp index.html in place (temp-file form is portable across GNU + BSD + busybox sed).
-# Two substitutions: the engine version placeholder, and streamfs.js's <script src> so it loads from
-# the same content-addressed dir. Unstamped (local dev) index.html keeps the plain relative path.
+# Stamp the engine placeholder and both startup script URLs so they load from
+# the same content-addressed dir. Unstamped source pages keep relative paths.
 sed -e "s/__ENGINE_VERSION__/$VER/g" -e "s|src=\"streamfs.js\"|src=\"$DIR/streamfs.js\"|g" \
+  -e "s|src=\"frame-pump.js\"|src=\"$DIR/frame-pump.js\"|g" \
   index.html > index.html.tmp && mv index.html.tmp index.html
 # PUBLISH THE HASH. The world server has to pin the SAME engine it is serving, and until now
 # the only record of which one that is was this log line and a directory name. A pin typed into
