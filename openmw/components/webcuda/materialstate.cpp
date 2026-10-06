@@ -31,6 +31,35 @@ namespace WebCuda
         const auto* clip=dynamic_cast<const osg::ClipControl*>(state.getAttribute(osg::StateAttribute::CLIPCONTROL));
         return clip && clip->getDepthMode()==osg::ClipControl::ZERO_TO_ONE;
     }
+    bool isBuiltinDefaultProgram(const osg::Program& program)
+    {
+        // StateSet::setGlobalDefaults installs these unnamed OSG shaders in
+        // GLES3/GL3 profiles. Match the complete stock sources, not a prefix or
+        // an empty name: edited/default-looking programs must still be rejected.
+        if(program.getNumShaders()!=2)return false;
+        constexpr std::string_view vertex="//gl3_VertexShader#ifdefGL_ESprecisionhighpfloat;#endif"
+            "invec4osg_Vertex;invec4osg_Color;invec4osg_MultiTexCoord0;"
+            "uniformmat4osg_ModelViewProjectionMatrix;outvec2texCoord;outvec4vertexColor;"
+            "voidmain(void){gl_Position=osg_ModelViewProjectionMatrix*osg_Vertex;"
+            "texCoord=osg_MultiTexCoord0.xy;vertexColor=osg_Color;}";
+        constexpr std::string_view fragment="//gl3_FragmentShader#ifdefGL_ESprecisionhighpfloat;#endif"
+            "uniformsampler2DbaseTexture;invec2texCoord;invec4vertexColor;outvec4color;"
+            "voidmain(void){color=vertexColor*texture(baseTexture,texCoord);}";
+        bool haveVertex=false,haveFragment=false;
+        for(unsigned int i=0;i<2;++i) {
+            const auto* shader=program.getShader(i);
+            const std::string_view source=shader->getShaderSource();
+            const auto line=source.find('\n');
+            if(line==std::string_view::npos)return false;
+            const auto version=source.substr(0,line);
+            if(!compactShaderEquals(version,"#version300es")&&!compactShaderEquals(version,"#version330core"))return false;
+            const auto body=source.substr(line+1);
+            if(shader->getType()==osg::Shader::VERTEX&&compactShaderEquals(body,vertex))haveVertex=true;
+            else if(shader->getType()==osg::Shader::FRAGMENT&&compactShaderEquals(body,fragment))haveFragment=true;
+            else return false;
+        }
+        return haveVertex&&haveFragment;
+    }
     bool isBuiltinParticleProgram(const osg::Program& program)
     {
         const auto compact=[](const std::string& text) {

@@ -66,21 +66,22 @@ __global__ void assemble_attributes(const float* source,const unsigned int* tria
     const float* weights,const unsigned int* valid,float* output,unsigned int slot_count,unsigned int boundary_offset,unsigned int point_fade_offset,unsigned int source_point_fade_offset) {
     unsigned int slot=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;
     if(slot>=slot_count)return;
-    unsigned int original=slot/7;
+    unsigned int sourceSlot=(valid[slot]&0x80000000u)!=0u?valid[slot]&0x7fffffffu:slot;
+    unsigned int original=sourceSlot/7;
     // Keep discrete perimeter flags separate from interpolated vertex attributes.
     // The rasterizer shares this buffer, avoiding a ninth storage binding.
     for(unsigned int vertex=0;vertex<3;vertex++)
-        output[boundary_offset+slot*3+vertex]=valid[slot]!=0?weights[slot*12+vertex*4+3]:0.0f;
+        output[boundary_offset+slot*3+vertex]=valid[slot]!=0?weights[sourceSlot*12+vertex*4+3]:0.0f;
     for(unsigned int vertex=0;vertex<3;vertex++)for(unsigned int channel=0;channel<12;channel++) {
         float fade=0.0f;
         if(valid[slot]!=0u)for(unsigned int corner=0;corner<3;corner++)
-            fade+=weights[slot*12+vertex*4+corner]*source[source_point_fade_offset+triangles[original*4+corner]*12+channel];
+            fade+=weights[sourceSlot*12+vertex*4+corner]*source[source_point_fade_offset+triangles[original*4+corner]*12+channel];
         output[point_fade_offset+(slot*3+vertex)*12+channel]=fade;
     }
     for(unsigned int vertex=0;vertex<3;vertex++)for(unsigned int channel=0;channel<34;channel++) {
         float value=0.0f;
         if(valid[slot]!=0)for(unsigned int corner=0;corner<3;corner++)
-            value+=weights[slot*12+vertex*4+corner]*source[triangles[original*4+corner]*34+channel];
+            value+=weights[sourceSlot*12+vertex*4+corner]*source[triangles[original*4+corner]*34+channel];
         output[(slot*3+vertex)*34+channel]=value;
     }
 }

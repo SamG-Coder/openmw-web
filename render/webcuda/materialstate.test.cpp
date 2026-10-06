@@ -11,12 +11,35 @@
 #include <osg/Image>
 #include <osg/Texture2D>
 #include <osg/Uniform>
+#include <osg/DisplaySettings>
+#include <osg/Program>
+#include <osg/Shader>
 #include <components/webcuda/materialstate.hpp>
 #include <components/webcuda/shaderanalysis.hpp>
 #include <string>
 #include <random>
 #include <components/sceneutil/depth.hpp>
 int main() {
+    // Exercise the real dependency producer, including unnamed shaders. An
+    // edited stock source and extra stages must not inherit the stock route.
+    const auto previousHint=osg::DisplaySettings::instance()->getShaderHint();
+    osg::DisplaySettings::instance()->setShaderHint(osg::DisplaySettings::SHADER_GLES3);
+    osg::ref_ptr<osg::StateSet> defaults=new osg::StateSet;defaults->setGlobalDefaults();
+    osg::DisplaySettings::instance()->setShaderHint(previousHint);
+    auto* defaultProgram=dynamic_cast<osg::Program*>(defaults->getAttribute(osg::StateAttribute::PROGRAM));
+    assert(defaultProgram&&WebCuda::isBuiltinDefaultProgram(*defaultProgram));
+    auto* defaultFragment=defaultProgram->getShader(1);
+    const auto sourceBeforeEdit=defaultFragment->getShaderSource();
+    std::string sourceAfterEdit=sourceBeforeEdit;
+    const auto sample=sourceAfterEdit.find("texture(baseTexture, texCoord)");assert(sample!=std::string::npos);
+    sourceAfterEdit.replace(sample,7,"ignored");
+    defaultFragment->setShaderSource(sourceAfterEdit);
+    assert(!WebCuda::isBuiltinDefaultProgram(*defaultProgram));
+    defaultFragment->setShaderSource(sourceBeforeEdit);
+    assert(WebCuda::isBuiltinDefaultProgram(*defaultProgram));
+    osg::ref_ptr<osg::Shader> extra=new osg::Shader(osg::Shader::VERTEX,"void main() {}");
+    defaultProgram->addShader(extra);assert(!WebCuda::isBuiltinDefaultProgram(*defaultProgram));
+    defaultProgram->removeShader(extra);assert(WebCuda::isBuiltinDefaultProgram(*defaultProgram));
     // Differentially preserve the old compact-source recognition semantics,
     // including whitespace inside tokens, overlapping starts and source edits.
     const auto compact=[](const std::string& source) {

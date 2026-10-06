@@ -23,6 +23,13 @@ fn main(
   if ((v_slot >= cw_params.p_slot_count)) {
     return;
   }
+  var cw_tmp_0: u32;
+  if (((b_valid[v_slot] & 2147483648u) != 0u)) {
+    cw_tmp_0 = (b_valid[v_slot] & 2147483647u);
+  } else {
+    cw_tmp_0 = v_slot;
+  }
+  var v_sourceSlot: u32 = cw_tmp_0;
   {
     var v_vertex: u32 = u32(0i);
     loop {
@@ -37,7 +44,7 @@ fn main(
               var v_corner: u32 = u32(0i);
               loop {
                 if (!(v_corner < u32(3i))) { break; }
-                v_value = (v_value + (b_weights[(((v_slot * 12u) + (v_vertex * 4u)) + v_corner)] * b_source[(((((v_slot / 7u) * 3u) + v_corner) * 4u) + v_channel)]));
+                v_value = (v_value + (b_weights[(((v_sourceSlot * 12u) + (v_vertex * 4u)) + v_corner)] * b_source[(((((v_sourceSlot / 7u) * 3u) + v_corner) * 4u) + v_channel)]));
                 continuing {
                   v_corner += u32(1);
                 }

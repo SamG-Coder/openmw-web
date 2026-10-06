@@ -1,0 +1,33 @@
+{
+  "name": "prefix_clip_blocks",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Stable compaction of the seven reserved clipping slots per source triangle.\n// Keep positions/weights in their original slots; assembly follows this map\n// before allocating the much larger interpolated attribute streams. The high\n// bit distinguishes a mapped source slot (including slot zero) from the legacy\n// 0/1 validity array used by small passes without a sizing readback.\n__global__ void prefix_clip_blocks(const unsigned int* valid,unsigned int* offsets,\n    unsigned int* blocks,unsigned int slot_count) {\n    unsigned int block=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    unsigned int first=block*256u;\n    if(first>=slot_count)return;\n    unsigned int total=0u;\n    for(unsigned int i=first;i<slot_count&&i<first+256u;i++) {\n        offsets[i]=total;\n        if(valid[i]!=0u)total++;\n    }\n    blocks[block]=total;\n}\n\n__global__ void prefix_clip_totals(unsigned int* blocks,unsigned int* summary,\n    unsigned int block_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i!=0u)return;\n    unsigned int total=0u;\n    for(unsigned int block=0u;block<block_count;block++) {\n        unsigned int count=blocks[block];blocks[block]=total;total+=count;\n    }\n    summary[0]=total;\n}\n\n__global__ void scatter_clip_slots(const unsigned int* valid,const unsigned int* offsets,\n    const unsigned int* blocks,unsigned int* compact_valid,unsigned int slot_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=slot_count||valid[i]==0u)return;\n    compact_valid[blocks[i/256u]+offsets[i]]=0x80000000u|i;\n}\n",
+    "entry": "prefix_clip_blocks",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "valid",
+        "type": "buffer"
+      },
+      {
+        "name": "offsets",
+        "type": "buffer"
+      },
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "slot_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

@@ -128,9 +128,28 @@ namespace WebCuda
         CaptureScope captureScope(CapturePhase::MaterialEncode);
         if(mAttachmentsResolved)throw std::logic_error("Cannot extend a captured material snapshot");
         auto state=resolveState(context);
+        return encodeResolved(context,*state,guiTexture,gui);
+    }
+    std::uint32_t MaterialTable::encodeResolved(const DrawContext& context,const osg::StateSet& resolvedState,const osg::Texture2D* guiTexture,bool gui)
+    {
+        // Texture layers and shadow samplers share this draw's merged state.
+        // Resolve again only for the next public encode call, so mutations and
+        // OVERRIDE/PROTECTED inheritance are still observed on every draw.
+        const auto* state=&resolvedState;
         // MyGUI has an explicit unlit texture/color contract. World GLSL programs
         // require a corresponding .cu material implementation, never a fallback.
         if(!gui)if(const auto* program=dynamic_cast<const osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM))) {
+            if(isBuiltinDefaultProgram(*program)) {
+                int unit=0;
+                if(const auto* uniform=state->getUniform("baseTexture"))
+                    if(!uniform->get(unit))throw std::runtime_error("Invalid default shader texture unit");
+                if(unit<0)throw std::runtime_error("Invalid default shader texture unit");
+                const auto* texture=dynamic_cast<const osg::Texture2D*>(state->getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
+                if(!texture)throw std::runtime_error("Default shader requires a 2D texture");
+                // Its exact texture * vertex-color contract is the existing
+                // CUDA unlit material, with ordinary captured raster state.
+                return encodeResolved(context,*state,texture,true);
+            }
             if(isBuiltinParticleProgram(*program)) {
                 if(!context.particleDraw)throw std::runtime_error("Particle program requires particle vertex inputs");
                 int unit=0;
@@ -139,7 +158,7 @@ namespace WebCuda
                 if(unit<0)throw std::runtime_error("Invalid particle texture unit");
                 const auto* texture=dynamic_cast<const osg::Texture2D*>(state->getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
                 if(!texture)throw std::runtime_error("Built-in particle shader requires a 2D texture");
-                return encode(context,texture,true);
+                return encodeResolved(context,*state,texture,true);
             }
             bool debugVertex=false,debugFragment=false,outlineVertex=false,outlineFragment=false;
             bool skyVertex=false,skyFragment=false;
@@ -180,7 +199,7 @@ namespace WebCuda
                 if(shader->getType()==osg::Shader::FRAGMENT&&ends("depthclipped.frag"))depthFragment=shader;
             }
             if(program->getNumShaders()==2&&((debugVertex&&debugFragment)||(outlineVertex&&outlineFragment)))
-                return encode(context,nullptr,true); // GPU vertex kernel supplies the untextured fragment color.
+                return encodeResolved(context,*state,nullptr,true); // GPU vertex kernel supplies the untextured fragment color.
             if(skyVertex&&skyFragment&&program->getNumShaders()==2)return encodeSky(context,*state);
             if(groundcoverVertex&&groundcoverFragment&&program->getNumShaders()==2)return encodeObjects(context,*state,*groundcoverFragment,false,false,false,true);
             if(unlitVertex&&unlitFragment&&program->getNumShaders()==2)return encodeObjects(context,*state,*unlitFragment,false,false,false,false,true);
@@ -191,7 +210,13 @@ namespace WebCuda
             if(shadowVertex&&shadowFragment&&program->getNumShaders()==2)return encodeShadow(context,*state,*shadowFragment);
             if(waterVertex&&waterFragment&&program->getNumShaders()==2)return encodeObjects(context,*state,*waterFragment,false,false,true);
             if(depthVertex&&depthFragment&&program->getNumShaders()==2)return encodeShadow(context,*state,*depthFragment,true);
-            throw std::runtime_error("WebCuda world shader material translation is not connected yet");
+            std::string description="WebCuda has no material route for program '"+program->getName()+"':";
+            for(unsigned int i=0;i<program->getNumShaders();++i) {
+                const auto* shader=program->getShader(i);
+                description+=" ["+std::to_string(shader->getType())+": "+shader->getName()+"]";
+                if(shader->getName().empty())description+=" {"+shader->getShaderSource().substr(0,512)+"}";
+            }
+            throw std::runtime_error(description);
         }
         auto record=encodeRasterState(*state,mWidth,mHeight);
         if(mFloatingColor)record[3]&=~256u;
@@ -628,7 +653,7 @@ namespace WebCuda
             if(!texture)continue;
             auto stage=record;
             if(static_cast<unsigned int>(unit)!=firstUnit) {
-                const auto id=encode(context,texture,true);
+                const auto id=encodeResolved(context,*state,texture,true);
                 std::copy_n(mMaterials.begin()+id*12,12,stage.begin());
             }
             std::array<std::uint32_t,44> environment{stage[0]};
@@ -955,7 +980,7 @@ namespace WebCuda
             texture=dynamic_cast<const osg::Texture2D*>(state.getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
             if(!texture)throw std::runtime_error("Object diffuse texture is absent");
         }
-        const auto id=encode(context,texture,true);
+        const auto id=encodeResolved(context,state,texture,true);
         std::array<std::uint32_t,12> record;std::copy_n(mMaterials.begin()+id*12,12,record.begin());
         const auto count=unlit||clustered||composite||enabled("simpleLighting")||(enabled("particle")&&!enabled("particlePointLighting"))?0:integer("PointLightCount",0);
         if(count<0||count>1024)throw std::runtime_error("Invalid object light count");
@@ -1060,7 +1085,7 @@ namespace WebCuda
             if(unit<0)throw std::runtime_error("Invalid object layer texture unit");
             auto* layerTexture=dynamic_cast<const osg::Texture2D*>(state.getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
             if(!layerTexture)throw std::runtime_error("Missing object layer texture");
-            const auto layerId=encode(context,layerTexture,true),offset=layer==10?328:80+layer*24;
+            const auto layerId=encodeResolved(context,state,layerTexture,true),offset=layer==10?328:80+layer*24;
             data[offset]=mMaterials[layerId*12];data[offset+1]=mMaterials[layerId*12+1];data[offset+2]=mMaterials[layerId*12+2];data[offset+3]=mMaterials[layerId*12+11];
             const std::string uvKey=std::string(layers[layer])+"UV";
             const auto uv=terrain?0:(defines.count(uvKey)?std::stoul(defines[uvKey]):0);
@@ -1085,7 +1110,7 @@ namespace WebCuda
                 if(unit<0)throw std::runtime_error("Missing shadow sampler binding");
                 const auto* shadowTexture=dynamic_cast<const osg::Texture2D*>(state.getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
                 if(!shadowTexture||!shadowTexture->getShadowComparison())throw std::runtime_error("Shadow texture requires comparison sampling");
-                const auto shadowId=encode(context,shadowTexture,true);
+                const auto shadowId=encodeResolved(context,state,shadowTexture,true);
                 const auto offset=static_cast<unsigned int>(data.size());data.resize(data.size()+40);
                 data[offset]=mMaterials[shadowId*12];data[offset+1]=mMaterials[shadowId*12+1];data[offset+2]=mMaterials[shadowId*12+2];data[offset+3]=mMaterials[shadowId*12+11];
                 if(!(data[offset+3]&8192))throw std::runtime_error("Shadow sampler has no registered floating depth target");
@@ -1123,7 +1148,7 @@ namespace WebCuda
                 const auto unit=integer(name,-1);if(unit<0)throw std::runtime_error(std::string("Missing screen effect sampler: ")+name);
                 const auto* texture=dynamic_cast<const osg::Texture2D*>(state.getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
                 if(!texture)throw std::runtime_error(std::string("Missing screen effect texture: ")+name);
-                const auto material=encode(context,texture,true);
+                const auto material=encodeResolved(context,state,texture,true);
                 data[destination]=mMaterials[material*12];data[destination+1]=mMaterials[material*12+1];data[destination+2]=mMaterials[material*12+2];data[destination+3]=mMaterials[material*12+11];
             };
             if(soft) {
@@ -1156,7 +1181,7 @@ namespace WebCuda
                 const auto unit=integer(name,-1);if(unit<0)throw std::runtime_error(std::string("Missing water sampler: ")+name);
                 const auto* texture=dynamic_cast<const osg::Texture2D*>(state.getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
                 if(!texture)throw std::runtime_error(std::string("Missing water texture: ")+name);
-                const auto material=encode(context,texture,true);
+                const auto material=encodeResolved(context,state,texture,true);
                 data[destination]=mMaterials[material*12];data[destination+1]=mMaterials[material*12+1];data[destination+2]=mMaterials[material*12+2];data[destination+3]=mMaterials[material*12+11];
             };
             textureRecord("normalMap",offset);textureRecord("reflectionMap",offset+4);textureRecord("rippleMap",offset+16);
@@ -1201,7 +1226,7 @@ namespace WebCuda
             texture=dynamic_cast<const osg::Texture2D*>(state.getTextureAttribute(unit,osg::StateAttribute::TEXTURE));
             if(!texture)throw std::runtime_error("Missing shadow alpha texture");
         }
-        const auto id=encode(context,texture,true);std::array<std::uint32_t,12> record;
+        const auto id=encodeResolved(context,state,texture,true);std::array<std::uint32_t,12> record;
         std::copy_n(mMaterials.begin()+id*12,12,record.begin());
         std::array<std::uint32_t,10> data{};
         data[0]=record[0];data[1]=record[1];data[2]=record[2];data[3]=record[11];
@@ -1237,13 +1262,13 @@ namespace WebCuda
             if(!result)throw std::runtime_error(std::string("Missing sky texture: ")+sampler);return result;
         };
         const bool textured=pass>=1&&pass<=5;
-        const auto diffuseId=encode(context,textured?texture("diffuseMap"):nullptr,true);
+        const auto diffuseId=encodeResolved(context,state,textured?texture("diffuseMap"):nullptr,true);
         std::array<std::uint32_t,12> record;
         std::copy_n(mMaterials.begin()+diffuseId*12,12,record.begin());
         std::array<std::uint32_t,30> shader{};
         shader[0]=record[0];shader[1]=record[1];shader[2]=record[2];shader[3]=record[11];shader[8]=pass;
         if(pass==3) {
-            const auto maskId=encode(context,texture("maskMap"),true);
+            const auto maskId=encodeResolved(context,state,texture("maskMap"),true);
             shader[4]=mMaterials[maskId*12];shader[5]=mMaterials[maskId*12+1];shader[6]=mMaterials[maskId*12+2];shader[7]=mMaterials[maskId*12+11];
         }
         float opacity=1;if(const auto* u=state.getUniform("opacity"))if(!u->get(opacity))throw std::runtime_error("Invalid sky opacity");

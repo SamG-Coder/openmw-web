@@ -6,10 +6,10 @@ import {MaterialPipeline} from './pipeline.js';
 import {FrameReadbacks} from './frame-readbacks.js';
 
 function fixture() {
-  const commands=[],reads=[],allocations=[];
+  const commands=[],reads=[],allocations=[],invocations=[];
   const runtime={uniformAlignment:256,uniformCapacity:65536,
     device:{limits:{maxTextureDimension2D:8192,maxBufferSize:64*1024*1024,maxStorageBufferBindingSize:64*1024*1024,maxComputeWorkgroupsPerDimension:65535}},
-    status:0,references:1,gate:null,
+    status:0,references:1,clipCount:2,gate:null,
     createBuffer(byteLength,{label}={}){const resource={byteLength,label,data:new Uint8Array(byteLength)};allocations.push(resource);return resource;},
     write(resource,data,offset=0){resource.data.set(new Uint8Array(data.buffer,data.byteOffset,data.byteLength),offset);},
     destroyBuffer(){},async idle(){},
@@ -20,6 +20,8 @@ function fixture() {
     batch(){return {
       dispatch(invocation){
         commands.push(invocation.name);
+        invocations.push(invocation);
+        if(invocation.name==='prefix_clip_totals')new Uint32Array(invocation.resources.summary.data.buffer)[0]=runtime.clipCount;
         if(invocation.name==='bin_triangle_bounds'&&!invocation.scalars.scatter)runtime.references=invocation.scalars.triangle_count?1:0;
         if(invocation.name==='prefix_tile_block_totals')new Uint32Array(invocation.resources.summary.data.buffer).set([invocation.scalars.tile_count+1+runtime.references,runtime.status]);
         return this;
@@ -32,7 +34,7 @@ function fixture() {
   const readbacks=new FrameReadbacks(runtime,bytes=>pipeline.buffer('frameReadback',bytes));
   const scene=(triangles=1)=>({vertices:new Float32Array(30),matrices:new Float32Array(32),matrixIds:new Uint32Array(3),
     triangles:Uint32Array.from({length:triangles*4},(_,i)=>[0,1,2,0][i%4]),materials:new Uint32Array(12),texels:new Uint32Array(1),attributes:new Float32Array(102)});
-  return {runtime,pipeline,readbacks,scene,commands,reads,allocations,
+  return {runtime,pipeline,readbacks,scene,commands,reads,allocations,invocations,
     pass:{deferCompletion:true,readback:(...args)=>readbacks.read(...args)}};
 }
 
@@ -47,6 +49,42 @@ test('bounded passes queue through reused scratch and defer status mapping until
   assert.equal(f.reads.length,1);assert.equal(results[0].diagnostic.tileReferences,1);
   assert.match(results[1].error.message,/singular/);
   assert.equal(results[2].error,undefined);assert.equal(results[3].error,undefined);
+});
+
+test('large cameras size assembly from live GPU clipping slots before allocating expanded attributes',async()=>{
+  const f=fixture();let release;
+  f.runtime.clipCount=11;
+  f.runtime.gate=new Promise(resolve=>{release=resolve;});
+  const pending=f.pipeline.render(f.scene(4096),32,32,null,f.pass);
+  for(let i=0;i<10&&!f.reads.length;i++)await new Promise(setImmediate);
+  assert.deepEqual(f.reads,['OpenMW clipSummary']);
+  assert(!f.commands.includes('assemble_material'));
+  assert(!f.allocations.some(resource=>resource.label==='OpenMW clippedAttributes'));
+  release();const rendered=await pending;
+  const assembled=f.invocations.find(invocation=>invocation.name==='assemble_material');
+  assert.equal(assembled.scalars.slot_count,11);
+  assert.equal(assembled.resources.valid.label,'OpenMW compactValid');
+  assert(f.allocations.find(resource=>resource.label==='OpenMW clippedAttributes').byteLength<10000);
+  assert.equal(f.reads.length,1,'The small compacted result also permits deferred tile sizing');
+  await f.readbacks.flush();assert.equal((await rendered.queryCompletion).error,undefined);
+});
+
+test('fully clipped large cameras preserve clears without dispatching the rasterizer',async()=>{
+  const f=fixture();f.runtime.clipCount=0;
+  const rendered=await f.pipeline.render(f.scene(4096),32,32,null,{...f.pass,clearMask:17664});
+  assert(f.commands.includes('clear_attachment'));assert(!f.commands.includes('raster_material'));
+  await f.readbacks.flush();assert.equal((await rendered.queryCompletion).error,undefined);
+});
+
+test('invalid clipping counts and failed GPU readbacks stop before allocation and assembly',async()=>{
+  for(const failure of ['count','read']) {
+    const f=fixture();f.runtime.clipCount=4096*7+1;
+    if(failure==='read')f.runtime.read=async()=>{throw Error('clip read failed');};
+    await assert.rejects(f.pipeline.render(f.scene(4096),32,32,null,f.pass),failure==='count'?/compact clipping allocation/:/clip read failed/);
+    assert(!f.commands.includes('assemble_material'));assert(!f.commands.includes('raster_material'));
+    assert(!f.allocations.some(resource=>resource.label==='OpenMW clippedAttributes'));
+    assert.equal(f.pipeline.busy,false);
+  }
 });
 
 test('an unproven large pass still waits for exact sizing before scatter or raster',async()=>{

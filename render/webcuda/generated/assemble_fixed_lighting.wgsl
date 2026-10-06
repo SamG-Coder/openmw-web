@@ -26,7 +26,14 @@ fn main(
   if ((v_slot >= cw_params.p_slot_count)) {
     return;
   }
-  var v_original: u32 = (v_slot / u32(7i));
+  var cw_tmp_0: u32;
+  if (((b_valid[v_slot] & 2147483648u) != 0u)) {
+    cw_tmp_0 = (b_valid[v_slot] & 2147483647u);
+  } else {
+    cw_tmp_0 = v_slot;
+  }
+  var v_sourceSlot: u32 = cw_tmp_0;
+  var v_original: u32 = (v_sourceSlot / u32(7i));
   var v_provoking: u32 = b_flat_colors[v_original];
   var v_frontOnly: u32 = select(u32(0), u32(1), (b_source[((b_triangles[(v_original * u32(4i))] * u32(16i)) + u32(15i))] > 1.5f));
   {
@@ -40,19 +47,19 @@ fn main(
           var v_value: f32 = 0.0f;
           if ((b_valid[v_slot] != u32(0i))) {
             if ((v_provoking != 4294967295u)) {
-              var cw_tmp_0: u32;
+              var cw_tmp_1: u32;
               if (((v_frontOnly != u32(0i)) && (v_channel >= u32(8i)))) {
-                cw_tmp_0 = (v_channel - u32(8i));
+                cw_tmp_1 = (v_channel - u32(8i));
               } else {
-                cw_tmp_0 = v_channel;
+                cw_tmp_1 = v_channel;
               }
-              v_value = b_source[((v_provoking * u32(16i)) + cw_tmp_0)];
+              v_value = b_source[((v_provoking * u32(16i)) + cw_tmp_1)];
             } else {
               {
                 var v_corner: u32 = u32(0i);
                 loop {
                   if (!(v_corner < u32(3i))) { break; }
-                  v_value = (v_value + (b_weights[(((v_slot * u32(12i)) + (v_vertex * u32(4i))) + v_corner)] * b_source[((b_triangles[((v_original * u32(4i)) + v_corner)] * u32(16i)) + v_channel)]));
+                  v_value = (v_value + (b_weights[(((v_sourceSlot * u32(12i)) + (v_vertex * u32(4i))) + v_corner)] * b_source[((b_triangles[((v_original * u32(4i)) + v_corner)] * u32(16i)) + v_channel)]));
                   continuing {
                     v_corner += u32(1);
                   }

@@ -340,6 +340,21 @@
     "artifact": "raster_reference.native.json"
   },
   {
+    "entry": "prefix_clip_blocks",
+    "runtime": true,
+    "artifact": "prefix_clip_blocks.native.json"
+  },
+  {
+    "entry": "prefix_clip_totals",
+    "runtime": true,
+    "artifact": "prefix_clip_totals.native.json"
+  },
+  {
+    "entry": "scatter_clip_slots",
+    "runtime": true,
+    "artifact": "scatter_clip_slots.native.json"
+  },
+  {
     "entry": "clip_triangles",
     "runtime": true,
     "artifact": "clip_triangles.native.json"

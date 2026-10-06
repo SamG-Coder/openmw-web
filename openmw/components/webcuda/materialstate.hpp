@@ -13,6 +13,7 @@ namespace WebCuda
     // units, uniforms, defines and modes. Attribute objects remain shared: the
     // material encoder must consume them synchronously before scene updates.
     bool isBuiltinParticleProgram(const osg::Program&);
+    bool isBuiltinDefaultProgram(const osg::Program&);
     bool usesZeroToOneDepth(const osg::StateSet&);
     osg::ref_ptr<osg::StateSet> resolveState(const DrawContext&);
     // Encode fixed raster state; texture fields 0..2 are filled by the resource

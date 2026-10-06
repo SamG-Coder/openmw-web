@@ -318,7 +318,10 @@ namespace WebCuda
             }
             const auto* texmat=dynamic_cast<const osg::TexMat*>(state->getTextureAttribute(0,osg::StateAttribute::TEXMAT));
             bool useTextureMatrix=true;
-            if(const auto* program=dynamic_cast<const osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM)))
+            if(const auto* program=dynamic_cast<const osg::Program*>(state->getAttribute(osg::StateAttribute::PROGRAM))) {
+                // OSG's default shader passes UV.xy directly. An inherited
+                // fixed-function TexMat must not transform its coordinates.
+                useTextureMatrix=!isBuiltinDefaultProgram(*program);
                 for(unsigned int i=0;i<program->getNumShaders();++i) {
                     const auto& name=program->getShader(i)->getName();
                     if(name.size()>=8&&name.compare(name.size()-8,8,"sky.vert")==0) {
@@ -326,6 +329,7 @@ namespace WebCuda
                         useTextureMatrix=pass==2;
                     }
                 }
+            }
             const osg::Matrix textureMatrix=texmat&&useTextureMatrix?texmat->getMatrix():osg::Matrix::identity();
             for(int i=0;i<16;++i)draw.uvMatrices.push_back(static_cast<float>(textureMatrix.ptr()[i]));
         }

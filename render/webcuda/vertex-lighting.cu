@@ -123,11 +123,12 @@ __global__ void assemble_vertex_lighting(const float* source,const float* weight
     const unsigned int* valid,float* attributes,unsigned int slot_count,unsigned int lighting_offset) {
     unsigned int slot=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;
     if(slot>=slot_count)return;
-    unsigned int original=slot/7;
+    unsigned int sourceSlot=(valid[slot]&0x80000000u)!=0u?valid[slot]&0x7fffffffu:slot;
+    unsigned int original=sourceSlot/7;
     for(unsigned int vertex=0;vertex<3;vertex++)for(unsigned int channel=0;channel<12;channel++) {
         float value=0.0f;
         if(valid[slot]!=0)for(unsigned int corner=0;corner<3;corner++)
-            value+=weights[slot*12+vertex*4+corner]*source[(original*3+corner)*12+channel];
+            value+=weights[sourceSlot*12+vertex*4+corner]*source[(original*3+corner)*12+channel];
         attributes[lighting_offset+(slot*3+vertex)*12+channel]=value;
     }
 }

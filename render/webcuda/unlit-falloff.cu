@@ -67,9 +67,10 @@ __global__ void assemble_unlit_falloff(const float* source,const float* weights,
     unsigned int slot_count,unsigned int falloff_offset) {
     unsigned int slot=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;
     if(slot>=slot_count)return;
+    unsigned int sourceSlot=(valid[slot]&0x80000000u)!=0u?valid[slot]&0x7fffffffu:slot;
     for(unsigned int vertex=0;vertex<3;vertex++)for(unsigned int channel=0;channel<4;channel++) {
         float value=0.0f;
-        if(valid[slot]!=0u)for(unsigned int corner=0;corner<3;corner++)value+=weights[slot*12u+vertex*4u+corner]*source[((slot/7u)*3u+corner)*4u+channel];
+        if(valid[slot]!=0u)for(unsigned int corner=0;corner<3;corner++)value+=weights[sourceSlot*12u+vertex*4u+corner]*source[((sourceSlot/7u)*3u+corner)*4u+channel];
         attributes[falloff_offset+(slot*3u+vertex)*4u+channel]=value;
     }
 }

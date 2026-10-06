@@ -5,6 +5,7 @@
 #include <osg/BlendFunc>
 #include <osg/Program>
 #include <osg/Shader>
+#include <osg/DisplaySettings>
 #include <components/webcuda/materialtable.hpp>
 int main() {
     osg::ref_ptr<osg::Image> image=new osg::Image;
@@ -55,6 +56,23 @@ int main() {
     auto solidGui=table.encode(context,nullptr,true);
     assert((table.materials()[solidGui*12+3]&1)==0);
     assert(table.encode(context,texture,true)==changed);
+    // The stock default program follows its sampler uniform even when the
+    // fixed-function texture mode is OFF. Each draw sees uniform mutations.
+    const auto previousHint=osg::DisplaySettings::instance()->getShaderHint();
+    osg::DisplaySettings::instance()->setShaderHint(osg::DisplaySettings::SHADER_GLES3);
+    osg::ref_ptr<osg::StateSet> defaultState=new osg::StateSet;defaultState->setGlobalDefaults();
+    osg::DisplaySettings::instance()->setShaderHint(previousHint);
+    defaultState->setTextureAttribute(3,texture);defaultState->setTextureMode(3,GL_TEXTURE_2D,osg::StateAttribute::OFF);
+    auto* defaultSampler=defaultState->getUniform("baseTexture");defaultSampler->set(3);
+    WebCuda::DrawContext defaultContext;defaultContext.states={defaultState};
+    WebCuda::MaterialTable defaultTable(16,16);
+    const auto texturedDefault=defaultTable.encode(defaultContext);
+    assert(texturedDefault==defaultTable.encode(defaultContext,texture,true));
+    defaultSampler->set(0);
+    assert(defaultTable.encode(defaultContext)!=texturedDefault);
+    defaultSampler->set(-1);
+    bool badSampler=false;try{defaultTable.encode(defaultContext);}catch(const std::runtime_error&){badSampler=true;}
+    assert(badSampler);
     // An empty Program restores compatibility state; a real unknown shader
     // still must not silently route to an unrelated renderer.
     const auto compatible=table.encode(context);

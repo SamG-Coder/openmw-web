@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: verify the staged engine through broader game scenes and its zero-WebGL-draw report. The current WebGPU browser harness compiles all 84 runtime kernels and passes 34 GPU output checks, including 16 through the production pipeline. Empty-camera and zero-clear dispatches are removed. Full-game performance and 60-180 Hz pacing remain unverified.",
+  "currentPriority": "P0: reduce repeated scene capture and geometry uploads. CUDA live-slot compaction fixes the reproduced exterior buffer-limit failure: 423 saved WebGPU presentations without renderer errors, capture aborts or legacy draws, and 1.93 GB retained runtime capacity versus 3.85 GB before. The latest debug sample still uploads 83.7 MB/frame and has a 278.355 ms submission interval. Full gameplay, current native-browser exterior and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Use the staged engine f7c1bdb71a48 and its existing runtime report for integrated acceptance. Reuse the source audit and production-pipeline fixtures; do not treat kernel compilation as game coverage. Continue large-pass sizing/native ownership analysis when runtime evidence identifies those costs. Full gameplay, lifecycle and 60-180 Hz acceptance remain incomplete.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Reduce repeated geometry capture/uploads with persistent immutable geometry versions and explicit lifetime/invalidation, preserving dynamic vertex inputs. Validate native shared-budget compatibility and representative scene/lifecycle behavior. Stable clipping compaction is implemented and passes exterior WebGPU regression; it retains primitive order, interpolation and native resource ownership. Shader variant parsing is a secondary CPU allocation opportunity.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1036,5 +1036,136 @@
       "D:/OpenMW-local/webcuda-production-pipeline-validation.json"
     ],
     "limits": "Controlled WebGPU fixtures; new native paged pipeline fixtures are wired but not executed in the native browser. Compilation time is startup work, not frame time. Broad gameplay, lifecycle and refresh-rate acceptance remain incomplete."
+  },
+  "shipRuntimeCheck": {
+    "engine": "f7c1bdb71a48",
+    "backend": "webgpu",
+    "cell": "Imperial Prison Ship",
+    "dimensions": [1280, 720],
+    "savedReportPresentations": 197,
+    "laterObservedPresentations": 979,
+    "legacyDrawAttempts": 0,
+    "rendererOrPassErrors": 0,
+    "retainedPassesAfterCompletedFrame": 0,
+    "medianOfLastSceneFrames": 120,
+    "captureMs": 55.878,
+    "materialEncodeMs": 30.362,
+    "geometryEncodeMs": 11.577,
+    "rendererWallMs": 70.693,
+    "presentationSubmitIntervalMs": 133.610,
+    "copiedSceneBytes": 0,
+    "uploadedBytesPerFrame": 15306904,
+    "runtimeBufferCapacityBytes": 952972204,
+    "report": "D:/OpenMW-local/webcuda-ship-2026-10-06.json",
+    "limits": "Debug instrumentation enabled. One interior scene, no new native-browser or physical refresh-rate result. Broader scene and lifecycle acceptance remains incomplete."
+  },
+  "defaultShaderAndMaterialStateReuse": {
+    "engine": "5e3aac5d0ae8",
+    "failure": "Seyda Neen capture rejected the unnamed stock gl3_VertexShader/gl3_FragmentShader installed by OSG StateSet::setGlobalDefaults. Only the startup frame presented; capture then aborted repeatedly.",
+    "change": "Match both complete stock GLSL sources, route their unlit texture/color operation to existing CUDA kernels, follow baseTexture, and ignore fixed-function TexMat. Reuse one resolved state across all material sampler encodes within a draw, with fresh resolution on the next draw.",
+    "validation": {
+      "wasm64IntegrationSuites": 6,
+      "stockDependencyShaderAndEditedSourceRejection": "passed",
+      "samplerMutationAndUvMvpCapture": "passed",
+      "fullEngineBuildAndLink": "passed",
+      "httpStagingChecks": "passed",
+      "exteriorRuntime": "144 saved WebGPU presentations without capture aborts or legacy draws; later frame 159 hit the separate clippedAttributes allocation limit"
+    },
+    "benchmark": {
+      "scope": "Synthetic WASM64 O3 material capture; not gameplay FPS",
+      "draws": 640,
+      "inheritedStateLayers": 6,
+      "uniforms": 49,
+      "measuredSamples": 9,
+      "warmups": 2,
+      "changingAlphaEveryDraw": true,
+      "matchingPacketChecksums": true,
+      "oneTextureLayerMs": { "before": 14.285056, "after": 5.996032 },
+      "fiveTextureLayersMs": { "before": 32.306944, "after": 7.495424 }
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-material-state-reuse-benchmark.json",
+      "D:/OpenMW-local/webcuda-default-material-submission-tests.log",
+      "D:/OpenMW-local/webcuda-default-material-engine-link.log",
+      "D:/OpenMW-local/webcuda-default-material-stage.json"
+    ],
+    "limits": "No new native-browser execution or physical refresh-rate measurement. Exterior submission is verified separately below; visual fidelity and playable performance are not established."
+  },
+  "exteriorRuntimeCheck": {
+    "engine": "5e3aac5d0ae8",
+    "backend": "webgpu",
+    "cell": "Seyda Neen",
+    "dimensions": [1280, 720],
+    "savedReportPresentations": 144,
+    "laterObservedFailure": {"presentations":159,"error":"RangeError: Invalid pipeline buffer size for clippedAttributes","evidence":"Existing DOM renderer statistics; occurred after the saved report"},
+    "abortedCaptures": 0,
+    "legacyDrawAttempts": 0,
+    "rendererOrPassErrors": 0,
+    "sampledSceneFrames": 120,
+    "allSampleFramesReleasePackets": true,
+    "captureMs": 117.772,
+    "materialEncodeMs": 49.318,
+    "geometryEncodeMs": 45.620,
+    "rendererWallMs": 231.180,
+    "presentationSubmitIntervalMs": 360.277,
+    "copiedSceneBytes": 0,
+    "uploadedBytesPerFrame": 105470192,
+    "runtimeBufferCapacityBytes": 3849682628,
+    "textureCacheBytes": 66493608,
+    "latestMainPassTriangles": 464266,
+    "latestReflectionPassTriangles": 226138,
+    "report": "D:/OpenMW-local/webcuda-seyda-neen-2026-10-06.json",
+    "limits": "Debug instrumentation enabled. Buffer totals are allocation capacity, not process RSS or measured VRAM residency. This saved window preceded the fatal allocation at frame 159; no sustained WebGPU stability or new native exterior, visual-fidelity or refresh-rate acceptance."
+  },
+  "clippingCompaction": {
+    "change": "Stable CUDA prefix/scatter compacts live clipping slots for passes with at least 4096 input triangles before allocating expanded vertices and attributes. All five assembly kernels follow the source-slot map while output indices stay compact. Small passes retain bounded storage without an extra sizing readback.",
+    "validation": {
+      "cpuAndNativeGpuPatternsPerBackend": 4,
+      "inputClippingSlotsPerPattern": 4781,
+      "assemblyKernelsCompared": 5,
+      "allFieldsAndGuards": "exact match against uncompressed assembly",
+      "hostTests": 43,
+      "frameLifetimeTests": 6,
+      "pacingGuardTargetIdTests": 5,
+      "compiledWebgpuRuntimeKernels": 87,
+      "webgpuOutputChecks": 36,
+      "productionPipelineGpuChecks": 18,
+      "bundledNvrtcPagedRuntimeAndStorageKernels": 89,
+      "generatedArtifactsReproducedExactly": 367
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-clip-compaction-cuda.log",
+      "D:/OpenMW-local/webcuda-clip-compaction-host-tests.log",
+      "D:/OpenMW-local/webcuda-clip-compaction-native-compile.json",
+      "D:/OpenMW-local/webcuda-clip-compaction-browser-validation.json"
+    ],
+    "limits": "Controlled CPU, standalone native CUDA and browser WebGPU fixtures pass. Exterior WebGPU regression saved 423 frames without renderer errors. Paged native browser gameplay and physical refresh-rate acceptance remain unverified."
+  },
+  "compactedExteriorRuntimeCheck": {
+    "engine": "5e3aac5d0ae8",
+    "backend": "webgpu",
+    "cell": "Seyda Neen",
+    "dimensions": [
+      1280,
+      720
+    ],
+    "savedReportPresentations": 423,
+    "laterObservedPresentations": 607,
+    "laterObservedBufferCapacityBytes": 1933654476,
+    "rendererOrPassErrors": 0,
+    "abortedCaptures": 0,
+    "legacyDrawAttempts": 0,
+    "all120SampleFramesReleasePackets": true,
+    "runtimeBufferCapacityBytes": 1925634524,
+    "textureCacheBytes": 67032508,
+    "copiedSceneBytes": 0,
+    "captureMs": 90.067,
+    "rendererWallMs": 177.732,
+    "presentationSubmitIntervalMs": 278.355,
+    "uploadedBytesPerFrame": 83743624,
+    "observedMainPassAtFrame165": 509731,
+    "report": "D:/OpenMW-local/webcuda-seyda-neen-compaction-2026-10-06.json",
+    "summary": "D:/OpenMW-local/webcuda-seyda-neen-compaction-2026-10-06-summary.json",
+    "limits": "Debug instrumentation enabled; scene contents change while streaming. Allocation capacity is not RSS or measured VRAM, and timing windows are not a matched performance benchmark. No new native-browser, visual-fidelity, refresh-rate or broad gameplay acceptance."
   }
 }

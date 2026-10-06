@@ -640,7 +640,7 @@ export class MaterialPipeline {
       const triangles=upload('triangles'), materials=upload('materials'), flat_colors=upload('flatColors'), polygon_edges=upload('polygonEdges');
       const {texels,cluster_offset}=await this.uploadClusterAtlas(scene,texturePlan);
       this.textureResidency.restore(texturePlan,texels);
-      const slots=triangleCount*7, tiles=Math.ceil(width/16)*Math.ceil(height/16), row_pixels=Math.ceil(width/64)*64;
+      const rawSlots=triangleCount*7, tiles=Math.ceil(width/16)*Math.ceil(height/16), row_pixels=Math.ceil(width/64)*64;
       const transformed=this.buffer('transformed',vertexCount*40);
       const sourceAttributes=upload('attributes');
       let hasVertexLighting=false;
@@ -655,19 +655,10 @@ export class MaterialPipeline {
       const transformedAttributes=this.buffer('transformedAttributes',(source_point_fade_offset+vertexCount*12)*4);
       const track_lighting=(hasVertexLighting||hasUnlit)&&scene.screenPrimitives.length?1:0;
       const lightingOrigins=this.buffer('lightingOrigins',track_lighting?vertexCount*12:4);
-      const lighting_offset=slots*3*34;
-      const fixed_offset=lighting_offset+(hasVertexLighting?slots*3*12:0);
-      const falloff_offset=fixed_offset+(fixed_enabled?slots*3*16:0);
-      const boundary_offset=falloff_offset+(hasUnlit?slots*3*4:0);
-      const point_fade_offset=boundary_offset+slots*3;
-      const raster_offset=point_fade_offset+slots*36;
       const fixedLighting=this.buffer('fixedLightingValues',fixed_enabled?vertexCount*64:4);
       const capture_endpoints=fixed_enabled&&((scene.ribbonRanges?.length??0)>0||attributeFlags.lineParticles)?1:0;
       const fixedEndpoints=this.buffer('fixedLightingEndpoints',capture_endpoints?vertexCount*128:4);
-      const clippedAttributes=this.buffer('clippedAttributes',raster_offset*4+scene.rasterParams.byteLength);
-      this.upload(clippedAttributes,scene.rasterParams,raster_offset*4);
-      const positions=this.buffer('positions',slots*48), weights=this.buffer('weights',slots*48), valid=this.buffer('valid',slots*4);
-      const vertices=this.buffer('clippedVertices',slots*120), output_triangles=this.buffer('clippedTriangles',slots*16);
+      const positions=this.buffer('positions',rawSlots*48), weights=this.buffer('weights',rawSlots*48), rawValid=this.buffer('valid',rawSlots*4);
       const targetBytes=width*height*(pass.compactDepth?4:40);
       if(pass.compactDepth&&((pass.sampleCount??1)!==1||pass.normalTargetId||pass.stencilTargetId||(pass.stencilBits??0)||[0x88f0,0x8cad].includes(pass.depthFormat)||!pass.deferCompletion||context))throw Error('Invalid compact depth camera');
       const counts=this.buffer('counts',(tiles+1+scene.materials.length/12)*4,new Uint32Array(tiles+1+scene.materials.length/12)), target=pass.target??this.buffer('target',targetBytes);
@@ -849,8 +840,35 @@ export class MaterialPipeline {
       const vertexLighting=hasVertexLighting?this.buffer('vertexLighting',triangleCount*3*12*4):null;
       if(hasVertexLighting)r.batch().dispatch(k.shade_vertex_lighting.bind({vertices:transformed,attributes:transformedAttributes,
         triangles,materials,texels,lighting_origins:lightingOrigins,output:vertexLighting},{triangle_count:triangleCount,track_lighting,cluster_offset,track_world_particles,world_particle_offset}),groups(triangleCount*3)).submit();
+      r.batch().dispatch(k.clip_triangles.bind({clip:transformed,indices:triangles,materials,polygon_edges,positions,weights,valid:rawValid},
+        {triangle_count:triangleCount,vertex_stride:10,triangle_stride:4}),groups(triangleCount)).submit();
+      let slots=rawSlots,valid=rawValid;
+      // Large cameras must size interpolated outputs from live clipping slots,
+      // not seven worst-case copies of every attribute for every input triangle.
+      // Small cameras retain their bounded allocation and deferred readbacks.
+      if(triangleCount>=4096) {
+        if(rawSlots>0x7fffffff)throw RangeError('Clipping slot map exceeds its index range');
+        const block_count=Math.ceil(rawSlots/256);
+        const offsets=this.buffer('clipOffsets',rawSlots*4),blocks=this.buffer('clipBlocks',block_count*4);
+        const summary=this.buffer('clipSummary',4);
+        r.batch().dispatch(k.prefix_clip_blocks.bind({valid:rawValid,offsets,blocks},{slot_count:rawSlots}),groups(block_count))
+          .dispatch(k.prefix_clip_totals.bind({blocks,summary},{block_count}),[1,1,1]).submit();
+        const count=await r.read(summary,Uint32Array,4);
+        if(count.length!==1||count[0]>rawSlots)throw RangeError('Invalid compact clipping allocation');
+        slots=count[0];valid=this.buffer('compactValid',slots*4);
+        r.batch().dispatch(k.scatter_clip_slots.bind({valid:rawValid,offsets,blocks,compact_valid:valid},
+          {slot_count:rawSlots}),groups(rawSlots)).submit();
+      }
+      const lighting_offset=slots*3*34;
+      const fixed_offset=lighting_offset+(hasVertexLighting?slots*3*12:0);
+      const falloff_offset=fixed_offset+(fixed_enabled?slots*3*16:0);
+      const boundary_offset=falloff_offset+(hasUnlit?slots*3*4:0);
+      const point_fade_offset=boundary_offset+slots*3;
+      const raster_offset=point_fade_offset+slots*36;
+      const clippedAttributes=this.buffer('clippedAttributes',raster_offset*4+scene.rasterParams.byteLength);
+      this.upload(clippedAttributes,scene.rasterParams,raster_offset*4);
+      const vertices=this.buffer('clippedVertices',slots*120), output_triangles=this.buffer('clippedTriangles',slots*16);
       r.batch()
-        .dispatch(k.clip_triangles.bind({clip:transformed,indices:triangles,materials,polygon_edges,positions,weights,valid},{triangle_count:triangleCount,vertex_stride:10,triangle_stride:4}),groups(triangleCount))
         .dispatch(k.assemble_material.bind({source:transformed,triangles,positions,weights,valid,vertices,output_triangles,flat_colors},{slot_count:slots}),groups(slots))
         .dispatch(k.assemble_attributes.bind({source:transformedAttributes,triangles,weights,valid,output:clippedAttributes},{slot_count:slots,boundary_offset,point_fade_offset,source_point_fade_offset}),groups(slots)).submit();
       if(hasUnlit)r.batch().dispatch(k.assemble_unlit_falloff.bind({source:unlitFalloff,weights,valid,attributes:clippedAttributes},
@@ -931,11 +949,11 @@ export class MaterialPipeline {
       // cannot produce fragments. Keep texture preparation, status validation
       // and resolves: an empty camera can still clear or publish an attachment.
       let rasterTiming=Promise.resolve({gpuMs:null});
-      if(clearMask!==0||triangleCount!==0) {
+      if(clearMask!==0||slots!==0) {
         const rasterTimer=gpuTimedBatch(r,pass.profileGpu===true,'OpenMW clear and raster');
         try {
           if(clearMask!==0)rasterTimer.batch.dispatch(k.clear_attachment.bind({target:rasterTarget},{pixel_count:width*height,mask:clearMask,red:clear[0],green:clear[1],blue:clear[2],alpha:clear[3],depth,normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,stencil_clear,clear_color_mask,width,height,...viewportArgs,sample_count}),groups(width*height*sample_count));
-          if(triangleCount!==0)rasterTimer.batch.dispatch(k.raster_material.bind({vertices,triangles:output_triangles,counts,candidates,materials,texels,target:rasterTarget,attributes:clippedAttributes},{width,height,capacity,raster_offset,boundary_offset,point_fade_offset,lighting_offset,cluster_offset,fixed_offset,falloff_offset,fixed_enabled,normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,sample_count}),groups(width*height*sample_count));
+          if(slots!==0)rasterTimer.batch.dispatch(k.raster_material.bind({vertices,triangles:output_triangles,counts,candidates,materials,texels,target:rasterTarget,attributes:clippedAttributes},{width,height,capacity,raster_offset,boundary_offset,point_fade_offset,lighting_offset,cluster_offset,fixed_offset,falloff_offset,fixed_enabled,normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,sample_count}),groups(width*height*sample_count));
           rasterTiming=rasterTimer.submit();
         } catch(error){rasterTimer.dispose();throw error;}
       }

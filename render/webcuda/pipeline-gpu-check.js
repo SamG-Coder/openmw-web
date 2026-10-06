@@ -76,6 +76,23 @@ export async function checkPipelineGpu(runtime,kernels) {
     for(let i=0;i<pixels;i++)if(i%width>=2)translatedExpected.set([.5,0,0,1,.5],i*9);
     equal('Pipeline model-view translation and right-plane clipping preserve uncovered pixels',
       await render(translated),translatedExpected);
+    // Trigger the production compaction threshold with mostly offscreen draws.
+    // The two visible triangles straddle a prefix-block boundary; compare with
+    // the identical small-camera result, including a partially clipped edge.
+    for(const visible of [true,false]) {
+      const compacted=scene(),count=4096;
+      compacted.vertices=new Float32Array([...compacted.vertices,
+        3,0,0,1,0,1,0,1,0,0, 4,0,0,1,0,1,0,1,0,0, 3,1,0,1,0,1,0,1,0,0]);
+      compacted.matrixIds=new Uint32Array(7);
+      compacted.triangles=Uint32Array.from({length:count*4},(_,i)=>[4,5,6,0][i%4]);
+      compacted.matrices[12]=.5;
+      if(visible){compacted.triangles.set([0,1,2,0],36*4);compacted.triangles.set([0,2,3,0],37*4);}
+      runtime.write(target,initial);
+      equal(`Pipeline stable clipping compaction with ${visible?'visible triangles across prefix blocks':'all triangles rejected'}`,
+        await render(compacted),visible?translatedExpected:initial);
+      const attributes=pipeline.buffers.get('clippedAttributes');
+      if(attributes.byteLength>32768)throw Error('Clipping compaction retained worst-case expanded attributes');
+    }
     // Generate a Morrowind terrain mask, sample it in the rasterizer, then reuse
     // its immutable residency after overwriting the scratch atlas in another pass.
     const terrain=scene();

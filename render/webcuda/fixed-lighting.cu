@@ -128,13 +128,14 @@ __global__ void assemble_fixed_lighting(const float* source,const unsigned int* 
     const float* weights,const unsigned int* valid,float* output,unsigned int slot_count,unsigned int fixed_offset) {
     unsigned int slot=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;
     if(slot>=slot_count)return;
-    unsigned int original=slot/7,provoking=flat_colors[original];
+    unsigned int sourceSlot=(valid[slot]&0x80000000u)!=0u?valid[slot]&0x7fffffffu:slot;
+    unsigned int original=sourceSlot/7,provoking=flat_colors[original];
     unsigned int frontOnly=source[triangles[original*4]*16+15]>1.5f;
     for(unsigned int vertex=0;vertex<3;vertex++)for(unsigned int channel=0;channel<16;channel++) {
         float value=0.0f;
         if(valid[slot]!=0) {
             if(provoking!=0xffffffffu)value=source[provoking*16+(frontOnly!=0&&channel>=8?channel-8:channel)];
-            else for(unsigned int corner=0;corner<3;corner++)value+=weights[slot*12+vertex*4+corner]*source[triangles[original*4+corner]*16+channel];
+            else for(unsigned int corner=0;corner<3;corner++)value+=weights[sourceSlot*12+vertex*4+corner]*source[triangles[original*4+corner]*16+channel];
         }
         output[fixed_offset+(slot*3+vertex)*16+channel]=value;
     }

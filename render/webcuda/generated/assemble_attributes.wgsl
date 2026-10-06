@@ -24,18 +24,25 @@ fn main(
   if ((v_slot >= cw_params.p_slot_count)) {
     return;
   }
-  var v_original: u32 = (v_slot / u32(7i));
+  var cw_tmp_0: u32;
+  if (((b_valid[v_slot] & 2147483648u) != 0u)) {
+    cw_tmp_0 = (b_valid[v_slot] & 2147483647u);
+  } else {
+    cw_tmp_0 = v_slot;
+  }
+  var v_sourceSlot: u32 = cw_tmp_0;
+  var v_original: u32 = (v_sourceSlot / u32(7i));
   {
     var v_vertex: u32 = u32(0i);
     loop {
       if (!(v_vertex < u32(3i))) { break; }
-      var cw_tmp_0: f32;
+      var cw_tmp_1: f32;
       if ((b_valid[v_slot] != u32(0i))) {
-        cw_tmp_0 = b_weights[(((v_slot * u32(12i)) + (v_vertex * u32(4i))) + u32(3i))];
+        cw_tmp_1 = b_weights[(((v_sourceSlot * u32(12i)) + (v_vertex * u32(4i))) + u32(3i))];
       } else {
-        cw_tmp_0 = 0.0f;
+        cw_tmp_1 = 0.0f;
       }
-      b_output[((cw_params.p_boundary_offset + (v_slot * u32(3i))) + v_vertex)] = cw_tmp_0;
+      b_output[((cw_params.p_boundary_offset + (v_slot * u32(3i))) + v_vertex)] = cw_tmp_1;
       continuing {
         v_vertex += u32(1);
       }
@@ -55,7 +62,7 @@ fn main(
               var v_corner: u32 = u32(0i);
               loop {
                 if (!(v_corner < u32(3i))) { break; }
-                v_fade = (v_fade + (b_weights[(((v_slot * u32(12i)) + (v_vertex * u32(4i))) + v_corner)] * b_source[((cw_params.p_source_point_fade_offset + (b_triangles[((v_original * u32(4i)) + v_corner)] * u32(12i))) + v_channel)]));
+                v_fade = (v_fade + (b_weights[(((v_sourceSlot * u32(12i)) + (v_vertex * u32(4i))) + v_corner)] * b_source[((cw_params.p_source_point_fade_offset + (b_triangles[((v_original * u32(4i)) + v_corner)] * u32(12i))) + v_channel)]));
                 continuing {
                   v_corner += u32(1);
                 }
@@ -87,7 +94,7 @@ fn main(
               var v_corner: u32 = u32(0i);
               loop {
                 if (!(v_corner < u32(3i))) { break; }
-                v_value = (v_value + (b_weights[(((v_slot * u32(12i)) + (v_vertex * u32(4i))) + v_corner)] * b_source[((b_triangles[((v_original * u32(4i)) + v_corner)] * u32(34i)) + v_channel)]));
+                v_value = (v_value + (b_weights[(((v_sourceSlot * u32(12i)) + (v_vertex * u32(4i))) + v_corner)] * b_source[((b_triangles[((v_original * u32(4i)) + v_corner)] * u32(34i)) + v_channel)]));
                 continuing {
                   v_corner += u32(1);
                 }

@@ -10,6 +10,8 @@
 #include <osg/Shader>
 #include <osg/Uniform>
 #include <osg/Fog>
+#include <osg/DisplaySettings>
+#include <osg/TexMat>
 #include <osgUtil/RenderStage>
 #include <components/webcuda/geometrypacket.hpp>
 
@@ -216,5 +218,22 @@ int main() {
     WebCuda::GeometryPacket shadowPacket;
     WebCuda::appendGeometry(shadowPacket,*geometry,context,0);
     for(unsigned int k=0;k<16;k++)assert(shadowPacket.matrices[16+k]==projection.ptr()[k]);
+    // The dependency's unnamed default shader uses UV.xy without TexMat and
+    // the camera's MVP even when a world projection uniform is inherited.
+    const auto previousHint=osg::DisplaySettings::instance()->getShaderHint();
+    osg::DisplaySettings::instance()->setShaderHint(osg::DisplaySettings::SHADER_GLES3);
+    osg::ref_ptr<osg::StateSet> defaults=new osg::StateSet;defaults->setGlobalDefaults();
+    osg::DisplaySettings::instance()->setShaderHint(previousHint);
+    defaults->setMode(GL_LIGHTING,osg::StateAttribute::ON);
+    defaults->addUniform(new osg::Uniform("projectionMatrix",shaderProjection));
+    defaults->setTextureAttribute(0,new osg::TexMat(osg::Matrix::scale(4,5,6)));
+    context.states={defaults};
+    WebCuda::GeometryPacket defaultPacket;WebCuda::appendGeometry(defaultPacket,*geometry,context,0);
+    for(unsigned int k=0;k<16;k++) {
+        assert(defaultPacket.uvMatrices[k]==(k%5==0?1.f:0.f));
+        assert(defaultPacket.matrices[16+k]==projection.ptr()[k]);
+    }
+    assert(defaultPacket.vertices[8]==uv->at(0).x()&&defaultPacket.vertices[9]==uv->at(0).y());
+    assert(defaultPacket.fixedLighting[0]==0&&!(defaultPacket.fixedLighting[1]&1u));
     std::puts("WebCuda geometry packets: OSG strips, colors/UVs, matrix ABI, batching, rejection and MyGUI bytes passed");
 }

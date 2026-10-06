@@ -49,6 +49,7 @@ namespace WebCuda
         void resolveAttachmentAddresses();
         void resizeAtlas(std::size_t size) { CaptureScope scope(CapturePhase::AtlasResize);mTexels.resize(size); }
         void copyRaster(std::uint32_t material);
+        std::uint32_t encodeResolved(const DrawContext&,const osg::StateSet&,const osg::Texture2D*,bool gui);
         std::uint32_t captureClusterLights(const DrawContext&,const osg::StateSet&);
         std::uint32_t encodeSky(const DrawContext&, const osg::StateSet&);
         std::uint32_t encodeShadow(const DrawContext&,const osg::StateSet&,const osg::Shader&,bool depthClipped=false);

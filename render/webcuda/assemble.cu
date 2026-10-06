@@ -33,26 +33,27 @@ __global__ void transform_uv(float* vertices, const float* uv_matrices,
 }
 
 // Reconstruct attributes at newly clipped vertices from the original-vertex
-// weights emitted by clip_triangles. Fixed seven output slots per input triangle
-// keep order stable. Invalid slots are w=0 so binning rejects them explicitly.
+// weights emitted by clip_triangles. Compacted maps retain original slot order;
+// small passes can use 0/1 validity with w=0 for rejected reserved slots.
 __global__ void assemble_material(const float* source, const unsigned int* triangles,
                                  const float* positions, const float* weights,
                                  const unsigned int* valid, float* vertices,
                                  unsigned int* output_triangles,const unsigned int* flat_colors, unsigned int slot_count) {
     unsigned int slot = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;
     if (slot >= slot_count) return;
-    unsigned int original = slot / 7;
+    unsigned int sourceSlot=(valid[slot]&0x80000000u)!=0u?valid[slot]&0x7fffffffu:slot;
+    unsigned int original = sourceSlot / 7;
     output_triangles[slot*4+3] = triangles[original*4+3];
     for (unsigned int v = 0; v < 3; v++) {
         unsigned int dst = (slot*3+v)*10;
         output_triangles[slot*4+v] = slot*3+v;
         for (unsigned int k = 0; k < 10; k++) vertices[dst+k] = 0.0f;
         if (valid[slot] == 0) continue;
-        for (unsigned int k = 0; k < 4; k++) vertices[dst+k] = positions[slot*12+v*4+k];
+        for (unsigned int k = 0; k < 4; k++) vertices[dst+k] = positions[sourceSlot*12+v*4+k];
         for (unsigned int k = 4; k < 10; k++) {
             float value = 0.0f;
             for (unsigned int corner = 0; corner < 3; corner++)
-                value += weights[slot*12+v*4+corner] * source[triangles[original*4+corner]*10+k];
+                value += weights[sourceSlot*12+v*4+corner] * source[triangles[original*4+corner]*10+k];
             if(k<8u&&flat_colors[original]!=0xffffffffu)value=source[flat_colors[original]*10u+k];
             vertices[dst+k] = value;
         }

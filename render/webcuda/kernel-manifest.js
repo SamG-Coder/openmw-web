@@ -254,6 +254,9 @@ export const kernelManifest = Object.freeze([
     "entry": "raster_reference",
     "runtime": false
   },
+  {"file":"clip-compact.cu","entry":"prefix_clip_blocks","runtime":true},
+  {"file":"clip-compact.cu","entry":"prefix_clip_totals","runtime":true},
+  {"file":"clip-compact.cu","entry":"scatter_clip_slots","runtime":true},
   {
     "file": "clip.cu",
     "entry": "clip_triangles",

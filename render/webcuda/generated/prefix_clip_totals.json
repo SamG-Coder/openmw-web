@@ -1,0 +1,88 @@
+{
+  "version": "0.1.1",
+  "name": "prefix_clip_totals",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel prefix_clip_totals.\n@group(0) @binding(0) var<storage, read_write> b_blocks: array<u32>;\n@group(0) @binding(1) var<storage, read_write> b_summary: array<u32>;\nstruct CWParams {\n  p_block_count: u32,\n  cw_pad_4: u32,\n  cw_pad_8: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i != 0u)) {\n    return;\n  }\n  var v_total: u32 = 0u;\n  {\n    var v_block: u32 = 0u;\n    loop {\n      if (!(v_block < cw_params.p_block_count)) { break; }\n      var v_count: u32 = b_blocks[v_block];\n      b_blocks[v_block] = v_total;\n      v_total = (v_total + v_count);\n      continuing {\n        v_block += u32(1);\n      }\n    }\n  }\n  b_summary[0i] = v_total;\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "blocks",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "summary",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "block_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 1075,
+      "beforeBytes": 1075,
+      "afterBytes": 1075,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 659,
+          "transitiveBytes": 659,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Stable compaction of the seven reserved clipping slots per source triangle.\n// Keep positions/weights in their original slots; assembly follows this map\n// before allocating the much larger interpolated attribute streams. The high\n// bit distinguishes a mapped source slot (including slot zero) from the legacy\n// 0/1 validity array used by small passes without a sizing readback.\n__global__ void prefix_clip_blocks(const unsigned int* valid,unsigned int* offsets,\n    unsigned int* blocks,unsigned int slot_count) {\n    unsigned int block=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    unsigned int first=block*256u;\n    if(first>=slot_count)return;\n    unsigned int total=0u;\n    for(unsigned int i=first;i<slot_count&&i<first+256u;i++) {\n        offsets[i]=total;\n        if(valid[i]!=0u)total++;\n    }\n    blocks[block]=total;\n}\n\n__global__ void prefix_clip_totals(unsigned int* blocks,unsigned int* summary,\n    unsigned int block_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i!=0u)return;\n    unsigned int total=0u;\n    for(unsigned int block=0u;block<block_count;block++) {\n        unsigned int count=blocks[block];blocks[block]=total;total+=count;\n    }\n    summary[0]=total;\n}\n\n__global__ void scatter_clip_slots(const unsigned int* valid,const unsigned int* offsets,\n    const unsigned int* blocks,unsigned int* compact_valid,unsigned int slot_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=slot_count||valid[i]==0u)return;\n    compact_valid[blocks[i/256u]+offsets[i]]=0x80000000u|i;\n}\n",
+    "entry": "prefix_clip_totals",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "summary",
+        "type": "buffer"
+      },
+      {
+        "name": "block_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

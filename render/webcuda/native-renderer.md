@@ -29,7 +29,7 @@ non-particle rejection from 213.019 to 0.806 ms. These isolate CPU routines;
 they do not measure the new game's frame rate. The user requested code-led
 analysis and automated checks instead of additional screenshot requests.
 
-The latest staged engine is `f7c1bdb71a48`. Terrain layer blend masks now generate
+Engine `f7c1bdb71a48` introduced terrain layer blend masks generated
 in `terrain-blend.cu` for the WebCuda viewer. The engine captures immutable land
 records instead of painting alpha images on the CPU. Morrowind's doubled texture
 grid and ESM4's ordered opacity records retain their original layer order and
@@ -189,8 +189,8 @@ running its obsolete packet and kernel signatures.
 The host now omits clear dispatches with a zero clear mask and raster dispatches
 with no input triangles. These states occur in terrain composite, HUD and
 sun-query cameras. Texture preparation, status checks and attachment resolves
-still run. All 40 related host tests pass. No CUDA, packet ABI or engine binary
-changed; the served engine remains `f7c1bdb71a48`.
+still run. All 40 related host tests pass. That dispatch change did not alter
+CUDA, the packet ABI or the `f7c1bdb71a48` engine binary.
 
 The new pipeline checks are also wired into native validation when both **All
 runtime kernels** and **Paged game renderer** are selected. Their native-browser
@@ -198,6 +198,123 @@ execution remains unverified. The WebGPU checks are controlled fixtures, not
 full-game or refresh-rate acceptance. The main WebGPU raster pipeline took
 324.58 seconds to compile in the first run and 245.94 seconds in the second;
 these are startup compilation times, not frame rendering times.
+
+The staged engine was then run in the Imperial Prison Ship at 1280x720 through
+WebGPU. The saved report records 197 presentations, no renderer/pass error and
+zero attempted legacy WebGL draws. Continued observation reached 979
+presentations with the same guard/error result and zero retained packets at the
+completed-frame boundary. The engine log confirms the loaded cell.
+
+Across the last 120 scene frames in that report, medians are 55.878 ms capture,
+70.693 ms renderer wall time and 133.610 ms between presentation submissions.
+The diagnostic mode was enabled; these are not physical scanout measurements
+or native CUDA timings. The result still falls well short of 60-180 Hz.
+Material encoding accounts for 30.362 ms and geometry encoding for 11.577 ms
+of capture. The report records zero copied scene bytes in the WASM-to-JS bridge,
+15,306,904 bytes uploaded per frame and 952,972,204 bytes of allocated runtime
+buffers. Allocated buffer capacity is not a process-RAM or VRAM residency reading.
+
+The report and derived summary are saved at
+`D:/OpenMW-local/webcuda-ship-2026-10-06.json` and
+`D:/OpenMW-local/webcuda-ship-2026-10-06-summary.json`.
+
+The exterior acceptance run exposed a missing route for OSG's unnamed default
+GLES3 program from `StateSet::setGlobalDefaults`. It aborted scene capture
+before GPU submission; the sole presented frame was startup work. The replacement
+now recognizes the complete stock vertex/fragment sources and routes their
+texture-times-vertex-color contract to the existing CUDA kernels. It follows the
+`baseTexture` sampler, ignores inherited fixed-function `TexMat`, and retains
+camera MVP and raster state. Modified sources and extra shader stages remain
+unsupported rather than silently taking that route.
+
+Material capture now resolves inherited draw state once and shares that snapshot
+across texture layers, shadow samplers and screen-effect inputs. Each public draw
+still resolves current state, including uniform edits and override/protected
+inheritance. This removes repeated state-map allocation without a persistent
+cache or moving rendering arithmetic out of CUDA.
+
+The final WASM64 O3 comparison uses 640 draws, six inherited state layers,
+49 uniforms, nine measured runs after two warmups, and changing alpha input on
+every draw. Material, texture, raster, decode and resource packet checksums match.
+One texture layer improves from 14.285 to 5.996 ms; five layers improve from
+32.307 to 7.495 ms. These isolate material capture, not game FPS. Sources and
+report are `D:/OpenMW-local/material-capture-benchmark.cpp`,
+`D:/OpenMW-local/run-material-benchmark.ps1`, and
+`D:/OpenMW-local/webcuda-material-state-reuse-benchmark.json`.
+
+All six WASM64 integration suites pass, including the real dependency's default
+shader producer, edited-source rejection, sampler mutations, and UV/MVP capture.
+The full incremental engine build/link passes. Engine `5e3aac5d0ae8` is staged;
+HTTP range, MIME, isolation headers and served-module checks pass.
+
+Before clipping compaction, that build advanced through Seyda Neen and its neighboring exterior cells
+at 1280x720 through WebGPU. The saved report records 144 presentations, zero
+aborted captures, zero legacy WebGL draw attempts and no renderer/pass errors.
+All 120 sampled scene frames release their retained packets. Their medians are
+117.772 ms capture, 231.180 ms renderer wall time and 360.277 ms between
+presentation submissions, with debug instrumentation enabled. After saving this
+report, the run stopped at frame 159 with `Invalid pipeline buffer size for
+clippedAttributes`. The report covers the earlier successful window, not
+sustained stability, visual fidelity or 60-180 Hz acceptance.
+
+That exterior run exposed the resource bottleneck: 3,849,682,628 bytes of runtime
+buffer capacity and a median 105,470,192 bytes uploaded per frame, compared with
+66,493,608 bytes in the texture cache. These are allocated capacities, not a
+process-RAM or measured VRAM residency total. The source reserves seven output
+triangle slots for every input triangle, then allocates expanded vertex and
+attribute storage for all seven. The report's main pass has 464,266 input
+triangles and its reflection pass has 226,138. The allocation failure occurs
+before the GPU can render the larger streamed scene. Native shared-memory
+budget compatibility remains a separate acceptance boundary.
+
+The report and derived summary are
+`D:/OpenMW-local/webcuda-seyda-neen-2026-10-06.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-2026-10-06-summary.json`.
+
+
+Large cameras now compact live clipping slots in `clip-compact.cu` before
+allocating expanded attributes and vertices. Prefix counts and stable scatter
+retain primitive order. The slot map redirects reads of original positions,
+weights, material IDs, provoking colors and lighting; output indices remain
+compact. Small passes below 4,096 input triangles retain bounded allocation
+without the new sizing readback. All rendering calculations remain in `.cu`.
+
+`clip-compact.test.cpp` compares all five production assembly kernels with the
+uncompacted output over 4,781 reserved slots, including mixed clipping, fully
+populated/empty inputs, block boundaries and slot zero. Every field and trailing
+guard matches on both CPU and native RTX 5080 execution. The 43 host checks, six
+frame-lifetime checks and five pacing/guard/target-ID checks pass. All 87 runtime
+kernels compile in WebGPU; 36 GPU output checks pass, including 18 production
+pipeline fixtures. Bundled NVRTC compiles 89 paged runtime/storage kernels.
+
+Compile `render/webcuda/clip-compact.test.cpp` as C++17 or with NVCC
+`-x cu -std=c++17 -O2 -arch=sm_120` to reproduce the assembly comparison.
+Browser fixtures also exercise the 4,096-triangle threshold with surviving
+triangles across prefix blocks and with every triangle rejected. Reports are
+`D:/OpenMW-local/webcuda-clip-compaction-browser-validation.json` and
+`D:/OpenMW-local/webcuda-clip-compaction-native-compile.json`. These controlled
+checks do not establish native browser gameplay or refresh-rate performance.
+
+
+The compacted WebGPU exterior run saved 423 presentations without renderer/pass
+errors, aborted captures or legacy WebGL draws, passing the former frame-159
+failure. The run subsequently reached 607 presentations with those counters
+still clear before closing the test tab. At frame 165 its main pass contained 509,731 input triangles. Retained
+runtime buffer capacity reached 1,925,634,524 bytes versus 3,849,682,628 in the
+previous report; texture residency was 67,032,508 bytes. These are allocation
+capacities, not measured RAM/VRAM residency or a native interop budget result.
+
+The last 120 captured scene frames released every packet and copied zero scene
+bytes into separate JS arrays. Median capture was 90.067 ms, renderer wall time
+177.732 ms, submission interval 278.355 ms, and uploads 83,743,624 bytes/frame.
+Scene contents changed while streaming, so these windows are not a matched
+before/after performance benchmark. Repeated capture and geometry upload are
+the next priority; smooth 60-180 Hz gameplay is still unachieved. The report and
+summary are `D:/OpenMW-local/webcuda-seyda-neen-compaction-2026-10-06.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-compaction-2026-10-06-summary.json`.
+All 367 generated artifacts reproduce byte-for-byte with the unchanged tracked
+SDK compiler/runtime files. Native standalone CUDA and compilation checks do
+not replace a current native-browser exterior or lifecycle run.
 
 ## Running
 
