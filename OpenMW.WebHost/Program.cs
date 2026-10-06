@@ -12,6 +12,10 @@ var rendererRoot = Path.Combine(repoRoot, "render", "webgpu");
 var manager = new EngineManager(repoRoot, builder.Configuration, app.Logger);
 var gameData = new GameDataManager(repoRoot, builder.Configuration, app.Logger);
 gameData.Detect();
+// Bump whenever local file-serving semantics change. The browser StreamFS
+// persists chunks by URL + size, so a bad development response would otherwise
+// survive every server restart and continue corrupting ESM/BSA reads.
+const string localAssetRevision = "asp-range-v2";
 var contentTypes = new FileExtensionContentTypeProvider();
 contentTypes.Mappings[".wasm"] = "application/wasm";
 contentTypes.Mappings[".data"] = "application/octet-stream";
@@ -61,7 +65,10 @@ app.Use(async (context, next) =>
     var page = await File.ReadAllTextAsync(source, context.RequestAborted);
     const string rendererMarker = "const rendererDirectory = './' + __ENGINE_DIR + 'webgpu/';";
     page = page.Replace("__ENGINE_VERSION__", engine.Version, StringComparison.Ordinal)
-               .Replace(rendererMarker, "const rendererDirectory = './webgpu/';", StringComparison.Ordinal);
+               .Replace(rendererMarker, "const rendererDirectory = './webgpu/';", StringComparison.Ordinal)
+               .Replace("StreamFS.mount('/mwdata/' + f.p, 'mwdata/' + f.p, f.s);",
+                        "StreamFS.mount('/mwdata/' + f.p, 'mwdata/' + f.p + '?rev=" + localAssetRevision + "', f.s);",
+                        StringComparison.Ordinal);
     context.Response.ContentType = "text/html; charset=utf-8";
     context.Response.Headers["Cache-Control"] = "no-store";
     await context.Response.WriteAsync(page);
@@ -111,7 +118,10 @@ app.MapGet("/", async context =>
     var page = await File.ReadAllTextAsync(source, context.RequestAborted);
     const string rendererMarker = "const rendererDirectory = './' + __ENGINE_DIR + 'webgpu/';";
     page = page.Replace("__ENGINE_VERSION__", engine.Version, StringComparison.Ordinal)
-               .Replace(rendererMarker, "const rendererDirectory = './webgpu/';", StringComparison.Ordinal);
+               .Replace(rendererMarker, "const rendererDirectory = './webgpu/';", StringComparison.Ordinal)
+               .Replace("StreamFS.mount('/mwdata/' + f.p, 'mwdata/' + f.p, f.s);",
+                        "StreamFS.mount('/mwdata/' + f.p, 'mwdata/' + f.p + '?rev=" + localAssetRevision + "', f.s);",
+                        StringComparison.Ordinal);
     context.Response.ContentType = "text/html; charset=utf-8";
     context.Response.Headers["Cache-Control"] = "no-store";
     await context.Response.WriteAsync(page);
