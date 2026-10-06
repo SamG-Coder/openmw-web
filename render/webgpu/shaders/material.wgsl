@@ -62,7 +62,9 @@ fn homogeneous_screen(base: u32) -> vec3<f32> {
 struct MaterialResult { color: vec4<f32>, normal: vec4<f32>, depth: f32 }
 struct ColorOutput { @location(0) color: vec4<f32>, @builtin(frag_depth) depth: f32 }
 struct NormalOutput { @location(0) color: vec4<f32>, @location(1) normal: vec4<f32>, @builtin(frag_depth) depth: f32 }
-fn precise_divide(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }
+// Native WebGPU does not need the CUDA/WebShader quotient-correction step.
+// A plain hardware divide is substantially cheaper in the fragment hot path.
+fn precise_divide(a: f32, b: f32) -> f32 { return a / b; }
 fn f_render_power(cw_arg_base: f32, cw_arg_exponent: f32) -> f32 {
   var v_base: f32 = cw_arg_base;
   var v_exponent: f32 = cw_arg_exponent;
@@ -611,7 +613,7 @@ fn sample_atlas(cw_buffer_arg_0: i32, cw_arg_base: u32, cw_arg_width: u32, cw_ar
   var v_maximum: f32 = 1.0f;
   if (((v_sampler & 536870912u) != 0u)) {
     let cw_argument_index_397 = (cw_buffer_offset_0 + i32((v_base + 9u)));
-    v_maximum = min(16.0f, bitcast<f32>(b_texels[cw_argument_index_397]));
+    v_maximum = min(4.0f, bitcast<f32>(b_texels[cw_argument_index_397]));
   }
   if ((v_maximum <= 1.0f)) {
     return sample_texture_lod((cw_buffer_offset_0 + 0i), v_base, v_width, v_height, v_u, v_v, v_isotropic, v_sampler, v_channel);
@@ -1109,7 +1111,7 @@ fn sample_shadow_compare(cw_buffer_arg_0: i32, cw_arg_descriptor: u32, cw_arg_u:
   var v_maximum: f32 = 1.0f;
   if (((v_sampler & 536870912u) != 0u)) {
     let cw_argument_index_448 = (cw_buffer_offset_0 + i32((v_base + 9u)));
-    v_maximum = min(16.0f, bitcast<f32>(b_texels[cw_argument_index_448]));
+    v_maximum = min(4.0f, bitcast<f32>(b_texels[cw_argument_index_448]));
   }
   if ((v_maximum <= 1.0f)) {
     return shadow_mipped((cw_buffer_offset_0 + 0i), v_descriptor, v_u, v_v, v_reference, v_isotropic);
