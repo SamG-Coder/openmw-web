@@ -148,17 +148,21 @@ function structure(source) {
     // which is invalid WGSL. Walk backwards over contiguous attribute lines
     // while preserving comments/other declarations before them.
     let declarationStart = match.index;
-    let lineStart = masked.lastIndexOf('\n', declarationStart - 1) + 1;
-    while (lineStart > 0) {
-      const previousEnd = lineStart - 1;
-      const previousStart = masked.lastIndexOf('\n', previousEnd - 1) + 1;
-      const previous = masked.slice(previousStart, previousEnd).trim();
-      if (!previous.startsWith('@')) break;
-      declarationStart = previousStart;
-      lineStart = previousStart;
-    }
+    const lineStart = masked.lastIndexOf('\n', match.index - 1) + 1;
     const currentPrefix = masked.slice(lineStart, match.index).trim();
     if (currentPrefix.startsWith('@')) declarationStart = lineStart;
+    else if (currentPrefix === '') {
+      // Attributes may be on one or more immediately preceding lines.
+      let cursor = lineStart;
+      while (cursor > 0) {
+        const previousEnd = cursor - 1;
+        const previousStart = masked.lastIndexOf('\n', previousEnd - 1) + 1;
+        const previous = masked.slice(previousStart, previousEnd).trim();
+        if (!previous.startsWith('@')) break;
+        declarationStart = previousStart;
+        cursor = previousStart;
+      }
+    }
     functions.push({name: match[1], start: declarationStart, fnStart: match.index, open, close, end: close + 1});
     pattern.lastIndex = close + 1;
   }
