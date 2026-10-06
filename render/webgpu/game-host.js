@@ -91,6 +91,17 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   Module.webcudaProfileCapture=inspectPasses;
   // Wall-clock observations, not GPU timestamps or physical display scanout.
   const stats={accepted:0,presented:0,skipped:0,aborted:0,passes:0,error:null,gpuFrameMs:0,lastFrame:null};
+  let first3DWatchdog=null;
+  const armFirst3DWatchdog=()=>{
+    if(first3DWatchdog||stats.presented>0)return;
+    first3DWatchdog=setTimeout(()=>{
+      first3DWatchdog=null;
+      if(stats.presented>0||failed||disposed)return;
+      const detail='The first captured 3D WebGPU frame has not completed after 15 seconds. '
+        +'Open the debug log for WebGPU diagnostics; this is a renderer stall, not game-data loading.';
+      stats.error=detail;publishDiagnostics(true);onError(Error(detail));
+    },15000);
+  };
   // Expose completed-frame evidence on the presentation element for browser
   // diagnostics. Throttle DOM updates; these counters do not drive rendering.
   let diagnosticAt=-Infinity;
@@ -272,7 +283,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     if(disposed||failed||Module.webcudaRecoveryPending)return false;
     if(frame)throw Error('Nested WebGPU frame');
     if(busy){stats.skipped++;publishDiagnostics();return false;}
-    frame=[]; state=null;lastState=null;colorTargetStack.length=0;acceptedAt=performance.now();stats.accepted++;return true;
+    frame=[]; state=null;lastState=null;colorTargetStack.length=0;acceptedAt=performance.now();stats.accepted++;armFirst3DWatchdog();return true;
   };
   Module.webcudaPassState=value=>{
     if(!frame||state)throw Error('Unexpected WebGPU camera state');
@@ -723,7 +734,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       timing.completionWaitMs=performance.now()-completionStart;
       queueCompleted=true;pipeline.collectRetired();
       if(runtime.flushRetired)await runtime.flushRetired();
-      if(result&&!failed&&!disposed){canvas.style.display='block';stats.presented++;}
+      if(result&&!failed&&!disposed){canvas.style.display='block';stats.presented++;if(first3DWatchdog){clearTimeout(first3DWatchdog);first3DWatchdog=null;}}
       // Publish a complete accepted frame together, so visible/total queries
       // cannot be observed from different asynchronous pass completions.
       queryFrame++;
