@@ -37,13 +37,21 @@ export class MaterialPipeline {
   static async create(runtime, onProgress=()=>{}) {
     const kernels = {};
     const total=kernelManifest.length+2;
-    let completed=0;
-    for (const descriptor of kernelManifest) {
-      const name=descriptor.entry;
-      onProgress({name,completed,total});
-      kernels[name]=await loadKernel(runtime,name);
-      completed++;
-    }
+    let completed=0,cursor=0;
+    // Fetch/compile independent WGSL kernels concurrently. The old serial loop
+    // made startup pay 79 separate driver round trips before engine/data loading
+    // could continue. Keep concurrency bounded so we do not flood Dawn/ANGLE.
+    const workerCount=Math.min(8,kernelManifest.length);
+    await Promise.all(Array.from({length:workerCount},async()=>{
+      for(;;) {
+        const index=cursor++;
+        if(index>=kernelManifest.length)return;
+        const descriptor=kernelManifest[index],name=descriptor.entry;
+        kernels[name]=await loadKernel(runtime,name);
+        completed++;
+        onProgress({name,completed,total});
+      }
+    }));
     onProgress({name:'prepare_triangles',completed,total});
     const response=await fetch(new URL('./shaders/prepare-triangles.wgsl',import.meta.url));
     if(!response.ok)throw Error('Missing WebGPU triangle preparation shader');
@@ -57,8 +65,10 @@ export class MaterialPipeline {
   constructor(runtime, kernels, rasterizer) {
     this.runtime=runtime; this.kernels=kernels; this.rasterizer=rasterizer;
     this.buffers=new Map(); this.retired=new Set(); this.busy=false;
-    this.textureResidency=new TextureResidency(runtime);
-    this.vertexResidency=new ImmutableBufferResidency(runtime,{budgetBytes:32*1024*1024,label:'OpenMW resident vertex input arena',kind:'vertex stream'});
+    const deviceMemory=Number(globalThis.navigator?.deviceMemory??0);
+    const textureBudget=deviceMemory>=16?256*1024*1024:deviceMemory>=8?128*1024*1024:64*1024*1024;
+    this.textureResidency=new TextureResidency(runtime,{budgetBytes:textureBudget});
+    this.vertexResidency=new ImmutableBufferResidency(runtime,{budgetBytes:64*1024*1024,label:'OpenMW resident vertex input arena',kind:'vertex stream'});
   }
   seedMultisample(source, samples, width, height, sampleCount) {
     this.validateMultisampleStorage(source,samples,width,height,sampleCount);
@@ -967,10 +977,20 @@ export class MaterialPipeline {
         throw RangeError('Invalid camera clear color mask');
       if(clear.length!==4||!clear.every(Number.isFinite)||!Number.isFinite(depth)||!Number.isInteger(clearMask)||(clearMask&~17664))
         throw RangeError('Unsupported camera clear state');
+      // When a camera clears every attachment over the full viewport, do the
+      // clear natively in WebGPU. The old path first ran a full-resolution
+      // compute clear into the 40-byte/pixel compatibility buffer and then
+      // imported that entire buffer into native textures with a fullscreen
+      // draw. That is pure bandwidth and is particularly expensive at 2K/4K.
+      const fullViewport=viewport_x===0&&viewport_y===0&&viewport_width===width&&viewport_height===height;
+      const fullColorClear=color_channels===0||((clearMask&16384)!==0&&clear_color_mask===15);
+      const fullDepthClear=(clearMask&256)!==0;
+      const fullStencilClear=!stencil_enabled||(clearMask&1024)!==0;
+      const nativeFullClear=fullViewport&&fullColorClear&&fullDepthClear&&fullStencilClear;
       // A zero clear mask has no attachment side effects, and an empty packet
       // cannot produce fragments. Keep texture preparation, status validation
       // and resolves: an empty camera can still clear or publish an attachment.
-      if(clearMask!==0)r.batch().dispatch(k.clear_attachment.bind({target:rasterTarget},
+      if(clearMask!==0&&!nativeFullClear)r.batch().dispatch(k.clear_attachment.bind({target:rasterTarget},
         {pixel_count:width*height,mask:clearMask,red:clear[0],green:clear[1],blue:clear[2],alpha:clear[3],depth,
          normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,
          stencil_clear,clear_color_mask,width,height,...viewportArgs,sample_count}),groups(width*height*sample_count)).submit();
@@ -980,7 +1000,7 @@ export class MaterialPipeline {
         {width,height,capacity,raster_offset,boundary_offset,point_fade_offset,lighting_offset,cluster_offset,
          fixed_offset,falloff_offset,fixed_enabled,normal_enabled,normal_channels,normal_storage,
          color_channels,color_storage,depth_bits,stencil_enabled,sample_count},
-        {scene,pass,triangleCount:slots});
+        {scene,pass:{...pass,nativeFullClear,clearColor:clear,clearDepth:depth,clearStencil:stencil_clear},triangleCount:slots});
       if(sample_count!==1)this.resolveMultisample(rasterTarget,target,width,height,sample_count,
         {mask:16384|256|1024,colorFormat:pass.colorFormat,depthFormat:pass.depthFormat,normalFormat:pass.normalFormat,normals:normal_enabled!==0,stencil:stencil_enabled!==0});
       if(!pass.deferCompletion||context)r.batch().dispatch(k.pack_target.bind({target,pixels},{width,height,row_pixels}),groups(width*height)).submit();
