@@ -2,6 +2,8 @@
 // Direct WebGPU resource, pipeline and command management. WGSL is loaded as
 // source; this module has no source-language compiler or native driver bridge.
 
+import {ComputeBindGroupCache, ReadbackBufferPool} from './runtime-reuse.js';
+
 const B = globalThis.GPUBufferUsage ?? {
   MAP_READ: 1, MAP_WRITE: 2, COPY_SRC: 4, COPY_DST: 8, INDEX: 16,
   VERTEX: 32, UNIFORM: 64, STORAGE: 128, INDIRECT: 256, QUERY_RESOLVE: 512,
@@ -59,10 +61,25 @@ function normalizeMetadata(metadata, limits) {
     uniformSize, uniformBinding, workgroupSize: Object.freeze([...workgroupSize]), workgroupStorageBytes});
 }
 
+// Metadata is immutable and reused for every bind/dispatch. Index it once,
+// rather than scanning the scalar list again for every supplied field.
+const metadataIndices = new WeakMap();
+const scalarSetters = {u32: 'setUint32', i32: 'setInt32', f32: 'setFloat32'};
+function metadataIndex(metadata) {
+  let index = metadataIndices.get(metadata);
+  if (!index) {
+    index = {scalars: new Map(metadata.scalars.map(scalar => [scalar.name, scalar])),
+      bindings: new Set(metadata.bindings.map(binding => binding.name))};
+    metadataIndices.set(metadata, index);
+  }
+  return index;
+}
+
 function validateScalars(metadata, values, partial = false) {
   if (!values || typeof values !== 'object' || Array.isArray(values)) throw new TypeError('Expected scalar values');
+  const index = metadataIndex(metadata);
   for (const [name, value] of Object.entries(values)) {
-    const scalar = metadata.scalars.find(item => item.name === name);
+    const scalar = index.scalars.get(name);
     if (!scalar || !scalarChecks[scalar.type](value)) throw new RangeError(`Invalid scalar ${name}`);
   }
   if (!partial) for (const scalar of metadata.scalars)
@@ -73,7 +90,7 @@ function snapshotScalars(metadata, values) {
   validateScalars(metadata, values);
   const bytes = new Uint8Array(metadata.uniformSize), view = new DataView(bytes.buffer);
   for (const scalar of metadata.scalars) {
-    const method = {u32: 'setUint32', i32: 'setInt32', f32: 'setFloat32'}[scalar.type];
+    const method = scalarSetters[scalar.type];
     view[method](scalar.offset, values[scalar.name], true);
   }
   return bytes;
@@ -103,7 +120,8 @@ export class WebGPURuntime {
   }
 
   constructor(device, {adapter = null, onError = () => {}, uniformCapacity = 65536,
-    maxPooledUniformBytes = 4 * 1024 * 1024, ownDevice = true} = {}) {
+    maxPooledUniformBytes = 4 * 1024 * 1024, ownDevice = true,
+    maxCachedBindGroups = 1024, maxPooledReadbackBytes = 1024 * 1024} = {}) {
     if (!device?.queue || !device.limits) throw new TypeError('Expected a WebGPU device');
     Object.assign(this, {device, adapter, onError, ownDevice});
     this.backend = 'webgpu';
@@ -120,6 +138,8 @@ export class WebGPURuntime {
     this.stats = {pipelineCompiles: 0, pipelineCacheHits: 0, submissions: 0, dispatches: 0,
       recordedBatches: 0, coalescedBatches: 0, dataBytesUploaded: 0, borrowedUploadBytes: 0,
       copiedUploadBytes: 0, readbackBytes: 0, uniformBytesUploaded: 0, uniformAllocations: 0};
+    this.bindGroupCache = new ComputeBindGroupCache(device, this.stats, maxCachedBindGroups);
+    this.readbackPool = new ReadbackBufferPool(device, this.stats, {maxBytes: maxPooledReadbackBytes});
     this.onUncapturedError = event => this.fail(event.error ?? new Error('Uncaptured WebGPU error'));
     device.addEventListener?.('uncapturederror', this.onUncapturedError);
     device.lost?.then(info => {
@@ -208,20 +228,26 @@ export class WebGPURuntime {
     range(resource, offset, byteLength);
     if (!byteLength) return Promise.resolve(new Type());
     this.flush();
-    const readback = this.device.createBuffer({label: 'OpenMW readback', size: byteLength, usage: B.COPY_DST | B.MAP_READ});
-    let mapped = false;
+    const readback = this.readbackPool.acquire(byteLength);
+    let mapped = false, succeeded = false;
     const task = (async () => {
       try {
         const encoder = this.device.createCommandEncoder({label: 'OpenMW ordered readback'});
         encoder.copyBufferToBuffer(resource.gpuBuffer, offset, readback, 0, byteLength);
         this.device.queue.submit([encoder.finish()]); this.stats.submissions++;
-        await readback.mapAsync(MAP_READ);
+        await readback.mapAsync(MAP_READ, 0, byteLength);
         mapped = true;
         if (this.failure) throw this.failure;
-        const bytes = readback.getMappedRange().slice(0);
+        // The pooled buffer can be larger than this request; never return its
+        // unused tail or a view that a later readback could overwrite.
+        const bytes = readback.getMappedRange(0, byteLength).slice(0, byteLength);
         this.stats.readbackBytes += byteLength;
+        succeeded = true;
         return new Type(bytes);
-      } finally { if (mapped) readback.unmap(); readback.destroy(); }
+      } finally {
+        try { if (mapped) readback.unmap(); }
+        finally { this.readbackPool.release(readback, succeeded && !this.failure && !this.closing && !this.disposed); }
+      }
     })();
     this.pendingReads.add(task);
     task.then(() => this.pendingReads.delete(task), () => this.pendingReads.delete(task));
@@ -280,7 +306,8 @@ export class WebGPURuntime {
   checkBindings(metadata, resources) {
     this.assertAlive();
     if (!resources || typeof resources !== 'object' || Array.isArray(resources)) throw new TypeError('Expected GPU buffers');
-    for (const name of Object.keys(resources)) if (!metadata.bindings.some(binding => binding.name === name))
+    const names = metadataIndex(metadata).bindings;
+    for (const name of Object.keys(resources)) if (!names.has(name))
       throw new Error(`Unknown buffer ${name}`);
     const seen = new Map();
     for (const binding of metadata.bindings) {
@@ -311,7 +338,7 @@ export class WebGPURuntime {
       let pool = this.arenaPool.get(arena.size);
       if (!pool) this.arenaPool.set(arena.size, pool = []);
       pool.push(arena); this.pooledUniformBytes += arena.size;
-    } else { this.arenas.delete(arena); arena.destroy(); }
+    } else { this.arenas.delete(arena); this.bindGroupCache.invalidate(arena); arena.destroy(); }
   }
 
   enqueue(command, arenas, immediate = false) {
@@ -370,6 +397,7 @@ export class WebGPURuntime {
     if (resource.destroyed) return;
     // Destruction remains available for cleanup after device loss.
     if (!this.failure && !this.closing && !this.disposed) this.flush();
+    this.bindGroupCache.invalidate(resource.gpuBuffer);
     resource.destroyed = true; this.buffers.delete(resource); resource.gpuBuffer.destroy();
   }
 
@@ -380,11 +408,12 @@ export class WebGPURuntime {
   destroyBufferCompleted(resource) {
     if (!resource || resource.runtime !== this) throw new Error('GPU buffer belongs to another runtime');
     if (resource.destroyed) return;
+    this.bindGroupCache.invalidate(resource.gpuBuffer);
     resource.destroyed=true;this.buffers.delete(resource);resource.gpuBuffer.destroy();
   }
   async idle() { await this.fence(); }
   describe() { return {backend: this.backend, adapter: this.adapter?.info ?? null,
-    features: [...(this.device.features ?? [])], limits: this.device.limits}; }
+    features: [...(this.device.features ?? [])], limits: this.device.limits, stats: {...this.stats}}; }
 
   dispose() {
     if (this.disposal) return this.disposal;
@@ -401,6 +430,7 @@ export class WebGPURuntime {
         for (const resource of this.buffers) this.destroyBuffer(resource);
         for (const arena of this.arenas) arena.destroy();
         this.arenas.clear(); this.arenaPool.clear(); this.pooledUniformBytes = 0;
+        this.bindGroupCache.clear(); this.readbackPool.dispose();
         this.kernelCache.clear(); this.disposed = true;
         this.device.removeEventListener?.('uncapturederror', this.onUncapturedError);
         if (this.ownDevice) this.device.destroy();
@@ -487,15 +517,12 @@ class WebGPUBatch {
         this.hadPass = true;
       }
       const {kernel, resources, uniforms} = operation, metadata = kernel.artifact.metadata;
-      const entries = metadata.bindings.map(binding => ({binding: binding.binding,
-        resource: {buffer: resources[binding.name].gpuBuffer, size: resources[binding.name].size}}));
       let offsets = [];
       if (uniforms.length) {
         cursor = align(cursor, runtime.uniformAlignment); data.set(uniforms, cursor);
-        entries.push({binding: metadata.uniformBinding, resource: {buffer: arena, size: metadata.uniformSize}});
         offsets = [cursor]; cursor += uniforms.length;
       }
-      const group = device.createBindGroup({label: kernel.artifact.name, layout: kernel.bindGroupLayout, entries});
+      const group = runtime.bindGroupCache.get(kernel, resources, arena);
       this.pass.setPipeline(kernel.pipeline); this.pass.setBindGroup(0, group, offsets);
       if (operation.indirect) this.pass.dispatchWorkgroupsIndirect(operation.indirect.buffer.gpuBuffer, operation.indirect.offset);
       else this.pass.dispatchWorkgroups(...operation.groups);
