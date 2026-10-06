@@ -43,7 +43,8 @@ function textureUsage(copy=true){
   return usage;
 }
 function makeColorPlane(device,width,height,samples,format,label){
-  const renderTexture=device.createTexture({label,size:[width,height],sampleCount:samples,format,usage:textureUsage(true)});
+  const renderUsage=samples===1?textureUsage(true):(GPUTextureUsage.RENDER_ATTACHMENT|GPUTextureUsage.TEXTURE_BINDING);
+  const renderTexture=device.createTexture({label,size:[width,height],sampleCount:samples,format,usage:renderUsage});
   const renderView=renderTexture.createView();
   if(samples===1)return {renderTexture,renderView,sampleTexture:renderTexture,sampleView:renderView,format,samples,width,height};
   const sampleTexture=device.createTexture({label:`${label} resolve`,size:[width,height],sampleCount:1,format,usage:textureUsage(true)});
@@ -78,8 +79,9 @@ fn bilinear(tex:texture_2d<f32>,uv:vec2<f32>,size:vec2<u32>)->vec4<f32>{
   let p10=clamp(base+vec2<i32>(1,0),vec2<i32>(0),hi);
   let p01=clamp(base+vec2<i32>(0,1),vec2<i32>(0),hi);
   let p11=clamp(base+vec2<i32>(1,1),vec2<i32>(0),hi);
-  return mix(mix(textureLoad(tex,p00,0),textureLoad(tex,p10,0),f.x),
-             mix(textureLoad(tex,p01,0),textureLoad(tex,p11,0),f.x),f.y);
+  let top=textureLoad(tex,p00,0)*(1.0-f.x)+textureLoad(tex,p10,0)*f.x;
+  let bottom=textureLoad(tex,p01,0)*(1.0-f.x)+textureLoad(tex,p11,0)*f.x;
+  return top*(1.0-f.y)+bottom*f.y;
 }
 @fragment fn post(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{
   var uv=p.xy/vec2<f32>(params.destinationSize);
