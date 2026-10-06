@@ -143,6 +143,31 @@ struct Params { width:u32,height:u32,offset:u32,pad:u32 }
   texels[params.offset+pixel]=bitcast<u32>(z);
 }`;
 
+const COMPAT_COLOR_WGSL=`
+struct Params { width:u32,height:u32,base:u32,pad:u32 }
+@group(0) @binding(0) var sourceTex:texture_2d<f32>;
+@group(0) @binding(1) var<storage,read_write> target:array<f32>;
+@group(0) @binding(2) var<uniform> params:Params;
+@compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+  if(id.x>=params.width||id.y>=params.height){return;}
+  let pixel=id.y*params.width+id.x;
+  let rgba=textureLoad(sourceTex,vec2<i32>(id.xy),0);
+  let dst=pixel*9u+params.base;
+  target[dst]=rgba.x;target[dst+1u]=rgba.y;target[dst+2u]=rgba.z;target[dst+3u]=rgba.w;
+}`;
+
+const COMPAT_DEPTH_WGSL=`
+struct Params { width:u32,height:u32,compact:u32,pad:u32 }
+@group(0) @binding(0) var sourceTex:texture_depth_2d;
+@group(0) @binding(1) var<storage,read_write> target:array<f32>;
+@group(0) @binding(2) var<uniform> params:Params;
+@compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) id:vec3<u32>){
+  if(id.x>=params.width||id.y>=params.height){return;}
+  let pixel=id.y*params.width+id.x;
+  let z=textureLoad(sourceTex,vec2<i32>(id.xy),0);
+  if(params.compact!=0u){target[pixel]=z;}else{target[pixel*9u+4u]=z;}
+}`;
+
 export class NativeAttachmentStore {
   constructor(runtime){
     this.runtime=runtime;this.device=runtime.device;
@@ -150,10 +175,13 @@ export class NativeAttachmentStore {
     this.depthModule=this.device.createShaderModule({label:'OpenMW native depth copy',code:DEPTH_COPY_WGSL});
     this.atlasColorModule=this.device.createShaderModule({label:'OpenMW native target-to-atlas color',code:ATLAS_COLOR_WGSL});
     this.atlasDepthModule=this.device.createShaderModule({label:'OpenMW native target-to-atlas depth',code:ATLAS_DEPTH_WGSL});
-    this.postPipelines=new Map();this.depthPipelines=new Map();this.atlasPipelines=new Map();
+    this.compatColorModule=this.device.createShaderModule({label:'OpenMW native compatibility color export',code:COMPAT_COLOR_WGSL});
+    this.compatDepthModule=this.device.createShaderModule({label:'OpenMW native compatibility depth export',code:COMPAT_DEPTH_WGSL});
+    this.postPipelines=new Map();this.depthPipelines=new Map();this.atlasPipelines=new Map();this.compatPipelines=new Map();
     this.uniformStride=Math.max(256,this.device.limits.minUniformBufferOffsetAlignment);
     this.postUniform=this.device.createBuffer({label:'OpenMW native postprocess uniforms',size:this.uniformStride,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
     this.atlasUniform=this.device.createBuffer({label:'OpenMW native atlas-copy uniforms',size:this.uniformStride,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
+    this.compatUniform=this.device.createBuffer({label:'OpenMW native compatibility uniforms',size:this.uniformStride,usage:GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST});
   }
   destroy(holder){
     if(!holder?.native)return;
@@ -286,6 +314,58 @@ export class NativeAttachmentStore {
       compute:{module,entryPoint:'main'}});
     this.atlasPipelines.set(key,pending);return pending;
   }
+  async compatPipeline(depth=false){
+    const key=depth?'depth':'color';let pending=this.compatPipelines.get(key);if(pending)return pending;
+    pending=this.device.createComputePipelineAsync({label:`OpenMW native compatibility ${key} export`,layout:'auto',
+      compute:{module:depth?this.compatDepthModule:this.compatColorModule,entryPoint:'main'}});
+    this.compatPipelines.set(key,pending);return pending;
+  }
+  async materializeCompatibility(holder,buffer){
+    if(!holder?.native)return;
+    const gpuBuffer=buffer?.gpuBuffer??buffer?.gpu??buffer;
+    const encoder=this.device.createCommandEncoder({label:'OpenMW native compatibility materialization'});
+    const encodeColor=async(resource,base)=>{
+      if(!resource||resource.samples!==1)return;
+      const pipeline=await this.compatPipeline(false);
+      const params=new Uint32Array([resource.width,resource.height,base,0]);
+      this.device.queue.writeBuffer(this.compatUniform,0,params);
+      const bind=this.device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
+        {binding:0,resource:resource.sampleView},{binding:1,resource:{buffer:gpuBuffer}},
+        {binding:2,resource:{buffer:this.compatUniform,size:16}}
+      ]});
+      const pass=encoder.beginComputePass();pass.setPipeline(pipeline);pass.setBindGroup(0,bind);
+      pass.dispatchWorkgroups(Math.ceil(resource.width/8),Math.ceil(resource.height/8));pass.end();
+    };
+    // Encode each pass with its own uniform buffer write + submission order. To
+    // avoid a later write changing an earlier dispatch, submit per plane.
+    const submitColor=async(resource,base)=>{
+      if(!resource||resource.samples!==1)return;
+      const pipeline=await this.compatPipeline(false);
+      const params=new Uint32Array([resource.width,resource.height,base,0]);
+      this.device.queue.writeBuffer(this.compatUniform,0,params);
+      const bind=this.device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
+        {binding:0,resource:resource.sampleView},{binding:1,resource:{buffer:gpuBuffer}},
+        {binding:2,resource:{buffer:this.compatUniform,size:16}}
+      ]});
+      const e=this.device.createCommandEncoder();const p=e.beginComputePass();p.setPipeline(pipeline);p.setBindGroup(0,bind);
+      p.dispatchWorkgroups(Math.ceil(resource.width/8),Math.ceil(resource.height/8));p.end();this.device.queue.submit([e.finish()]);
+    };
+    await submitColor(holder.native.color,0);
+    await submitColor(holder.native.normal,5);
+    const depth=holder.native.depth;
+    if(depth&&depth.samples===1){
+      const pipeline=await this.compatPipeline(true);
+      const params=new Uint32Array([depth.width,depth.height,holder.compactDepth?1:0,0]);
+      this.device.queue.writeBuffer(this.compatUniform,0,params);
+      const bind=this.device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
+        {binding:0,resource:depth.sampleView},{binding:1,resource:{buffer:gpuBuffer}},
+        {binding:2,resource:{buffer:this.compatUniform,size:16}}
+      ]});
+      const e=this.device.createCommandEncoder();const p=e.beginComputePass();p.setPipeline(pipeline);p.setBindGroup(0,bind);
+      p.dispatchWorkgroups(Math.ceil(depth.width/8),Math.ceil(depth.height/8));p.end();this.device.queue.submit([e.finish()]);
+    }
+  }
+
   async copyPlaneToAtlas(holder,plane,texels,offset,{floatOutput=false}={}){
     const resource=holder?.native?.[plane];if(!resource)throw Error(`Native ${plane} render texture is unavailable`);
     if(resource.samples!==1)throw Error('Native render-texture sampling currently requires a single-sample source');
@@ -302,7 +382,7 @@ export class NativeAttachmentStore {
     this.device.queue.submit([encoder.finish()]);
   }
   dispose(){
-    this.postUniform.destroy();this.atlasUniform.destroy();
-    this.postPipelines.clear();this.depthPipelines.clear();this.atlasPipelines.clear();
+    this.postUniform.destroy();this.atlasUniform.destroy();this.compatUniform.destroy();
+    this.postPipelines.clear();this.depthPipelines.clear();this.atlasPipelines.clear();this.compatPipelines.clear();
   }
 }
