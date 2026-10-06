@@ -316,6 +316,54 @@ All 367 generated artifacts reproduce byte-for-byte with the unchanged tracked
 SDK compiler/runtime files. Native standalone CUDA and compilation checks do
 not replace a current native-browser exterior or lifecycle run.
 
+## Pooled immutable image storage
+
+The image cache previously created one native buffer and address table per
+immutable image. The exterior report contains more than 650 cached images,
+which cannot fit alpha.6's 256 shared-resource and 256 address-table limits,
+even when their combined byte size fits. Each small shared allocation also
+rounds up to 64 KiB.
+
+`texture-residency.js` now suballocates image ranges from one lazily allocated
+64 MiB buffer. The default pool uses one native page and one address table.
+Image versions remain immutable, and copies use the saved pool offset when
+restoring an image at a different atlas location. Eviction removes lookup
+membership immediately, but its range becomes reusable only after the caller
+completes the GPU queue and collects retirement. Adjacent free ranges merge;
+fragmented space never permits an overlapping allocation. A miss that cannot
+fit bypasses the cache until a later frame. Disposal releases the pool.
+
+Cache reports distinguish `allocatedBytes` (retained pool capacity) from
+`occupiedBytes` (live images plus ranges awaiting retirement). This change
+manages host resource ownership; image decoding, mip generation, rendering and
+the native GPU copy operation remain authored CUDA.
+
+The 45 relevant host regressions and six frame-lifetime checks pass. A native
+runtime regression captures and restores 700 images using two shared pages and
+two address tables including the source atlas, checks all 1,400 copy offsets,
+and preserves the 256-job batch limit. It uses the simulated interop API.
+The browser WebGPU run compiles all 87 runtime kernels and passes 37 output
+checks. Its new pooled-cache fixture compares all pixels and guards after
+queuing atlas poisoning and relocating 700 variable-sized images. The same
+fixture is wired into paged native validation but has not run in that browser.
+Reports are `D:/OpenMW-local/webcuda-resident-arena-browser-validation.json`
+and `D:/OpenMW-local/webcuda-resident-arena-*-tests.log`.
+
+The exterior WebGPU regression saved 337 presentations with no renderer/pass
+errors, aborted captures or legacy WebGL draws and subsequently reached 481
+presentations with those counters still clear. The saved report exercised 232 cache evictions
+and 787 stores while retaining exactly 67,108,864 bytes of pool capacity.
+The saved snapshot holds 555 images occupying 66,278,972 bytes; an earlier
+snapshot held 675 images. All last 120 completed scene frames released their
+packets, and the transport copied zero scene bytes into separate JS arrays.
+Retained runtime buffer capacity was 1,941,842,720 bytes. Median capture was
+91.113 ms, renderer wall time 171.192 ms, submission interval 270.118 ms, and
+uploads 81,695,358 bytes/frame. Scene streaming and debug instrumentation make
+this a regression check, not a matched performance benchmark. Native browser
+gameplay and smooth 60-180 Hz performance remain unverified. The report and
+summary are `D:/OpenMW-local/webcuda-seyda-neen-pooled-2026-10-06.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-pooled-2026-10-06-summary.json`.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

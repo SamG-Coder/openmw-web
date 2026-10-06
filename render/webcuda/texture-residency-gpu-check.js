@@ -1,6 +1,39 @@
 import {TextureResidency} from './texture-residency.js';
 import {atlasUploadRanges} from './atlas-upload.js';
 
+// Runs with both WebGPU copies and the paged native CUDA copy kernel. Many
+// images deliberately exceed alpha.6's 256-resource limit when stored apart.
+export async function checkPooledTextureResidencyGpu(runtime) {
+  const count=700,stride=8,guard=0xdeadbeef,source=new Uint32Array(count*stride+4).fill(guard),records=[];
+  let words=0;
+  for(let i=0;i<count;i++) {
+    const size=1+i%5;words+=size;records.push(i+1,i*stride,size);
+    for(let j=0;j<size;j++)source[i*stride+j]=0x12000000+i*16+j;
+  }
+  const cache=new TextureResidency(runtime,{budgetBytes:words*4});
+  const atlas=runtime.createBuffer(source),checks=[];
+  try {
+    cache.capture(cache.plan(new Uint32Array(records),source.length),atlas);
+    const relocated=new Uint32Array(records),expected=new Uint32Array(source.length).fill(guard);
+    for(let i=0;i<count;i++) {
+      const destination=(count-1-i)*stride;relocated[i*3+1]=destination;
+      expected.set(source.subarray(i*stride,i*stride+records[i*3+2]),destination);
+    }
+    // Queue poisoning after the snapshot and before restoration, exercising
+    // ownership ordering rather than waiting between every GPU operation.
+    runtime.write(atlas,new Uint32Array(source.length).fill(guard));
+    cache.restore(cache.plan(relocated,source.length),atlas);
+    const actual=await runtime.read(atlas,Uint32Array,source.byteLength);
+    if(actual.length!==expected.length||actual.some((value,i)=>value!==expected[i]))
+      throw Error('Pooled texture relocation changed pixels or neighbouring guards');
+    const stats=cache.snapshot();
+    if(stats.entries!==count||stats.allocatedBytes!==words*4||stats.occupiedBytes!==words*4)
+      throw Error('Pooled texture cache allocation/count mismatch');
+    checks.push('700 immutable images share one GPU arena and survive queued atlas poisoning, relocation and guards');
+    return checks;
+  } finally {await runtime.idle();cache.dispose();runtime.destroyBuffer(atlas);}
+}
+
 export async function checkTextureResidencyGpu(runtime) {
   const cache=new TextureResidency(runtime,{budgetBytes:168}),resources=[];
   const buffer=data=>{const result=runtime.createBuffer(data);resources.push(result);return result;};

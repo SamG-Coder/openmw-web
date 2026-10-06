@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce repeated scene capture and geometry uploads. CUDA live-slot compaction fixes the reproduced exterior buffer-limit failure: 423 saved WebGPU presentations without renderer errors, capture aborts or legacy draws, and 1.93 GB retained runtime capacity versus 3.85 GB before. The latest debug sample still uploads 83.7 MB/frame and has a 278.355 ms submission interval. Full gameplay, current native-browser exterior and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: reduce repeated scene capture and geometry uploads. Stable CUDA clipping compaction fixes the reproduced exterior buffer-limit failure. The immutable texture cache now pools hundreds of images into one 64 MiB native page/table instead of exceeding alpha.6's 256-resource/table limits; 700-image host and WebGPU regressions pass. The pooled exterior run saved 337 frames with 232 cache evictions and no renderer errors. Its debug sample still uploads 81.7 MB/frame and has a 270.118 ms submission interval. Full gameplay, current native-browser exterior and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -1167,5 +1167,54 @@
     "report": "D:/OpenMW-local/webcuda-seyda-neen-compaction-2026-10-06.json",
     "summary": "D:/OpenMW-local/webcuda-seyda-neen-compaction-2026-10-06-summary.json",
     "limits": "Debug instrumentation enabled; scene contents change while streaming. Allocation capacity is not RSS or measured VRAM, and timing windows are not a matched performance benchmark. No new native-browser, visual-fidelity, refresh-rate or broad gameplay acceptance."
+  },
+  "pooledTextureResidency": {
+    "problem": "One GPU buffer/address table per immutable image cannot fit alpha.6's 256-resource/table limits when the exterior contains over 650 cached images. Small native allocations also round to 64 KiB.",
+    "change": "Suballocate immutable image ranges from one lazy 64 MiB pool; preserve retired ranges until GPU completion, merge free neighbours, retain protected images and bypass misses without a contiguous fit.",
+    "allocationReporting": "allocatedBytes is retained pool capacity; occupiedBytes includes live images and ranges awaiting retirement.",
+    "validation": {
+      "relatedHostChecks": 45,
+      "frameLifetimeChecks": 6,
+      "nativeRuntimeFixtureImages": 700,
+      "nativeRuntimeFixturePagesIncludingAtlas": 2,
+      "nativeRuntimeFixtureTablesIncludingAtlas": 2,
+      "nativeRuntimeFixtureCopiesChecked": 1400,
+      "webgpuCompiledRuntimeKernels": 87,
+      "webgpuOutputChecks": 37,
+      "webgpuPooledImagesWithRelocationAndGuards": 700
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-resident-arena-tests.log",
+      "D:/OpenMW-local/webcuda-resident-arena-additional-tests.log",
+      "D:/OpenMW-local/webcuda-resident-arena-lifetime-tests.log",
+      "D:/OpenMW-local/webcuda-resident-arena-browser-validation.json"
+    ],
+    "exteriorWebgpu": {
+      "engine": "5e3aac5d0ae8",
+      "cell": "Seyda Neen",
+      "dimensions": [1280, 720],
+      "savedReportPresentations": 337,
+      "laterObservedPresentations": 481,
+      "laterObservedCacheEvictions": 298,
+      "rendererOrPassErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "all120SampleFramesReleasePackets": true,
+      "allocatedPoolBytes": 67108864,
+      "occupiedPoolBytes": 66278972,
+      "residentImagesAtSavedReport": 555,
+      "earlierObservedResidentImages": 675,
+      "cacheEvictions": 232,
+      "cacheStores": 787,
+      "runtimeBufferCapacityBytes": 1941842720,
+      "copiedSceneBytes": 0,
+      "captureMs": 91.113,
+      "rendererWallMs": 171.192,
+      "presentationSubmitIntervalMs": 270.118,
+      "uploadedBytesPerFrame": 81695358,
+      "report": "D:/OpenMW-local/webcuda-seyda-neen-pooled-2026-10-06.json",
+      "summary": "D:/OpenMW-local/webcuda-seyda-neen-pooled-2026-10-06-summary.json"
+    },
+    "limits": "Native page/table/batch evidence uses simulated interop. Exact pixel and guard checks and the exterior run execute on browser WebGPU. Streaming and debug instrumentation mean the exterior timing is not a matched performance benchmark. The paged native browser fixture is wired but unexecuted; no new native gameplay or refresh-rate result. Engine and generated CUDA artifacts are unchanged."
   }
 }

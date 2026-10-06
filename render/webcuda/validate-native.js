@@ -6,6 +6,7 @@ import { checkCompactDepthGpu } from './compact-depth-gpu-check.js';
 import { NativeRendererRuntime } from './native-runtime.js';
 import { checkNativeStorageGpu } from './native-storage-gpu-check.js';
 import { checkPipelineGpu } from './pipeline-gpu-check.js';
+import { checkPooledTextureResidencyGpu } from './texture-residency-gpu-check.js';
 
 const run=document.querySelector('#run'),save=document.querySelector('#save');
 const availability=document.querySelector('#availability'),status=document.querySelector('#status');
@@ -76,6 +77,7 @@ run.addEventListener('click',async()=>{
     if(storage.value==='paged'&&scope.value==='all') {
       setStage('Native production pipeline GPU checks');
       await checks((runtime)=>checkPipelineGpu(runtime,kernels));
+      await checks(checkPooledTextureResidencyGpu);
     }
     await runtime.idle();
     report.status='passed';report.stats={...runtime.stats};

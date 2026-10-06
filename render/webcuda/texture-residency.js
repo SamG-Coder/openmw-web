@@ -21,6 +21,10 @@ export class TextureResidency {
   constructor(runtime,{budgetBytes=64*1024*1024}={}) {
     if(!Number.isSafeInteger(budgetBytes)||budgetBytes<0||budgetBytes%4)throw RangeError('Invalid texture cache budget');
     this.runtime=runtime;this.budgetBytes=budgetBytes;this.entries=new Map();this.retired=[];this.liveBytes=0;
+    // One shared arena bounds native resource/table count independently of
+    // image count. Ranges remain immutable until the caller completes the GPU
+    // queue and collects retirement; eviction alone never makes space reusable.
+    this.storage=null;this.freeRanges=budgetBytes?[[0,budgetBytes/4]]:[];
     this.hits=0;this.misses=0;this.evictions=0;this.stored=0;this.restoredBytes=0;this.bypassed=0;
   }
   plan(records,cpuWords) {
@@ -63,12 +67,38 @@ export class TextureResidency {
   }
   restore(plan,atlas) {
     if(!plan.hits.length)return;
+    for(const region of plan.hits)if(region.entry.released||!this.storage)
+      throw Error('Texture residency plan references a released image');
     const batch=this.runtime.batch();
     for(const region of plan.hits) {
-      batch.copy(region.entry.buffer,atlas,{targetOffset:region.offset*4,byteLength:region.words*4});
+      batch.copy(this.storage,atlas,{sourceOffset:region.entry.offset*4,targetOffset:region.offset*4,byteLength:region.words*4});
       this.restoredBytes+=region.words*4;
     }
     batch.submit();
+  }
+  reserve(words) {
+    const index=this.freeRanges.findIndex(([start,end])=>end-start>=words);
+    if(index<0)return null;
+    // Reserve the physical allocation before consuming its logical range, so
+    // failure leaves the allocator unchanged and existing images still owned.
+    this.storage??=this.runtime.createBuffer(this.budgetBytes,{label:'OpenMW resident image arena'});
+    const [offset,end]=this.freeRanges[index];
+    if(offset+words===end)this.freeRanges.splice(index,1);
+    else this.freeRanges[index][0]+=words;
+    this.liveBytes+=words*4;
+    return {offset,words,released:false};
+  }
+  retireForSpace(wanted,words) {
+    const ranges=[...this.freeRanges,...this.retired.map(entry=>[entry.offset,entry.offset+entry.words])];
+    const fits=()=>mergeWordRanges(ranges,this.budgetBytes/4).some(([start,end])=>end-start>=words);
+    // Account for fragmentation, not just the sum of free bytes. Do not evict
+    // more images if already-retired neighbours will provide a contiguous fit.
+    for(const [id,entry] of this.entries) {
+      if(fits())break;
+      if(wanted.has(id))continue;
+      this.entries.delete(id);this.retired.push(entry);this.evictions++;
+      ranges.push([entry.offset,entry.offset+entry.words]);
+    }
   }
   capture(plan,atlas) {
     const pending=[];let batch=null;
@@ -76,22 +106,14 @@ export class TextureResidency {
       for(const region of plan.misses) {
         const bytes=region.words*4;
         if(bytes>this.budgetBytes){this.bypassed++;continue;}
-        if(this.liveBytes+bytes>this.budgetBytes) {
-          // Retired buffers still count against the hard budget until the
-          // frame completes. Never destroy a buffer referenced by queued work.
-          let reclaimable=this.retired.reduce((sum,entry)=>sum+entry.words*4,0);
-          for(const [id,entry] of this.entries) {
-            if(this.liveBytes-reclaimable+bytes<=this.budgetBytes)break;
-            if(plan.wanted.has(id))continue;
-            this.entries.delete(id);this.retired.push(entry);this.evictions++;
-            reclaimable+=entry.words*4;
-          }
+        const entry=this.reserve(region.words);
+        if(!entry) {
+          this.retireForSpace(plan.wanted,region.words);
           this.bypassed++;continue;
         }
-        const entry={words:region.words,buffer:this.runtime.createBuffer(bytes,{label:`OpenMW resident image ${region.id}`})};
-        this.liveBytes+=bytes;pending.push({id:region.id,entry});
+        pending.push({id:region.id,entry});
         batch??=this.runtime.batch();
-        batch.copy(atlas,entry.buffer,{sourceOffset:region.offset*4,byteLength:bytes});
+        batch.copy(atlas,this.storage,{sourceOffset:region.offset*4,targetOffset:entry.offset*4,byteLength:bytes});
       }
       if(batch)batch.submit();
       for(const {id,entry} of pending){this.entries.set(id,entry);this.stored++;}
@@ -102,16 +124,18 @@ export class TextureResidency {
   }
   // The caller must have completed the queue first (including failed frames).
   collectRetired() {
-    for(const entry of this.retired){this.runtime.destroyBuffer(entry.buffer);this.liveBytes-=entry.words*4;}
+    for(const entry of this.retired){entry.released=true;this.liveBytes-=entry.words*4;}
+    this.freeRanges=mergeWordRanges([...this.freeRanges,...this.retired.map(entry=>[entry.offset,entry.offset+entry.words])],this.budgetBytes/4);
     this.retired=[];
   }
   snapshot() {
-    return {budgetBytes:this.budgetBytes,allocatedBytes:this.liveBytes,entries:this.entries.size,
+    return {budgetBytes:this.budgetBytes,allocatedBytes:this.storage?.byteLength??0,occupiedBytes:this.liveBytes,entries:this.entries.size,
       retiredBytes:this.retired.reduce((sum,entry)=>sum+entry.words*4,0),hits:this.hits,misses:this.misses,
       evictions:this.evictions,stored:this.stored,restoredBytes:this.restoredBytes,bypassed:this.bypassed};
   }
   dispose() {
     for(const entry of this.entries.values())this.retired.push(entry);
     this.entries.clear();this.collectRetired();
+    if(this.storage){this.runtime.destroyBuffer(this.storage);this.storage=null;}
   }
 }

@@ -5,6 +5,7 @@ import { checkDepthImageGpu } from './depth-image-gpu-check.js';
 import { checkCompactDepthGpu, checkFullSizeDepthGpu } from './compact-depth-gpu-check.js';
 import { checkBoundedBatchGpu } from './bounded-batch-gpu-check.js';
 import { checkPipelineGpu } from './pipeline-gpu-check.js';
+import { checkPooledTextureResidencyGpu } from './texture-residency-gpu-check.js';
 const button=document.querySelector('#run'),status=document.querySelector('#status'),results=document.querySelector('#results');
 button.addEventListener('click',async()=>{
   button.disabled=true;results.textContent='';
@@ -66,6 +67,7 @@ button.addEventListener('click',async()=>{
     if(!only) {
       setStage('Production pipeline GPU checks');
       for(const check of await checkPipelineGpu(runtime,kernels))report(`PASS: ${check}`);
+      for(const check of await checkPooledTextureResidencyGpu(runtime))report(`PASS: ${check}`);
     }
     setStage(`PASS: ${entries.length} runtime kernels validated and compiled`);
   }catch(error){setStage('FAIL');report(String(error?.stack??error));}

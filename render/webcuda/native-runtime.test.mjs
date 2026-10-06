@@ -3,6 +3,7 @@ import test from 'node:test';
 import {NativeRendererRuntime} from './native-runtime.js';
 import {MaterialPipeline} from './pipeline.js';
 import {FrameReadbacks} from './frame-readbacks.js';
+import {TextureResidency} from './texture-residency.js';
 import {NATIVE_PAGE_BYTES as page,pageRanges,canvasPageCopies} from './native-layout.js';
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
@@ -33,6 +34,30 @@ function fixture() {
   return {runtime,base,native,events,writes,submissions,errors};
 }
 const artifact={metadata:{uniformSize:4},native:{storage:'openmw-paged-64m-v1',entry:'test',parameters:[{name:'target',type:'buffer'},{name:'value',type:'u32'}]}};
+
+test('hundreds of resident images use one shared arena and keep native page/table counts bounded',async()=>{
+  const f=fixture(),count=700,atlas=f.runtime.createBuffer(count*4);
+  f.native.capabilities.maxResources=8;
+  const cache=new TextureResidency(f.runtime,{budgetBytes:count*4});
+  const records=Uint32Array.from({length:count*3},(_,i)=>[Math.floor(i/3)+1,Math.floor(i/3),1][i%3]);
+  cache.capture(cache.plan(records,count),atlas);
+  await f.runtime.idle();
+  assert.equal(cache.snapshot().entries,count);
+  assert.equal(f.runtime.reservedPages,2);assert.equal(f.runtime.reservedTables,2);
+  const relocated=records.slice();
+  for(let i=0;i<count;i++)relocated[i*3+1]=count-1-i;
+  cache.restore(cache.plan(relocated,count),atlas);await f.runtime.idle();
+  const copies=f.submissions.flat().filter(job=>job.name==='copy');
+  assert.equal(copies.length,count*2);
+  assert(f.submissions.every(jobs=>jobs.length<=256));
+  for(let i=0;i<count;i++) {
+    assert.equal(copies[i].scalars.source_offset,i);assert.equal(copies[i].scalars.target_offset,i);
+    assert.equal(copies[count+i].scalars.source_offset,count-1-i);assert.equal(copies[count+i].scalars.target_offset,i);
+  }
+  cache.dispose();f.runtime.destroyBuffer(atlas);await f.runtime.idle();
+  assert.equal(f.runtime.reservedPages,0);assert.equal(f.runtime.reservedTables,0);
+  await f.runtime.dispose();
+});
 
 test('page range planning preserves byte offsets and rejects misaligned or out-of-bounds transfers',()=>{
   assert.deepEqual(pageRanges(page+16,page-4,12),[
