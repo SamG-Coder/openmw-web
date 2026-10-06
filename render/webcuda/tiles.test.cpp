@@ -6,6 +6,7 @@
 unsigned int atomicAdd(unsigned int* p,unsigned int value){auto old=*p;*p+=value;return old;}
 unsigned int atomicMax(unsigned int* p,unsigned int value){auto old=*p;if(value>*p)*p=value;return old;}
 #define __global__
+#define __device__
 struct Dim { unsigned int x = 0, y = 0; } blockIdx, blockDim, threadIdx, gridDim;
 #include "geometry.cu"
 #include "tiles.cu"

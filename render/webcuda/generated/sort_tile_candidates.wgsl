@@ -11,6 +11,7 @@ struct CWParams {
 const cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);
 
 
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,
@@ -22,13 +23,13 @@ fn main(
     return;
   }
   var v_n: u32 = b_counts[v_tile];
-  var cw_tmp_0: u32;
+  var cw_tmp_3: u32;
   if ((cw_params.p_capacity == 0u)) {
-    cw_tmp_0 = b_candidates[v_tile];
+    cw_tmp_3 = b_candidates[v_tile];
   } else {
-    cw_tmp_0 = (v_tile * cw_params.p_capacity);
+    cw_tmp_3 = (v_tile * cw_params.p_capacity);
   }
-  var v_base: u32 = cw_tmp_0;
+  var v_base: u32 = cw_tmp_3;
   if (((v_n < 2u) || ((cw_params.p_capacity != 0u) && (v_n > cw_params.p_capacity)))) {
     return;
   }

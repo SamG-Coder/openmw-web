@@ -112,6 +112,17 @@ __global__ void clear_tile_counts(unsigned int* counts,unsigned int tile_count) 
     unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;
     if(i<tile_count)counts[i]=0u;
 }
+// A filled triangle cannot reach a tile wholly outside one of its edges.
+// Evaluate the corner that maximizes the oriented edge equation, using the
+// same expression as raster_material. The caller supplies a conservative
+// rounding margin; points on or close to an edge always retain their tile.
+__device__ unsigned int tile_outside_edge(float ax,float ay,float bx,float by,
+    float left,float top,float right,float bottom,float sign,float margin) {
+    float x=(ay-by)*sign>=0.0f?right:left;
+    float y=(bx-ax)*sign>=0.0f?bottom:top;
+    float edge=((ax-x)*(by-y)-(ay-y)*(bx-x))*sign;
+    return edge < -margin?1u:0u;
+}
 __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indices,
     unsigned int* counts,unsigned int* candidates,const unsigned int* offsets,const unsigned int* summary,
     const unsigned int* materials,const float* attributes,unsigned int width,unsigned int height,
@@ -119,11 +130,15 @@ __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indice
     unsigned int t=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;
     if(t>=triangle_count||(scatter!=0u&&summary[1]!=0u))return;
     float minx=(float)width,miny=(float)height,maxx=0.0f,maxy=0.0f;
+    float xs[3],ys[3];
+    float magnitude=fmaxf((float)width,(float)height);
     for(unsigned int corner=0;corner<3;corner++) {
         unsigned int i=indices[t*4u+corner]*10u;
         float w=clip[i+3u];if(w<=0.0f)return;
         float x=(clip[i]/w*0.5f+0.5f)*(float)width;
         float y=(0.5f-clip[i+1u]/w*0.5f)*(float)height;
+        xs[corner]=x;ys[corner]=y;
+        magnitude=fmaxf(magnitude,fmaxf(fabsf(x),fabsf(y)));
         minx=fminf(minx,x);miny=fminf(miny,y);maxx=fmaxf(maxx,x);maxy=fmaxf(maxy,y);
     }
     unsigned int material=indices[t*4u+3u],m=material*12u;
@@ -193,7 +208,23 @@ __global__ void bin_triangle_bounds(const float* clip,const unsigned int* indice
     unsigned int columns=(width+15u)/16u;
     unsigned int x0=(unsigned int)firstx/16u,x1=(unsigned int)lastx/16u;
     unsigned int y0=(unsigned int)firsty/16u,y1=(unsigned int)lasty/16u;
+    float area=(xs[1]-xs[0])*(ys[2]-ys[0])-(ys[1]-ys[0])*(xs[2]-xs[0]);
+    // 256 * float epsilon * coordinate scale squared deliberately exceeds
+    // the projection/edge-expression rounding error (including fused versus
+    // unfused evaluation). Ambiguous facing or non-finite scale keeps the
+    // original box. Lines and points can cover outside the filled polygon.
+    float margin=0.000030517578125f*magnitude*magnitude;
+    unsigned int testEdges=frontMode==0u&&backMode==0u&&fabsf(area)>margin?1u:0u;
+    float sign=area>0.0f?1.0f:-1.0f;
     for(unsigned int y=y0;y<=y1;y++)for(unsigned int x=x0;x<=x1;x++) {
+        if(testEdges!=0u) {
+            float left=(float)(x*16u)+sampleMin,top=(float)(y*16u)+sampleMin;
+            float right=fminf((float)(x*16u+15u),(float)(width-1u))+sampleMax;
+            float bottom=fminf((float)(y*16u+15u),(float)(height-1u))+sampleMax;
+            if(tile_outside_edge(xs[0],ys[0],xs[1],ys[1],left,top,right,bottom,sign,margin)!=0u
+                ||tile_outside_edge(xs[1],ys[1],xs[2],ys[2],left,top,right,bottom,sign,margin)!=0u
+                ||tile_outside_edge(xs[2],ys[2],xs[0],ys[0],left,top,right,bottom,sign,margin)!=0u)continue;
+        }
         unsigned int tile=y*columns+x,slot=atomicAdd(&counts[tile],1u);
         if(capacity!=0u) {if(slot<capacity)candidates[tile*capacity+slot]=t;}
         else if(scatter!=0u)candidates[offsets[tile]+slot]=t;

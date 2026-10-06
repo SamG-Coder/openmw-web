@@ -17,6 +17,7 @@ const cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);
 
 fn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }
 
+
 @compute @workgroup_size(64, 1, 1)
 fn main(
   @builtin(local_invocation_id) cw_thread: vec3<u32>,

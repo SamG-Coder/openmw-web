@@ -21,6 +21,40 @@ struct CWParams {
 const cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);
 
 fn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }
+fn f_tile_outside_edge(cw_arg_ax: f32, cw_arg_ay: f32, cw_arg_bx: f32, cw_arg_by: f32, cw_arg_left: f32, cw_arg_top: f32, cw_arg_right: f32, cw_arg_bottom: f32, cw_arg_sign: f32, cw_arg_margin: f32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> u32 {
+  var v_ax: f32 = cw_arg_ax;
+  var v_ay: f32 = cw_arg_ay;
+  var v_bx: f32 = cw_arg_bx;
+  var v_by: f32 = cw_arg_by;
+  var v_left: f32 = cw_arg_left;
+  var v_top: f32 = cw_arg_top;
+  var v_right: f32 = cw_arg_right;
+  var v_bottom: f32 = cw_arg_bottom;
+  var v_sign: f32 = cw_arg_sign;
+  var v_margin: f32 = cw_arg_margin;
+  var cw_tmp_0: f32;
+  if ((((v_ay - v_by) * v_sign) >= 0.0f)) {
+    cw_tmp_0 = v_right;
+  } else {
+    cw_tmp_0 = v_left;
+  }
+  var v_x: f32 = cw_tmp_0;
+  var cw_tmp_1: f32;
+  if ((((v_bx - v_ax) * v_sign) >= 0.0f)) {
+    cw_tmp_1 = v_bottom;
+  } else {
+    cw_tmp_1 = v_top;
+  }
+  var v_y: f32 = cw_tmp_1;
+  var v_edge: f32 = ((((v_ax - v_x) * (v_by - v_y)) - ((v_ay - v_y) * (v_bx - v_x))) * v_sign);
+  var cw_tmp_2: u32;
+  if ((v_edge < (-v_margin))) {
+    cw_tmp_2 = 1u;
+  } else {
+    cw_tmp_2 = 0u;
+  }
+  return cw_tmp_2;
+}
 
 @compute @workgroup_size(64, 1, 1)
 fn main(
@@ -36,6 +70,9 @@ fn main(
   var v_miny: f32 = f32(cw_params.p_height);
   var v_maxx: f32 = 0.0f;
   var v_maxy: f32 = 0.0f;
+  var v_xs: array<f32, 3>;
+  var v_ys: array<f32, 3>;
+  var v_magnitude: f32 = max(f32(cw_params.p_width), f32(cw_params.p_height));
   {
     var v_corner: u32 = u32(0i);
     loop {
@@ -47,6 +84,9 @@ fn main(
       }
       var v_x: f32 = (((cw_divide_f32(b_clip[v_i], v_w) * 0.5f) + 0.5f) * f32(cw_params.p_width));
       var v_y: f32 = ((0.5f - (cw_divide_f32(b_clip[(v_i + 1u)], v_w) * 0.5f)) * f32(cw_params.p_height));
+      v_xs[v_corner] = v_x;
+      v_ys[v_corner] = v_y;
+      v_magnitude = max(v_magnitude, max(abs(v_x), abs(v_y)));
       v_minx = min(v_minx, v_x);
       v_miny = min(v_miny, v_y);
       v_maxx = max(v_maxx, v_x);
@@ -121,9 +161,9 @@ fn main(
         }
         var v_attenuation: f32 = ((b_attributes[(v_raster + 46u)] + (b_attributes[(v_raster + 47u)] * sqrt(v_distance2))) + (b_attributes[(v_raster + 48u)] * v_distance2));
         var v_size: f32 = cw_divide_f32(b_attributes[(v_raster + 38u)], sqrt(max(1e-12f, v_attenuation)));
-        let cw_argument_index_0 = (v_raster + 44u);
-        let cw_argument_index_1 = (v_raster + 43u);
-        v_size = min(b_attributes[cw_argument_index_0], max(b_attributes[cw_argument_index_1], v_size));
+        let cw_argument_index_3 = (v_raster + 44u);
+        let cw_argument_index_4 = (v_raster + 43u);
+        v_size = min(b_attributes[cw_argument_index_3], max(b_attributes[cw_argument_index_4], v_size));
         v_pointSize = max(v_pointSize, v_size);
         continuing {
           v_corner += u32(1);
@@ -131,8 +171,8 @@ fn main(
       }
     }
     if (((cw_params.p_sample_count > 1u) && (b_attributes[(v_raster + 27u)] != 0.0f))) {
-      let cw_argument_index_2 = (v_raster + 45u);
-      v_pointSize = max(v_pointSize, b_attributes[cw_argument_index_2]);
+      let cw_argument_index_5 = (v_raster + 45u);
+      v_pointSize = max(v_pointSize, b_attributes[cw_argument_index_5]);
     }
     var v_pointPadding: f32 = (v_pointSize * 0.5f);
     if (((cw_params.p_sample_count == 1u) || (b_attributes[(v_raster + 27u)] == 0.0f))) {
@@ -154,19 +194,19 @@ fn main(
   var v_sampleMin: f32 = 0.5f;
   var v_sampleMax: f32 = 0.5f;
   if (((cw_params.p_sample_count > 1u) && (b_attributes[(v_raster + 27u)] != 0.0f))) {
-    var cw_tmp_4: f32;
+    var cw_tmp_7: f32;
     if ((cw_params.p_sample_count == 2u)) {
-      cw_tmp_4 = 0.25f;
+      cw_tmp_7 = 0.25f;
     } else {
-      var cw_tmp_3: f32;
+      var cw_tmp_6: f32;
       if ((cw_params.p_sample_count == 8u)) {
-        cw_tmp_3 = 0.0625f;
+        cw_tmp_6 = 0.0625f;
       } else {
-        cw_tmp_3 = 0.125f;
+        cw_tmp_6 = 0.125f;
       }
-      cw_tmp_4 = cw_tmp_3;
+      cw_tmp_7 = cw_tmp_6;
     }
-    v_sampleMin = cw_tmp_4;
+    v_sampleMin = cw_tmp_7;
     v_sampleMax = (1.0f - v_sampleMin);
   }
   var v_firstx: f32 = ceil((v_minx - v_sampleMax));
@@ -185,6 +225,22 @@ fn main(
   var v_x1: u32 = (u32(v_lastx) / 16u);
   var v_y0: u32 = (u32(v_firsty) / 16u);
   var v_y1: u32 = (u32(v_lasty) / 16u);
+  var v_area: f32 = (((v_xs[1i] - v_xs[0i]) * (v_ys[2i] - v_ys[0i])) - ((v_ys[1i] - v_ys[0i]) * (v_xs[2i] - v_xs[0i])));
+  var v_margin: f32 = ((0.000030517578125f * v_magnitude) * v_magnitude);
+  var cw_tmp_8: u32;
+  if ((((v_frontMode == 0u) && (v_backMode == 0u)) && (abs(v_area) > v_margin))) {
+    cw_tmp_8 = 1u;
+  } else {
+    cw_tmp_8 = 0u;
+  }
+  var v_testEdges: u32 = cw_tmp_8;
+  var cw_tmp_9: f32;
+  if ((v_area > 0.0f)) {
+    cw_tmp_9 = 1.0f;
+  } else {
+    cw_tmp_9 = (-1.0f);
+  }
+  var v_sign: f32 = cw_tmp_9;
   {
     var v_y: u32 = v_y0;
     loop {
@@ -193,6 +249,35 @@ fn main(
         var v_x: u32 = v_x0;
         loop {
           if (!(v_x <= v_x1)) { break; }
+          if ((v_testEdges != 0u)) {
+            var v_left: f32 = (f32((v_x * 16u)) + v_sampleMin);
+            var v_top: f32 = (f32((v_y * 16u)) + v_sampleMin);
+            var v_right: f32 = (min(f32(((v_x * 16u) + 15u)), f32((cw_params.p_width - 1u))) + v_sampleMax);
+            var v_bottom: f32 = (min(f32(((v_y * 16u) + 15u)), f32((cw_params.p_height - 1u))) + v_sampleMax);
+            let cw_argument_index_10 = 0i;
+            let cw_argument_index_11 = 0i;
+            let cw_argument_index_12 = 1i;
+            let cw_argument_index_13 = 1i;
+            var cw_tmp_18: bool = (f_tile_outside_edge(v_xs[cw_argument_index_10], v_ys[cw_argument_index_11], v_xs[cw_argument_index_12], v_ys[cw_argument_index_13], v_left, v_top, v_right, v_bottom, v_sign, v_margin, cw_thread, cw_block, cw_grid) != 0u);
+            if (!cw_tmp_18) {
+              let cw_argument_index_14 = 1i;
+              let cw_argument_index_15 = 1i;
+              let cw_argument_index_16 = 2i;
+              let cw_argument_index_17 = 2i;
+              cw_tmp_18 = (f_tile_outside_edge(v_xs[cw_argument_index_14], v_ys[cw_argument_index_15], v_xs[cw_argument_index_16], v_ys[cw_argument_index_17], v_left, v_top, v_right, v_bottom, v_sign, v_margin, cw_thread, cw_block, cw_grid) != 0u);
+            }
+            var cw_tmp_23: bool = cw_tmp_18;
+            if (!cw_tmp_23) {
+              let cw_argument_index_19 = 2i;
+              let cw_argument_index_20 = 2i;
+              let cw_argument_index_21 = 0i;
+              let cw_argument_index_22 = 0i;
+              cw_tmp_23 = (f_tile_outside_edge(v_xs[cw_argument_index_19], v_ys[cw_argument_index_20], v_xs[cw_argument_index_21], v_ys[cw_argument_index_22], v_left, v_top, v_right, v_bottom, v_sign, v_margin, cw_thread, cw_block, cw_grid) != 0u);
+            }
+            if (cw_tmp_23) {
+              continue;
+            }
+          }
           var v_tile: u32 = ((v_y * v_columns) + v_x);
           var v_slot: u32 = atomicAdd(&b_counts[v_tile], 1u);
           if ((cw_params.p_capacity != 0u)) {

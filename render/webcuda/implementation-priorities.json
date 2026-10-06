@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated per-pixel raster work and native fence boundaries. CUDA binning now removes scissored or wholly rejected draws before sorting; exact CPU and standalone GPU raster comparisons pass. Small-pass status readbacks are collected at frame completion.",
+  "currentPriority": "P0: continue code-led work on large-pass sizing, repeated per-pixel raster work and native fence boundaries. CUDA binning rejects scissored draws and filled-triangle tiles outside actual edge coverage; 1800 exact CPU and standalone GPU raster comparisons pass. Isolated GPU raster timings improve with the smaller lists; full-game FPS remains unmeasured.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest engine remains 61275df13d9f, with regenerated CUDA tile-binning artifacts served separately. Scissor and whole-draw rejection now avoid invisible tile references, verified by 1440 exact CPU and standalone GPU raster comparisons. Continue tracing large-pass sizing, repeated per-pixel raster calculations and native fence boundaries. Isolated work-count reductions do not establish gameplay FPS.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest engine remains 61275df13d9f, with regenerated CUDA tile-binning artifacts served separately. Filled-triangle edge rejection now avoids empty tiles before per-pixel setup; exact CPU/GPU comparisons and isolated GPU timings pass. Continue tracing large-pass sizing, triangle setup and native fence boundaries. All four stock postprocess effect names have CUDA routes; custom effects and broader game/lifecycle acceptance remain outside the verified coverage.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -902,5 +902,32 @@
     },
     "reports": ["D:/OpenMW-local/webcuda-tests/tile-pruning-cpu.log", "D:/OpenMW-local/webcuda-tests/tile-pruning-gpu.log", "D:/OpenMW-local/webcuda-tile-pruning-native-compile.json"],
     "limits": "Standalone GPU execution validates CUDA arithmetic and list safety, not browser ownership, presentation, game FPS or full-game acceptance. Standard WebGPU artifacts were generated; their new GPU execution was not repeated."
+  },
+  "cudaTileCoverage": {
+    "change": "Reject filled-triangle tiles wholly outside an edge before counting/scattering. Use the maximizing sample-rectangle corner and a conservative float rounding margin. Retain ambiguous, line and point cases. Rendering math remains in tiles.cu; packet and host interfaces are unchanged.",
+    "fixture": "render/webcuda/tile-coverage.test.cpp",
+    "validation": {
+      "cpuExactRasterComparisons": 360,
+      "nativeGpuExactRasterComparisons": 360,
+      "existingPruningComparisonsPerBackend": 1440,
+      "existingRandomizedTileScenes": 30,
+      "hostChecks": 35,
+      "scope": "Production raster color/depth/stencil equality against all-triangle lists, guarded storage, both windings, near-collinear geometry, edges near sample positions, 1/2/4/8/16 samples, dimensions 1 through 8193.",
+      "pagedNvrtcCompilation": "passed",
+      "servedArtifacts": "WGSL, metadata and native-paged binner SHA-256 match local generated files"
+    },
+    "isolatedGpuRaster": {
+      "device": "NVIDIA GeForce RTX 5080",
+      "width": 1280,
+      "height": 720,
+      "triangles": 96,
+      "measuredSamples": 9,
+      "warmups": 3,
+      "randomTriangles": {"beforeReferences": 84358, "afterReferences": 27750, "beforeMs": 2.479, "afterMs": 1.894},
+      "longThinTriangles": {"beforeReferences": 345600, "afterReferences": 12384, "beforeMs": 3.798, "afterMs": 1.677},
+      "method": "CUDA event medians with alternating order, identical production raster kernel and direct CUDA buffers. Compare rectangular lists with edge-tested lists. Binning and host/browser work are outside the timer."
+    },
+    "reports": ["D:/OpenMW-local/webcuda-tests/tile-coverage-cpu.log", "D:/OpenMW-local/webcuda-tests/tile-coverage-gpu.log", "D:/OpenMW-local/webcuda-tile-coverage-native-compile.json"],
+    "limits": "Synthetic native GPU raster evidence, not full-game FPS or browser interop. Regenerated WebGPU shaders have not been re-executed in a browser. Broad scene, lifecycle and variable-refresh acceptance remains incomplete."
   }
 }

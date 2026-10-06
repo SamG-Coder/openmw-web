@@ -97,6 +97,36 @@ between CPU and GPU floating-point calculations.
 The regenerated paged binner also passes the browser's bundled NVRTC compiler.
 These checks do not exercise browser interop or full-game behavior.
 
+Filled triangles now also reject tiles lying wholly outside any triangle edge.
+Previously every tile in the rectangular bounds reached the rasterizer, where
+each sample repeated triangle setup before discovering it was outside. The
+CUDA binner evaluates the most permissive corner for each edge, with a margin
+of 256 float epsilons times the squared coordinate scale. Ambiguous facing,
+near-edge tiles, line modes and point modes retain their conservative bounds.
+No packet layout, resource allocation or host-side rendering math changed.
+
+`tile-coverage.test.cpp` adds 360 exact color/depth/stencil comparisons on both
+CPU and native GPU, including near-collinear triangles, both windings, tiny and
+partial targets, dimensions up to 8,193 pixels, and edges at and immediately
+either side of multisample positions. Incrementing stencil on every covered
+sample prevents later triangles from hiding missing coverage. The existing
+1,440-case pruning suite also passes on both CPU and GPU with this revision.
+
+Isolated RTX 5080 raster measurements at 1280x720, with 96 triangles:
+
+| Synthetic geometry | Rectangle-list references | Edge-tested references | GPU raster before | GPU raster after |
+| --- | ---: | ---: | ---: | ---: |
+| Random triangles | 84,358 | 27,750 | 2.479 ms | 1.894 ms |
+| Long thin triangles | 345,600 | 12,384 | 3.798 ms | 1.677 ms |
+
+These are medians of nine CUDA event samples after three warmups, with test
+order alternating. Both sides execute the same production raster kernel on
+direct CUDA buffers; only their candidate lists differ. Binning, browser
+interop, host capture and presentation are outside the timer. They establish
+less GPU raster work in these fixtures, not the game's new frame rate. The
+paged kernel passes bundled NVRTC compilation; generated WebGPU artifacts
+are refreshed but this revision has not been run through browser WebGPU.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal
@@ -195,6 +225,12 @@ prompt. Both builds execute the same fixture; the NVCC build launches the real
 production CUDA kernels. Current compiler/run logs and executables are under
 `D:/OpenMW-local/webcuda-tests/tile-pruning-*`; the paged compiler report is
 `D:/OpenMW-local/webcuda-tile-pruning-native-compile.json`.
+
+Build `render/webcuda/tile-coverage.test.cpp` with the same commands and flags.
+Its NVCC build accepts `--benchmark` for the two isolated raster measurements.
+The CPU build runs correctness checks only. Current logs are
+`D:/OpenMW-local/webcuda-tests/tile-coverage-{cpu,gpu}.log`; the paged compiler
+report is `D:/OpenMW-local/webcuda-tile-coverage-native-compile.json`.
 
 For local serving, `/webcuda/` must expose this directory and `/webcuda-sdk/`
 must expose the SDK checkout, alongside the matching WASM64 engine artifacts,
