@@ -16,7 +16,9 @@ extern "C" EMSCRIPTEN_KEEPALIVE void omw_webcuda_release_pass(unsigned int token
 {
     retainedPasses.erase(token);
 }
-EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, const float* vertices, size_t vertexFloats,
+EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEncoding,
+    const unsigned int* vertexLayouts, size_t vertexLayoutWords, const float* vertexInputs, size_t vertexInputFloats,
+    const float* vertices, size_t vertexFloats,
     const float* matrices, size_t matrixFloats, const unsigned int* matrixIds, size_t matrixCount,
     const unsigned int* triangles, size_t triangleWords, const unsigned int* materials, size_t materialWords,
     const unsigned int* texels, size_t texelCount, size_t texelWordCount, const unsigned int* blocks, size_t blockWords,
@@ -62,6 +64,7 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, const float* vertices, 
         return heap.subarray(start,start+length);
     }
     const packet={version:2,storage:'wasm-retained',release,width:width,height:height,scene:{
+        vertexEncoding:vertexEncoding,vertexLayouts:view(HEAPU32,vertexLayouts,vertexLayoutWords),vertexInputs:view(HEAPF32,vertexInputs,vertexInputFloats),
         vertices:view(HEAPF32,vertices,vertexFloats),matrices:view(HEAPF32,matrices,matrixFloats),
         matrixIds:view(HEAPU32,matrixIds,matrixCount),triangles:view(HEAPU32,triangles,triangleWords),
         materials:view(HEAPU32,materials,materialWords),texels:view(HEAPU32,texels,texelCount),texelWordCount:Number(texelWordCount),
@@ -108,7 +111,9 @@ namespace WebCuda
         const auto& geometry=retained.geometry;
         const auto& table=*retained.table;
         // The JS wrapper owns release on success, rejection and JS exceptions.
-        return omw_webcuda_submit_pass(token,geometry.vertices.data(),geometry.vertices.size(),
+        return omw_webcuda_submit_pass(token,geometry.compactVertices?1u:0u,
+            geometry.vertexLayouts.data(),geometry.vertexLayouts.size(),geometry.vertexInputs.data(),geometry.vertexInputs.size(),
+            geometry.vertices.data(),geometry.vertices.size(),
             geometry.matrices.data(),geometry.matrices.size(),geometry.matrixIds.data(),geometry.matrixIds.size(),
             geometry.triangles.data(),geometry.triangles.size(),table.materials().data(),table.materials().size(),
             table.texels().data(),table.texels().size(),table.texelWordCount(),table.compressedBlocks().data(),table.compressedBlocks().size(),

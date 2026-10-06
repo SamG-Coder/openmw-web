@@ -76,6 +76,31 @@ export async function checkPipelineGpu(runtime,kernels) {
     for(let i=0;i<pixels;i++)if(i%width>=2)translatedExpected.set([.5,0,0,1,.5],i*9);
     equal('Pipeline model-view translation and right-plane clipping preserve uncovered pixels',
       await render(translated),translatedExpected);
+    for(const compactKind of ['dense','streams']) {
+      const compact=scene();compact.vertexEncoding=1;compact.vertexLayouts=new Uint32Array(32);
+      compact.matrices[12]=.5;
+      if(compactKind==='dense') {
+        compact.vertexLayouts.set([0,4,4,0,0,0,0,40,176]);
+        compact.vertexInputs=new Float32Array(188);compact.vertexInputs.set(compact.vertices);
+        for(let i=0;i<4;i++) {
+          compact.vertexInputs[40+i*34+16]=compact.vertices[i*10+8];
+          compact.vertexInputs[40+i*34+17]=compact.vertices[i*10+9];
+          for(let unit=0;unit<4;unit++)compact.vertexInputs[40+i*34+27+unit*2]=1;
+        }
+      } else {
+        const inputs=[0,0,0];compact.vertexLayouts.set([0,4,4,1,0,0]);
+        const streams=[[-1,1,0,1,1,1,0,1,1,-1,0,1,-1,-1,0,1],[1,0,0,.5],[0,0,0],[0,0,0],
+          [0,0,0,0],[0],[0,0,0,1,1,0,0,1,1,1,0,1,0,1,0,1],[0,0,0,1],[0,0,0,1],[0,0,0,1]];
+        for(let stream=0;stream<streams.length;stream++) {
+          compact.vertexLayouts.set([inputs.length,stream===0||stream===6?4:0],8+stream*2);inputs.push(...streams[stream]);
+        }
+        compact.vertexInputs=new Float32Array(inputs);
+      }
+      compact.vertices=new Float32Array();compact.attributes=new Float32Array();
+      runtime.write(target,initial);
+      equal(`Pipeline CUDA ${compactKind} vertex input construction preserves transformed and clipped color`,
+        await render(compact),translatedExpected);
+    }
     // Trigger the production compaction threshold with mostly offscreen draws.
     // The two visible triangles straddle a prefix-block boundary; compare with
     // the identical small-camera result, including a partially clipped edge.

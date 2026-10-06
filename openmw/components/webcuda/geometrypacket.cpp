@@ -115,6 +115,20 @@ namespace WebCuda
             }
 
             osg::Vec4 operator[](unsigned int vertex) const { return mRead?mRead(mData,vertex):mConstant; }
+            std::size_t inputWords(unsigned int count,unsigned int components) const { return std::size_t(mRead?count:1u)*components; }
+
+            void capture(std::vector<float>& inputs, std::uint32_t* descriptor,
+                unsigned int count, unsigned int components) const
+            {
+                const auto records=mRead?count:1u;
+                if(inputs.size()+std::uint64_t(records)*components>std::numeric_limits<std::uint32_t>::max())
+                    throw std::runtime_error("Vertex input stream exceeds index range");
+                descriptor[0]=static_cast<std::uint32_t>(inputs.size());descriptor[1]=mRead?components:0u;
+                for(unsigned int i=0;i<records;i++) {
+                    const auto value=(*this)[i];
+                    for(unsigned int k=0;k<components;k++)inputs.push_back(value[k]);
+                }
+            }
 
         private:
             template<class Value, unsigned int Components, bool Normalized>
@@ -335,28 +349,58 @@ namespace WebCuda
         }
         void commit(GeometryPacket& packet, GeometryPacket& draw)
         {
-            const std::size_t base = packet.vertices.size()/10, matrix = packet.matrices.size()/32;
+            const std::size_t base = packet.vertexCount(), matrix = packet.matrices.size()/32, count=draw.vertexCount();
             if(packet.morphOffsets.size()/4+draw.morphOffsets.size()/4>std::numeric_limits<std::uint32_t>::max())
                 throw std::runtime_error("Combined morph packet exceeds index range");
             if(packet.skinWeights.size()/2+draw.skinWeights.size()/2>std::numeric_limits<std::uint32_t>::max()
                 ||packet.skinBones.size()/32+draw.skinBones.size()/32>std::numeric_limits<std::uint32_t>::max()
                 ||packet.skinTransforms.size()/32+draw.skinTransforms.size()/32>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("Combined skin packet exceeds index range");
-            if (base + draw.vertices.size()/10 > std::numeric_limits<std::uint32_t>::max()
+            if (base + count > std::numeric_limits<std::uint32_t>::max()
                 || matrix >= std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error("WebCuda packet is too large");
             for (float value : draw.vertices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda vertex");
             for (float value : draw.attributes) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda attribute");
+            for (float value : draw.vertexInputs) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda vertex input");
             for (float value : draw.matrices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda matrix");
             for (float value : draw.uvMatrices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda UV matrix");
             for (std::size_t i=0; i<draw.triangles.size(); ++i)
                 if (i%4 != 3) draw.triangles[i] += static_cast<std::uint32_t>(base);
             // Generated vertices inherit the current secondary color; ordinary
             // geometry supplies its explicit array before its generated tail.
-            const auto explicitSecondary=draw.secondaryColors.size();
-            draw.secondaryColors.resize(draw.vertices.size()/10*3);
-            for(std::size_t i=explicitSecondary;i<draw.secondaryColors.size();i++)
-                std::memcpy(&draw.secondaryColors[i],&draw.fixedLighting[42+i%3],4);
-            for(float value:draw.secondaryColors)if(!std::isfinite(value))throw std::runtime_error("Non-finite secondary color");
-            packet.secondaryColors.insert(packet.secondaryColors.end(),draw.secondaryColors.begin(),draw.secondaryColors.end());
+            if(!draw.compactVertices) {
+                const auto explicitSecondary=draw.secondaryColors.size();
+                draw.secondaryColors.resize(count*3);
+                for(std::size_t i=explicitSecondary;i<draw.secondaryColors.size();i++)
+                    std::memcpy(&draw.secondaryColors[i],&draw.fixedLighting[42+i%3],4);
+                for(float value:draw.secondaryColors)if(!std::isfinite(value))throw std::runtime_error("Non-finite secondary color");
+            }
+            if(packet.compactVertices) {
+                std::array<std::uint32_t,32> layout{};
+                const auto inputBase=packet.vertexInputs.size();
+                const auto words=draw.compactVertices?draw.vertexInputs.size():count*47;
+                if(inputBase+words>std::numeric_limits<std::uint32_t>::max())
+                    throw std::runtime_error("Combined vertex input stream exceeds index range");
+                if(draw.compactVertices) {
+                    std::copy(draw.vertexLayouts.begin(),draw.vertexLayouts.end(),layout.begin());
+                    layout[5]+=static_cast<std::uint32_t>(inputBase);
+                    for(unsigned int stream=0;stream<10;stream++)layout[8+stream*2]+=static_cast<std::uint32_t>(inputBase);
+                    packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertexInputs.begin(),draw.vertexInputs.end());
+                } else {
+                    layout[2]=static_cast<std::uint32_t>(count);
+                    layout[6]=static_cast<std::uint32_t>(inputBase);
+                    layout[7]=layout[6]+static_cast<std::uint32_t>(draw.vertices.size());
+                    layout[8]=layout[7]+static_cast<std::uint32_t>(draw.attributes.size());
+                    packet.vertexInputs.insert(packet.vertexInputs.end(),draw.vertices.begin(),draw.vertices.end());
+                    packet.vertexInputs.insert(packet.vertexInputs.end(),draw.attributes.begin(),draw.attributes.end());
+                    packet.vertexInputs.insert(packet.vertexInputs.end(),draw.secondaryColors.begin(),draw.secondaryColors.end());
+                }
+                layout[0]=static_cast<std::uint32_t>(base);layout[1]=static_cast<std::uint32_t>(count);
+                packet.vertexLayouts.insert(packet.vertexLayouts.end(),layout.begin(),layout.end());
+                packet.capturedVertexCount=static_cast<std::uint32_t>(base+count);
+            } else {
+                packet.vertices.insert(packet.vertices.end(),draw.vertices.begin(),draw.vertices.end());
+                packet.attributes.insert(packet.attributes.end(),draw.attributes.begin(),draw.attributes.end());
+                packet.secondaryColors.insert(packet.secondaryColors.end(),draw.secondaryColors.begin(),draw.secondaryColors.end());
+            }
             if(packet.groundcoverInstances.size()/7+draw.groundcoverInstances.size()/7>std::numeric_limits<std::uint32_t>::max()
                 ||packet.groundcoverParams.size()/40+draw.groundcoverParams.size()/40>std::numeric_limits<std::uint32_t>::max())
                 throw std::runtime_error("Combined groundcover packet exceeds index range");
@@ -376,15 +420,13 @@ namespace WebCuda
             }
             packet.textGradientRanges.insert(packet.textGradientRanges.end(),draw.textGradientRanges.begin(),draw.textGradientRanges.end());
             packet.textGradientColors.insert(packet.textGradientColors.end(),draw.textGradientColors.begin(),draw.textGradientColors.end());
-            packet.vertices.insert(packet.vertices.end(), draw.vertices.begin(), draw.vertices.end());
-            packet.attributes.insert(packet.attributes.end(),draw.attributes.begin(),draw.attributes.end());
             packet.matrices.insert(packet.matrices.end(), draw.matrices.begin(), draw.matrices.end());
             packet.uvMatrices.insert(packet.uvMatrices.end(),draw.uvMatrices.begin(),draw.uvMatrices.end());
             packet.texgen.insert(packet.texgen.end(),draw.texgen.begin(),draw.texgen.end());
             packet.localTransforms.insert(packet.localTransforms.end(),draw.localTransforms.begin(),draw.localTransforms.end());
             packet.debugParams.insert(packet.debugParams.end(),draw.debugParams.begin(),draw.debugParams.end());
             packet.fixedLighting.insert(packet.fixedLighting.end(),draw.fixedLighting.begin(),draw.fixedLighting.end());
-            packet.matrixIds.insert(packet.matrixIds.end(), draw.vertices.size()/10, static_cast<std::uint32_t>(matrix));
+            packet.matrixIds.insert(packet.matrixIds.end(),count,static_cast<std::uint32_t>(matrix));
             packet.triangles.insert(packet.triangles.end(), draw.triangles.begin(), draw.triangles.end());
             draw.flatColors.resize(draw.triangles.size()/4,~std::uint32_t(0));
             for(auto& vertex:draw.flatColors)if(vertex!=~std::uint32_t(0))vertex+=static_cast<std::uint32_t>(base);
@@ -516,9 +558,11 @@ namespace WebCuda
         // The source vertex count is already known. Avoid repeatedly growing
         // and copying these three temporary arrays while encoding one draw.
         const auto sourceVertexCount=static_cast<std::size_t>(positions->getNumElements());
-        draw.vertices.reserve(sourceVertexCount*10);
-        draw.attributes.reserve(sourceVertexCount*34);
-        draw.secondaryColors.reserve(sourceVertexCount*3);
+        if(!packet.compactVertices) {
+            draw.vertices.reserve(sourceVertexCount*10);
+            draw.attributes.reserve(sourceVertexCount*34);
+            draw.secondaryColors.reserve(sourceVertexCount*3);
+        }
         using Role=VertexArrayReader::Role;
         const auto inputVertexCount=positions->getNumElements();
         const VertexArrayReader positionValues(positions,inputVertexCount,primitiveFirst,Role::Vector);
@@ -529,15 +573,33 @@ namespace WebCuda
             osg::Vec4(context.currentNormal[0],context.currentNormal[1],context.currentNormal[2],1));
         const VertexArrayReader tangentValues(arrays.getTexCoordArray(7),inputVertexCount,primitiveFirst,Role::Tangent,osg::Vec4(0,0,0,0));
         const VertexArrayReader fogValues(explicitFog?arrays.getFogCoordArray():nullptr,inputVertexCount,primitiveFirst,Role::Fog,
-            osg::Vec4(context.currentFogCoordinate,0,0,1));
+            osg::Vec4(explicitFog?context.currentFogCoordinate:0.f,0,0,1));
         const std::array<VertexArrayReader,4> coordinates={
             VertexArrayReader(arrays.getTexCoordArray(0),inputVertexCount,primitiveFirst,Role::Vector),
             VertexArrayReader(arrays.getTexCoordArray(1),inputVertexCount,primitiveFirst,Role::Vector),
             VertexArrayReader(arrays.getTexCoordArray(2),inputVertexCount,primitiveFirst,Role::Vector),
             VertexArrayReader(arrays.getTexCoordArray(3),inputVertexCount,primitiveFirst,Role::Vector)};
-        for (unsigned int i=0; i<inputVertexCount; ++i)
+        if(packet.compactVertices) {
+            draw.compactVertices=true;draw.capturedVertexCount=inputVertexCount;
+            draw.vertexLayouts.resize(32);auto* layout=draw.vertexLayouts.data();
+            layout[2]=inputVertexCount;layout[3]=1;layout[4]=explicitFog?2u:(terrain?1u:0u);
+            std::size_t words=3+positionValues.inputWords(inputVertexCount,4)+colorValues.inputWords(inputVertexCount,4)
+                +secondaryValues.inputWords(inputVertexCount,3)+normalValues.inputWords(inputVertexCount,3)
+                +tangentValues.inputWords(inputVertexCount,4)+fogValues.inputWords(inputVertexCount,1);
+            for(const auto& coordinate:coordinates)words+=coordinate.inputWords(inputVertexCount,4);
+            if(words>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("Vertex input stream exceeds index range");
+            draw.vertexInputs.reserve(words);
+            draw.vertexInputs.insert(draw.vertexInputs.end(),context.currentSecondaryColor,context.currentSecondaryColor+3);
+            positionValues.capture(draw.vertexInputs,layout+8,inputVertexCount,4);
+            colorValues.capture(draw.vertexInputs,layout+10,inputVertexCount,4);
+            secondaryValues.capture(draw.vertexInputs,layout+12,inputVertexCount,3);
+            normalValues.capture(draw.vertexInputs,layout+14,inputVertexCount,3);
+            tangentValues.capture(draw.vertexInputs,layout+16,inputVertexCount,4);
+            fogValues.capture(draw.vertexInputs,layout+18,inputVertexCount,1);
+            for(unsigned int unit=0;unit<4;unit++)coordinates[unit].capture(draw.vertexInputs,layout+20+unit*2,inputVertexCount,4);
+        }
+        for (unsigned int i=0; i<inputVertexCount && (!draw.compactVertices || (morph&&!morph->targets.empty())); ++i)
         {
-            const auto p=positionValues[i];
             if(morph&&!morph->targets.empty()) {
                 if(draw.morphOffsets.size()/4+morph->targets.size()>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("Morph packet exceeds index range");
                 draw.morphRanges.insert(draw.morphRanges.end(),{i,static_cast<std::uint32_t>(draw.morphOffsets.size()/4),static_cast<std::uint32_t>(morph->targets.size())});
@@ -548,6 +610,8 @@ namespace WebCuda
                     draw.morphOffsets.insert(draw.morphOffsets.end(),{offset.x(),offset.y(),offset.z(),target.weight});
                 }
             }
+            if(draw.compactVertices)continue;
+            const auto p=positionValues[i];
             const auto color=colorValues[i];
             const auto secondary=secondaryValues[i];
             for(unsigned int k=0;k<3;k++)draw.secondaryColors.push_back(secondary[k]);
@@ -618,7 +682,7 @@ namespace WebCuda
         auto bits=[](float value){if(!std::isfinite(value))throw std::runtime_error("Non-finite primitive size state");std::uint32_t result;std::memcpy(&result,&value,4);return result;};
         auto screen=[&](unsigned int a,unsigned int b,bool isPoint) {
             if(a>=positions->getNumElements()||b>=positions->getNumElements())throw std::runtime_error("Screen primitive index exceeds source geometry");
-            const auto base=draw.vertices.size()/10;
+            const auto base=draw.vertexCount();
             if(base>std::numeric_limits<std::uint32_t>::max()-4u)throw std::runtime_error("Screen primitive exceeds vertex range");
             const float size=isPoint?(point?point->getSize():1.f):(line?line->getWidth():1.f);
             const osg::Vec3 attenuation=point?point->getDistanceAttenuation():osg::Vec3(1,0,0);
@@ -631,7 +695,8 @@ namespace WebCuda
                     |(((state->getMode(0x809D)&(osg::StateAttribute::ON|osg::StateAttribute::INHERIT))!=0)?64u:0u)
                     |(isPoint&&(state->getMode(GL_POINT_SMOOTH)&osg::StateAttribute::ON)!=0?128u:0u)
                     |(isPoint&&(state->getMode(GL_POINT_SPRITE_ARB)&osg::StateAttribute::ON)!=0?256u:0u)});
-            draw.vertices.resize(draw.vertices.size()+40,0.f);draw.attributes.resize(draw.attributes.size()+136,0.f);
+            if(draw.compactVertices)draw.capturedVertexCount+=4;
+            else {draw.vertices.resize(draw.vertices.size()+40,0.f);draw.attributes.resize(draw.attributes.size()+136,0.f);}
             const auto v=static_cast<std::uint32_t>(base);
             const auto primitiveMaterial=isPoint?pointMaterial:screenMaterial;
             draw.triangles.insert(draw.triangles.end(),{v,v+1,v+2,primitiveMaterial,v,v+2,v+3,primitiveMaterial});
@@ -788,7 +853,7 @@ namespace WebCuda
             const std::size_t count=particles.size()/10;
             if(count<2)return;
             for(float value:particles)if(!std::isfinite(value))throw std::runtime_error("Non-finite ribbon particle");
-            const std::size_t vertex=packet.vertices.size()/10,triangle=packet.triangles.size()/4,matrix=packet.matrices.size()/32;
+            const std::size_t vertex=packet.vertexCount(),triangle=packet.triangles.size()/4,matrix=packet.matrices.size()/32;
             if(count>std::numeric_limits<std::uint32_t>::max()/4||vertex+4*(count-1)>std::numeric_limits<std::uint32_t>::max()
                 ||triangle+2*(count-1)>std::numeric_limits<std::uint32_t>::max()
                 ||packet.ribbonParticles.size()/10+count>std::numeric_limits<std::uint32_t>::max())

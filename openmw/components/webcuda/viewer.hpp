@@ -85,7 +85,7 @@ namespace WebCuda
         void particles(const osgParticle::ParticleSystem&, const DrawContext&) override;
         void gui(const osg::Array&, std::size_t, const osg::Texture2D*, const DrawContext&) override;
         std::shared_ptr<MaterialTable> mTable;
-        GeometryPacket mPacket;
+        GeometryPacket mPacket{true};
         unsigned int mWidth=0, mHeight=0;
         struct Target { osg::observer_ptr<const osg::Texture2D> texture; std::uint32_t id; };
         std::map<const osg::Texture2D*,Target> mTargets;

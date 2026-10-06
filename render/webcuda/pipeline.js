@@ -8,6 +8,7 @@ import { atlasUploadRanges } from './atlas-upload.js';
 import { TextureResidency, mergeWordRanges } from './texture-residency.js';
 import { colorStorage, depthStorage } from './color-storage.js';
 import { allFinite, validateVertexAttributes } from './packet-validation.js';
+import { validateVertexInputs } from './vertex-input.js';
 import { terrainBlendInputRange } from './terrain-blend-inputs.js';
 function validSampler(sampler) {
   if(!Number.isInteger(sampler)||sampler<0||sampler>0xffffffff)return false;
@@ -269,7 +270,9 @@ export class MaterialPipeline {
       if(!Number.isSafeInteger(scene.texelWordCount)||scene.texelWordCount<scene.texels.length||scene.texelWordCount>0xffffffff)
         throw RangeError('Invalid GPU atlas extent');
       const baseOfTexture=(base,sampler)=>textureBase(scene.texels,base,sampler,scene.texelWordCount);
-      const vertexCount=scene.vertices.length/10, triangleCount=scene.triangles.length/4;
+      const compactVertices=scene.vertexEncoding===1;
+      if(scene.vertexEncoding!=null&&scene.vertexEncoding!==0&&!compactVertices)throw RangeError('Unknown vertex input encoding');
+      const vertexCount=compactVertices?scene.matrixIds.length:scene.vertices.length/10, triangleCount=scene.triangles.length/4;
       if (!Number.isInteger(vertexCount)||!Number.isInteger(triangleCount)||scene.matrices.length%32||scene.materials.length%12||scene.matrixIds.length!==vertexCount) throw RangeError('Invalid packet record sizes');
       scene.groundcoverRanges??=new Uint32Array();
       scene.groundcoverInstances??=new Float32Array();
@@ -291,8 +294,8 @@ export class MaterialPipeline {
         if(![0,1,2].includes(mode)||![0,1,2].includes(intensity)||scene.groundcoverParams[p+39]<=0)
           throw RangeError('Invalid groundcover deformation settings');
       }
-      scene.secondaryColors??=new Float32Array(vertexCount*3);
-      if(!(scene.secondaryColors instanceof Float32Array)||scene.secondaryColors.length!==vertexCount*3
+      scene.secondaryColors??=new Float32Array(compactVertices?0:vertexCount*3);
+      if(!(scene.secondaryColors instanceof Float32Array)||scene.secondaryColors.length!==(compactVertices?0:vertexCount*3)
         ||!allFinite(scene.secondaryColors))throw RangeError('Invalid secondary color input');
       scene.textGradientRanges??=new Uint32Array();scene.textGradientColors??=new Float32Array();
       if(!(scene.textGradientRanges instanceof Uint32Array)||scene.textGradientRanges.length%3
@@ -347,7 +350,7 @@ export class MaterialPipeline {
         ||scene.flatColors.some(vertex=>vertex!==0xffffffff&&vertex>=vertexCount))throw RangeError('Invalid provoking vertex packet');
       if (!allFinite(scene.vertices)||!allFinite(scene.matrices)) throw RangeError('Non-finite vertex or matrix');
       if (scene.matrixIds.some(v=>v>=scene.matrices.length/32)) throw RangeError('Invalid matrix index');
-      if(scene.attributes==null) {
+      if(scene.attributes==null&&!compactVertices) {
         scene.attributes=new Float32Array(vertexCount*34);
         for(let vertex=0;vertex<vertexCount;vertex++) {
           scene.attributes[vertex*34+16]=scene.vertices[vertex*10+8];
@@ -385,7 +388,7 @@ export class MaterialPipeline {
         if(vertex>=vertexCount||first+count>scene.morphOffsets.length/4||morphedVertices.has(vertex))throw RangeError('Invalid or overlapping morph range');
         morphedVertices.add(vertex);
       }
-      const attributeFlags=validateVertexAttributes(scene.attributes,vertexCount);
+      const attributeFlags=compactVertices?validateVertexInputs(scene):validateVertexAttributes(scene.attributes,vertexCount);
       if(!scene.rasterParams) {
         scene.rasterParams=new Float32Array(scene.materials.length/12*50);
         for(let i=0;i<scene.rasterParams.length;i+=50) {
@@ -636,13 +639,17 @@ export class MaterialPipeline {
           throw RangeError('Invalid compressed texture range');
         recordDecode(words,w*h*((floating||converted)&&!depthImage?4:1));
       }
-      const source=upload('vertices'), matrices=upload('matrices'), matrix_ids=upload('matrixIds');
+      const source=compactVertices?this.buffer('vertices',vertexCount*40):upload('vertices');
+      const matrices=upload('matrices'), matrix_ids=upload('matrixIds');
       const triangles=upload('triangles'), materials=upload('materials'), flat_colors=upload('flatColors'), polygon_edges=upload('polygonEdges');
       const {texels,cluster_offset}=await this.uploadClusterAtlas(scene,texturePlan);
       this.textureResidency.restore(texturePlan,texels);
       const rawSlots=triangleCount*7, tiles=Math.ceil(width/16)*Math.ceil(height/16), row_pixels=Math.ceil(width/64)*64;
       const transformed=this.buffer('transformed',vertexCount*40);
-      const sourceAttributes=upload('attributes');
+      const sourceAttributes=compactVertices?this.buffer('attributes',vertexCount*136):upload('attributes');
+      const secondaryColors=compactVertices?this.buffer('secondaryColors',vertexCount*12):null;
+      if(compactVertices&&vertexCount)r.batch().dispatch(k.unpack_vertex_inputs.bind({inputs:upload('vertexInputs'),layouts:upload('vertexLayouts'),matrix_ids,
+        vertices:source,attributes:sourceAttributes,secondary_colors:secondaryColors},{vertex_count:vertexCount}),dispatchGroups(vertexCount,r.device.limits)).submit();
       let hasVertexLighting=false;
       for(let m=0;m<scene.materials.length;m+=12)
         if((scene.materials[m+3]&2048)&&(scene.texels[scene.materials[m]+4]&8388608))hasVertexLighting=true;
@@ -817,7 +824,7 @@ export class MaterialPipeline {
         {vertex_count:vertexCount}),groups(vertexCount)).submit();
       r.batch().dispatch(k.expand_particles.bind({source,attributes:sourceAttributes,matrices,matrix_ids},{vertex_count:vertexCount}),groups(vertexCount)).submit();
       if(fixed_enabled)r.batch().dispatch(k.shade_fixed_vertices.bind({vertices:source,attributes:sourceAttributes,matrices,matrix_ids,
-        descriptors:upload('fixedLighting'),secondary_colors:upload('secondaryColors'),output:fixedLighting,endpoints:fixedEndpoints},{vertex_count:vertexCount,capture_endpoints}),groups(vertexCount)).submit();
+        descriptors:upload('fixedLighting'),secondary_colors:secondaryColors??upload('secondaryColors'),output:fixedLighting,endpoints:fixedEndpoints},{vertex_count:vertexCount,capture_endpoints}),groups(vertexCount)).submit();
       r.batch()
         .dispatch(k.transform_attributes.bind({source,attributes:sourceAttributes,matrices,matrix_ids,output:transformedAttributes,lighting_origins:lightingOrigins},{vertex_count:vertexCount,track_lighting,source_point_fade_offset}),groups(vertexCount))
         .dispatch(k.transform_material.bind({source,matrices,matrix_ids,vertices:transformed},{vertex_count:vertexCount}),groups(vertexCount))

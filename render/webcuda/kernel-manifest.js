@@ -2,6 +2,7 @@
 // Shared source inventory for shader generation and browser loading.
 // runtime:false entries are diagnostic kernels, still generated from .cu.
 export const kernelManifest = Object.freeze([
+  {"file":"vertex-input.cu","entry":"unpack_vertex_inputs","runtime":true},
   {"file":"compact-depth.cu","entry":"clear_compact_depth","runtime":true},
   {"file":"compact-depth.cu","entry":"copy_depth_layout","runtime":true},
   {"file":"compact-depth.cu","entry":"compact_depth_to_texture","runtime":true},

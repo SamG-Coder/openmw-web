@@ -316,7 +316,7 @@ namespace WebCuda
             if(mNextTarget>=0x20000000u)throw std::runtime_error("Snapshot identity overflow after device replacement");
             mTargets.emplace(texture.get(),Target{texture.get(),mNextTarget++});
         }
-        mPacket={};
+        mPacket=GeometryPacket(true);
         return true;
 #else
         return false;
@@ -361,7 +361,7 @@ namespace WebCuda
             mSubmittedCompletionCameras=std::move(mFrameCompletionCameras);
             mFrameSnapshots.clear();
         } catch (...) {
-            mTable.reset(); mPacket={};
+            mTable.reset(); mPacket=GeometryPacket(true);
             mTargetStack.clear();
             mFrameCompletionCameras.clear();
             omw_webcuda_end_frame(0);
@@ -604,7 +604,7 @@ namespace WebCuda
             if(found->second.id==targetId||found->second.id==depthId||found->second.id==normalId)throw std::runtime_error("WebCuda camera reads its own attachment");
             return found->second.id;
         });
-        mPacket={};
+        mPacket=GeometryPacket(true);
 #ifdef __EMSCRIPTEN__
         const auto& color=stage.getClearColor();
         const auto clearMask=(targetId&0x80000000u)?stage.getClearMask()&~GL_COLOR_BUFFER_BIT:stage.getClearMask();
@@ -636,7 +636,7 @@ namespace WebCuda
         if(mPassCamera&&mPassCamera->getUserValue("webcuda.notifyPassComplete",notifyCompletion)&&notifyCompletion)
             mFrameCompletionCameras.emplace_back(const_cast<osg::Camera*>(mPassCamera));
         mResolveAttachments.clear();
-        mTable.reset(); mPacket={};
+        mTable.reset(); mPacket=GeometryPacket(true);
     }
     void Viewer::geometry(const osg::Geometry& geometry,const DrawContext& context)
     {
@@ -689,7 +689,7 @@ namespace WebCuda
         if((found->second.id&0xe0000000u)!=kind||found->second.id==mCurrentTarget)throw std::runtime_error("Invalid nested color target identity");
         if(!submitBrowserPass(std::move(mPacket),mTable,mWidth,mHeight))throw std::runtime_error("Color target boundary rejected");
         mTargetStack.push_back({std::move(mTable),mWidth,mHeight,mCurrentTarget});
-        mWidth=texture.getTextureWidth();mHeight=texture.getTextureHeight();mCurrentTarget=found->second.id;mPacket={};
+        mWidth=texture.getTextureWidth();mHeight=texture.getTextureHeight();mCurrentTarget=found->second.id;mPacket=GeometryPacket(true);
         mColorTargetsWritten.insert(mCurrentTarget);
         mTable=std::make_shared<MaterialTable>(mWidth,mHeight);mTable->setFloatingColor(floating);mTable->setHasDepth(depth);mTable->setDepthOnly(depth);
         mTable->setSimulationTime(static_cast<float>(getFrameStamp()->getSimulationTime()));
@@ -707,7 +707,7 @@ namespace WebCuda
         if(!mTable||mTargetStack.empty())throw std::logic_error("Unbalanced nested color target");
         if(!submitBrowserPass(std::move(mPacket),mTable,mWidth,mHeight))throw std::runtime_error("Color target completion rejected");
         auto saved=std::move(mTargetStack.back());mTargetStack.pop_back();
-        mTable=std::move(saved.table);mWidth=saved.width;mHeight=saved.height;mCurrentTarget=saved.target;mPacket={};
+        mTable=std::move(saved.table);mWidth=saved.width;mHeight=saved.height;mCurrentTarget=saved.target;mPacket=GeometryPacket(true);
 #ifdef __EMSCRIPTEN__
         omw_webcuda_color_target(0,mCurrentTarget,GL_RGBA8,0x81A6);
 #endif
@@ -723,7 +723,7 @@ namespace WebCuda
         }
         if((found->second.id&0xe0000000u)!=0x80000000u||found->second.id==mCurrentTarget)throw std::runtime_error("Invalid depth capture destination");
         if(!submitBrowserPass(std::move(mPacket),mTable,mWidth,mHeight))throw std::runtime_error("Depth capture boundary rejected");
-        mPacket={};
+        mPacket=GeometryPacket(true);
 #ifdef __EMSCRIPTEN__
         omw_webcuda_capture_depth(found->second.id,mWidth,mHeight);
 #endif
@@ -732,7 +732,7 @@ namespace WebCuda
     {
         if(!mTable)throw std::logic_error("Depth isolation outside camera pass");
         if(!submitBrowserPass(std::move(mPacket),mTable,mWidth,mHeight))throw std::runtime_error("WebCuda depth pass was rejected");
-        mPacket={};
+        mPacket=GeometryPacket(true);
 #ifdef __EMSCRIPTEN__
         omw_webcuda_depth_isolation(begin,depth);
 #endif
@@ -749,7 +749,7 @@ namespace WebCuda
         // unchanged instead of reusing stale offsets from an earlier frame.
         const auto distortionId=effect!=mTargets.end()&&mColorTargetsWritten.count(effect->second.id)?effect->second.id:0u;
         if(!submitBrowserPass(std::move(mPacket),mTable,mWidth,mHeight))throw std::runtime_error("Scene resolve boundary rejected");
-        mPacket={};
+        mPacket=GeometryPacket(true);
 #ifdef __EMSCRIPTEN__
         unsigned int destinationFormat=GL_RGBA8;
         if(mCurrentTarget) {
@@ -805,7 +805,7 @@ namespace WebCuda
         const auto source=mTargets.find(&texture);
         if(!mTable||source==mTargets.end())throw std::runtime_error("Luminance source is unregistered");
         if(!submitBrowserPass(std::move(mPacket),mTable,mWidth,mHeight))throw std::runtime_error("Luminance boundary rejected");
-        mPacket={};
+        mPacket=GeometryPacket(true);
 #ifdef __EMSCRIPTEN__
         omw_webcuda_luminance(source->second.id,width,height,sx,sy,speed,reset,getFrameStamp()->getSimulationTime(),mWidth,mHeight);
 #endif

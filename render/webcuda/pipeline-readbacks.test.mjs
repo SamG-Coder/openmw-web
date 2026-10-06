@@ -51,6 +51,26 @@ test('bounded passes queue through reused scratch and defer status mapping until
   assert.equal(results[2].error,undefined);assert.equal(results[3].error,undefined);
 });
 
+test('compact input construction precedes deformation and transformation without expanded host uploads',async()=>{
+  const f=fixture(),scene=f.scene(),count=scene.matrixIds.length;
+  scene.vertexEncoding=1;scene.vertexLayouts=new Uint32Array(32);
+  scene.vertexLayouts.set([0,count,count,0,0,0,0,count*10,count*44]);
+  scene.vertexInputs=new Float32Array(count*47);
+  scene.vertexInputs.set(scene.vertices);scene.vertexInputs.set(scene.attributes,count*10);
+  scene.vertices=new Float32Array();scene.attributes=new Float32Array();scene.secondaryColors=new Float32Array();
+  const writes=[],write=f.runtime.write;
+  f.runtime.write=(resource,data,offset)=>{writes.push(resource.label);write(resource,data,offset);};
+  const rendered=await f.pipeline.render(scene,32,32,null,f.pass);await f.readbacks.flush();await rendered.queryCompletion;
+  assert(f.commands.indexOf('unpack_vertex_inputs')>=0);
+  assert(f.commands.indexOf('unpack_vertex_inputs')<f.commands.indexOf('expand_particles'));
+  assert(f.commands.indexOf('unpack_vertex_inputs')<f.commands.indexOf('transform_attributes'));
+  assert(writes.includes('OpenMW vertexInputs')&&writes.includes('OpenMW vertexLayouts'));
+  for(const name of ['vertices','attributes','secondaryColors'])assert(!writes.includes(`OpenMW ${name}`));
+  const bad=fixture(),malformed={...scene,vertexLayouts:scene.vertexLayouts.slice()};malformed.vertexLayouts[7]=999999;
+  await assert.rejects(bad.pipeline.render(malformed,32,32,null,bad.pass),/storage/);
+  assert.equal(bad.allocations.length,0);
+});
+
 test('large cameras size assembly from live GPU clipping slots before allocating expanded attributes',async()=>{
   const f=fixture();let release;
   f.runtime.clipCount=11;

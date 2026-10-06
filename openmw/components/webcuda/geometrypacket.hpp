@@ -8,6 +8,15 @@ namespace WebCuda
 {
     struct GeometryPacket
     {
+        GeometryPacket(bool compact = false) : compactVertices(compact) {}
+        bool compactVertices = false;
+        std::uint32_t capturedVertexCount = 0;
+        // 32 words per draw: first/count/source count/kind/mode/fallback,
+        // dense offsets at 6..8 or ten {offset,stride} streams at 8..27.
+        // Streams: position4, color4, secondary3, normal3, tangent4, fog1, UV0..3 each4.
+        std::vector<std::uint32_t> vertexLayouts;
+        std::vector<float> vertexInputs;
+        std::size_t vertexCount() const { return compactVertices ? capturedVertexCount : vertices.size()/10; }
         std::vector<std::uint32_t> groundcoverRanges; // vertex, instance, parameter block
         std::vector<float> groundcoverInstances; // offset xyz, scale, rotation xyz
         std::vector<float> groundcoverParams; // view-to-invert16, view16, wind/time/player/stomp/fade (40)

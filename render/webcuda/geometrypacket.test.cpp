@@ -14,6 +14,10 @@
 #include <osg/TexMat>
 #include <osgUtil/RenderStage>
 #include <components/webcuda/geometrypacket.hpp>
+#include <components/webcuda/deformation.hpp>
+#include <osgParticle/ParticleSystem>
+#include <osg/UserDataContainer>
+#include "vertex-input-reference.hpp"
 
 namespace {
     template<class Array, class Value>
@@ -47,7 +51,7 @@ namespace {
             if(type>=2)geometry->setVertexArray(static_cast<osg::Array*>(c.array->clone(osg::CopyOp::SHALLOW_COPY)));
             for(unsigned int unit=0;unit<4;unit++)geometry->setTexCoordArray(unit,c.array,osg::Array::BIND_OFF);
             WebCuda::GeometryPacket packet;
-            WebCuda::appendGeometry(packet,*geometry,context,7);
+            VertexInputReference::append(packet,*geometry,context,7);
             for(unsigned int v=0;v<3;v++) {
                 for(unsigned int k=0;k<4;k++)near(packet.vertices[v*10+k],type>=2?c.value[k]:osg::Vec4(2,3,4,1)[k]);
                 for(unsigned int unit=0;unit<4;unit++) {
@@ -71,7 +75,7 @@ namespace {
             {repeated<osg::Vec4ubArray>(osg::Vec4ub(0,128,255,64)),{0,128.f/255.f,1,64.f/255.f}}};
         for(const auto& c:colors) {
             geometry->setColorArray(c.array,osg::Array::BIND_PER_VERTEX);
-            WebCuda::GeometryPacket packet;WebCuda::appendGeometry(packet,*geometry,context,7);
+            WebCuda::GeometryPacket packet;VertexInputReference::append(packet,*geometry,context,7);
             for(unsigned int v=0;v<3;v++)for(unsigned int k=0;k<4;k++)near(packet.vertices[v*10+4+k],c.value[k]);
         }
         auto color=repeated<osg::Vec4Array>(osg::Vec4(.1f,.2f,.3f,.4f));
@@ -92,7 +96,7 @@ namespace {
         for(const auto binding:{osg::Array::BIND_OVERALL,osg::Array::BIND_PER_VERTEX,osg::Array::BIND_PER_PRIMITIVE_SET}) {
             geometry->setColorArray(color,binding);geometry->setSecondaryColorArray(secondary,binding);
             geometry->setNormalArray(normals,binding);geometry->setFogCoordArray(fogCoordinates,binding);
-            WebCuda::GeometryPacket packet;WebCuda::appendGeometry(packet,*geometry,context,7);
+            WebCuda::GeometryPacket packet;VertexInputReference::append(packet,*geometry,context,7);
             const unsigned int draws=binding==osg::Array::BIND_PER_PRIMITIVE_SET?2:1;
             assert(packet.vertices.size()==draws*30&&packet.triangles.size()==8);
             for(unsigned int draw=0;draw<draws;draw++)for(unsigned int v=0;v<3;v++) {
@@ -118,17 +122,17 @@ namespace {
         geometry->setFogCoordArray(unsupported,osg::Array::BIND_OFF);
         context.hasCurrentColor=true;context.currentColor[3]=.25f;
         context.currentSecondaryColor[1]=.5f;context.currentNormal[2]=.75f;context.currentFogCoordinate=.125f;
-        WebCuda::GeometryPacket current;WebCuda::appendGeometry(current,*geometry,context,7);
+        WebCuda::GeometryPacket current;VertexInputReference::append(current,*geometry,context,7);
         near(current.vertices[7],.25f);near(current.secondaryColors[1],.5f);
         near(current.attributes[5],.75f);near(current.attributes[2],.125f);
         (*positions)[0].x()=9;fog->setFogCoordinateSource(osg::Fog::FRAGMENT_DEPTH);
-        WebCuda::GeometryPacket changed;WebCuda::appendGeometry(changed,*geometry,context,7);
+        WebCuda::GeometryPacket changed;VertexInputReference::append(changed,*geometry,context,7);
         near(changed.vertices[0],9);near(changed.attributes[0],0);near(changed.attributes[2],0);
 
         // Bad/short inputs fail before committing this draw to the packet.
         auto reject=[&]() {
             bool rejected=false;WebCuda::GeometryPacket packet;
-            try { WebCuda::appendGeometry(packet,*geometry,context,7); }catch(const std::runtime_error&) { rejected=true; }
+            try { VertexInputReference::append(packet,*geometry,context,7); }catch(const std::runtime_error&) { rejected=true; }
             assert(rejected&&packet.vertices.empty()&&packet.triangles.empty()&&packet.matrices.empty());
         };
         geometry->setTexCoordArray(0,unsupported);reject();geometry->setTexCoordArray(0,nullptr);
@@ -161,18 +165,18 @@ int main() {
     osg::Matrixd model=osg::Matrixd::translate(2,3,4),projection;
     WebCuda::DrawContext context{&projection,&model,{}};
     WebCuda::GeometryPacket packet;
-    WebCuda::appendGeometry(packet,*geometry,context,7);
+    VertexInputReference::append(packet,*geometry,context,7);
     assert(packet.vertices.size()==40 && packet.matrixIds.size()==4 && packet.matrices.size()==32);
     assert(packet.matrices[12]==2 && packet.matrices[13]==3 && packet.matrices[14]==4);
     assert(packet.vertices[4]==1 && std::fabs(packet.vertices[5]-128.f/255.f)<1e-6);
     assert((packet.triangles==std::vector<std::uint32_t>{0,1,2,7,1,3,2,7}));
-    WebCuda::appendGeometry(packet,*geometry,context,8);
+    VertexInputReference::append(packet,*geometry,context,8);
     assert(packet.triangles[8]==4 && packet.matrixIds[4]==1 && packet.triangles[11]==8);
     // Lines now capture original endpoints plus four expansion vertices per
     // segment. Rendering and expansion remain CUDA work.
     geometry->setPrimitiveSet(0,new osg::DrawArrays(GL_LINES,0,4));
     WebCuda::GeometryPacket lines;
-    WebCuda::appendGeometry(lines,*geometry,context,7);
+    VertexInputReference::append(lines,*geometry,context,7);
     assert(lines.screenPrimitives.size()==24 && lines.vertices.size()==120);
     assert(lines.screenPrimitives[0]==0 && lines.screenPrimitives[1]==1);
     assert(lines.screenPrimitives[12]==2 && lines.screenPrimitives[13]==3);
@@ -180,7 +184,7 @@ int main() {
     // An unknown topology must not leave partially appended vertices.
     geometry->setPrimitiveSet(0,new osg::DrawArrays(0xffffffffu,0,4));
     bool rejected=false;
-    try { WebCuda::appendGeometry(packet,*geometry,context,0); } catch(const std::runtime_error&) { rejected=true; }
+    try { VertexInputReference::append(packet,*geometry,context,0); } catch(const std::runtime_error&) { rejected=true; }
     assert(rejected && packet.vertices.size()==80);
     // MyGUI byte layout exactly matches its GL unsigned-byte RGBA attributes.
     osg::ref_ptr<osg::UByteArray> gui=new osg::UByteArray(72);
@@ -206,17 +210,17 @@ int main() {
     shaderState->setAttribute(program);context.states={shaderState};
     WebCuda::GeometryPacket shaderPacket;
     rejected=false;
-    try { WebCuda::appendGeometry(shaderPacket,*geometry,context,0); } catch(const std::runtime_error&) { rejected=true; }
+    try { VertexInputReference::append(shaderPacket,*geometry,context,0); } catch(const std::runtime_error&) { rejected=true; }
     assert(rejected);
     osg::Matrixf shaderProjection=osg::Matrixf::scale(2,3,4);
     shaderState->addUniform(new osg::Uniform("projectionMatrix",shaderProjection));
-    WebCuda::appendGeometry(shaderPacket,*geometry,context,0);
+    VertexInputReference::append(shaderPacket,*geometry,context,0);
     for(unsigned int k=0;k<16;k++)assert(shaderPacket.matrices[16+k]==shaderProjection.ptr()[k]);
     // Shadow and compatibility shaders retain their explicit camera projection,
     // even when an unrelated projection uniform is inherited from an ancestor.
     program->getShader(0)->setShaderSource("void main() { gl_Position=gl_ModelViewProjectionMatrix*gl_Vertex; }");
     WebCuda::GeometryPacket shadowPacket;
-    WebCuda::appendGeometry(shadowPacket,*geometry,context,0);
+    VertexInputReference::append(shadowPacket,*geometry,context,0);
     for(unsigned int k=0;k<16;k++)assert(shadowPacket.matrices[16+k]==projection.ptr()[k]);
     // The dependency's unnamed default shader uses UV.xy without TexMat and
     // the camera's MVP even when a world projection uniform is inherited.
@@ -228,12 +232,54 @@ int main() {
     defaults->addUniform(new osg::Uniform("projectionMatrix",shaderProjection));
     defaults->setTextureAttribute(0,new osg::TexMat(osg::Matrix::scale(4,5,6)));
     context.states={defaults};
-    WebCuda::GeometryPacket defaultPacket;WebCuda::appendGeometry(defaultPacket,*geometry,context,0);
+    WebCuda::GeometryPacket defaultPacket;VertexInputReference::append(defaultPacket,*geometry,context,0);
     for(unsigned int k=0;k<16;k++) {
         assert(defaultPacket.uvMatrices[k]==(k%5==0?1.f:0.f));
         assert(defaultPacket.matrices[16+k]==projection.ptr()[k]);
     }
     assert(defaultPacket.vertices[8]==uv->at(0).x()&&defaultPacket.vertices[9]==uv->at(0).y());
     assert(defaultPacket.fixedLighting[0]==0&&!(defaultPacket.fixedLighting[1]&1u));
+    // Mixed draw encodings must relocate every stream/dense offset and retain
+    // generated vertices and live source mutations across consecutive captures.
+    WebCuda::GeometryPacket mixed(true),reference;
+    for(auto* output:{&mixed,&reference}) {
+        WebCuda::appendGeometry(*output,*geometry,context,7);
+        WebCuda::appendGui(*output,*gui,3,context,9);
+    }
+    VertexInputReference::verify(mixed,reference);
+    (*positions)[0].x()=23;(*colors)[0].r()=5;
+    geometry->setPrimitiveSet(0,new osg::DrawArrays(GL_LINES,0,4));
+    for(auto* output:{&mixed,&reference})WebCuda::appendGeometry(*output,*geometry,context,11);
+    VertexInputReference::verify(mixed,reference);
+    osg::ref_ptr<osgParticle::ParticleSystem> system=new osgParticle::ParticleSystem;
+    system->setUseShaders(false);system->createParticle(nullptr);
+    for(auto* output:{&mixed,&reference})WebCuda::appendParticles(*output,*system,context,12);
+    VertexInputReference::verify(mixed,reference);
+    auto base=osg::ref_ptr<osg::Vec3Array>(new osg::Vec3Array(*positions));(*base)[1].set(11,12,13);
+    auto offsets=osg::ref_ptr<osg::Vec3Array>(new osg::Vec3Array(4));(*offsets)[1].set(.5f,.25f,.125f);
+    osg::ref_ptr<WebCuda::MorphInputs> morph=new WebCuda::MorphInputs;morph->base=base;morph->targets.push_back({offsets,.75f});
+    geometry->getOrCreateUserDataContainer()->addUserObject(morph);
+    for(auto* output:{&mixed,&reference})WebCuda::appendGeometry(*output,*geometry,context,13);
+    VertexInputReference::verify(mixed,reference);
+    auto skin=osg::ref_ptr<WebCuda::SkinInputs>(new WebCuda::SkinInputs);
+    auto skinSource=osg::ref_ptr<osg::Geometry>(new osg::Geometry(*geometry,osg::CopyOp::SHALLOW_COPY));
+    skinSource->setUserDataContainer(nullptr);skin->source=skinSource;
+    skin->bones.push_back({osg::Matrixf::identity(),osg::Matrixf::translate(1,2,3),true});
+    skin->groups.push_back({{{0,1.f}},{0,1,2,3}});
+    geometry->getOrCreateUserDataContainer()->addUserObject(skin);
+    for(auto* output:{&mixed,&reference})WebCuda::appendGeometry(*output,*geometry,context,14);
+    VertexInputReference::verify(mixed,reference);
+    osg::ref_ptr<osg::Geometry> large=new osg::Geometry;
+    osg::ref_ptr<osg::Vec3Array> largePositions=new osg::Vec3Array,largeNormals=new osg::Vec3Array;
+    osg::ref_ptr<osg::Vec2Array> largeUv=new osg::Vec2Array;
+    for(unsigned int i=0;i<3072;i++) {
+        largePositions->push_back(osg::Vec3(i%17,i%13,i%11));largeNormals->push_back(osg::Vec3(0,0,1));
+        largeUv->push_back(osg::Vec2((i%31)*.03125f,(i%7)*.125f));
+    }
+    large->setVertexArray(largePositions);large->setNormalArray(largeNormals,osg::Array::BIND_PER_VERTEX);
+    large->setTexCoordArray(0,largeUv);large->addPrimitiveSet(new osg::DrawArrays(GL_TRIANGLES,0,3072));
+    for(unsigned int draw=0;draw<2;draw++)for(auto* output:{&mixed,&reference})WebCuda::appendGeometry(*output,*large,context,15);
+    VertexInputReference::verify(mixed,reference);
+    VertexInputReference::save();
     std::puts("WebCuda geometry packets: OSG strips, colors/UVs, matrix ABI, batching, rejection and MyGUI bytes passed");
 }

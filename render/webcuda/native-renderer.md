@@ -364,6 +364,77 @@ gameplay and smooth 60-180 Hz performance remain unverified. The report and
 summary are `D:/OpenMW-local/webcuda-seyda-neen-pooled-2026-10-06.json` and
 `D:/OpenMW-local/webcuda-seyda-neen-pooled-2026-10-06-summary.json`.
 
+## Compact vertex inputs constructed in CUDA
+
+Engine `8de8326b631d` captures per-vertex source streams and per-draw constants
+instead of constructing the full 47-float vertex/attribute/secondary-color
+record on the CPU for ordinary geometry. `vertex-input.cu` expands those inputs
+into mutable GPU working buffers before morphing, skinning, particle expansion,
+transformation and shading. Generated screen-primitive space retains its exact
+initial state. GUI and particle records use the same transport with a dense
+descriptor; their existing CUDA rendering paths remain intact.
+
+Source arrays are captured afresh on every draw, including in-place changes
+without an OSG dirty notification. Constant/overall/per-primitive bindings,
+double/byte source conversion, homogeneous UV coordinates, current values and
+source selection for morph/skin retain the existing behavior. The browser borrows
+the compact arrays directly from retained WASM storage. It validates counts,
+strides, matrix ownership, reserved words and ranges before any GPU allocation.
+It does not expand records in JavaScript.
+
+The 49 related host regressions, six frame-lifetime checks and six WASM64
+integration suites pass. The real OSG producer emits 31 fixtures with 6,414
+vertices, including multiple workgroups, mixed dense/stream layouts, generated
+line vertices, GUI, particles, morph/skin and source mutation. The production
+CUDA kernel reproduces every field bit-for-bit against the original dense
+capture in WASM and on the RTX 5080, with trailing guards intact. Browser WebGPU
+compiles 88 runtime kernels and passes 39 GPU output checks, including both
+compact encodings through the production transform, clip and raster pipeline.
+Bundled NVRTC compiles all 90 paged runtime/storage kernels. The full engine
+rebuild/link and HTTP staging checks pass, and all 371 generated files reproduce
+exactly with the unchanged tracked SDK compiler/runtime.
+
+An isolated WASM64 O3 comparison alternates dense and compact capture for 192
+draws of 768 vertices, with nine measured samples after two warmups:
+
+| Input profile | Dense vertex transport | Compact vertex transport | Dense capture | Compact capture |
+| --- | ---: | ---: | ---: | ---: |
+| Position, normal, UV | 28,311,552 bytes | 7,123,200 bytes | 11.182 ms | 6.392 ms |
+| Color, tangent, four UV sets | 28,311,552 bytes | 18,904,320 bytes | 12.984 ms | 13.385 ms |
+
+Both include the vertex-to-draw map and compare equivalent captured data.
+The second profile reduces bytes but has a small CPU capture regression in this
+sample. These are isolated capture measurements, not gameplay FPS. Expanded
+GPU working buffers still exist; compact transport does not imply a matching
+reduction in physical VRAM usage. Persistent cross-frame geometry residency,
+native browser gameplay and physical refresh-rate acceptance remain pending.
+
+The rebuilt WebGPU game reached 551 exterior presentations without a renderer
+error, aborted capture or legacy draw attempt. Its saved report at presentation
+450 contains 120 completed scene frames, all with their retained packets released.
+Those samples have medians of 35,368,198 uploaded bytes, 113,214,690 captured scene
+bytes, 77.253 ms capture, 140.945 ms renderer wall time and 227.740 ms presentation
+submission interval. Geometry encoding accounts for a median 26.309 ms and
+material encoding 32.043 ms. The immutable texture pool remains bounded at
+64 MiB with 524 resident images and 290 evictions at the saved observation.
+Runtime buffer capacity is 1,982,659,104 bytes, including the expanded working
+buffers and compact input storage; it is not measured VRAM or process RSS.
+These debug/streaming samples are not a matched performance benchmark against
+the previous run. They demonstrate reduced transfer volume, not smooth gameplay.
+The report and summary are
+`D:/OpenMW-local/webcuda-seyda-neen-vertex-input-2026-10-06.json` and
+`D:/OpenMW-local/webcuda-seyda-neen-vertex-input-2026-10-06-summary.json`.
+
+Set `WEBCUDA_VERTEX_FIXTURES` to an output file before running
+`wasm-build/test-webcuda-submission.ps1` to export the producer fixtures.
+Compile `render/webcuda/vertex-input.test.cpp` with NVCC using
+`-x cu -std=c++17 -O2 -arch=sm_120`, then pass that fixture file to the executable.
+The `-arch` value is specific to this PC's GPU. Reports are
+`D:/OpenMW-local/webcuda-vertex-input-{submission-tests,cuda}.log`,
+`D:/OpenMW-local/webcuda-vertex-input-browser-validation.json`,
+`D:/OpenMW-local/webcuda-vertex-input-native-compile.json` and
+`D:/OpenMW-local/webcuda-vertex-input-benchmark.json`.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal
@@ -420,7 +491,7 @@ execution. Compiler checks and fixtures are separate from full-game acceptance.
 Run host regressions from the repository root:
 
 ```powershell
-node --test render/webcuda/frame-readbacks.test.mjs render/webcuda/pipeline-readbacks.test.mjs render/webcuda/packet-validation.test.mjs render/webcuda/native-runtime.test.mjs render/webcuda/texture-residency.test.mjs render/webcuda/atlas-upload.test.mjs render/webcuda/bounded-batch.test.mjs
+node --test render/webcuda/frame-readbacks.test.mjs render/webcuda/pipeline-readbacks.test.mjs render/webcuda/packet-validation.test.mjs render/webcuda/vertex-input.test.mjs render/webcuda/native-runtime.test.mjs render/webcuda/texture-residency.test.mjs render/webcuda/atlas-upload.test.mjs render/webcuda/bounded-batch.test.mjs render/webcuda/terrain-blend-inputs.test.mjs
 node --experimental-vm-modules --test render/webcuda/game-host-lifetime.test.mjs
 node --test wasm-build/frame-pump.test.mjs render/webcuda/legacy-draw-guard.test.mjs render/webcuda/target-id.test.mjs
 .\wasm-build\test-webcuda-submission.ps1

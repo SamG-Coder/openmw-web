@@ -1,5 +1,10 @@
 [
   {
+    "entry": "unpack_vertex_inputs",
+    "runtime": true,
+    "artifact": "unpack_vertex_inputs.native.json"
+  },
+  {
     "entry": "clear_compact_depth",
     "runtime": true,
     "artifact": "clear_compact_depth.native.json"

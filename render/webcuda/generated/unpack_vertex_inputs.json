@@ -1,0 +1,136 @@
+{
+  "version": "0.1.1",
+  "name": "unpack_vertex_inputs",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel unpack_vertex_inputs.\n@group(0) @binding(0) var<storage, read> b_inputs: array<f32>;\n@group(0) @binding(1) var<storage, read> b_layouts: array<u32>;\n@group(0) @binding(2) var<storage, read> b_matrix_ids: array<u32>;\n@group(0) @binding(3) var<storage, read_write> b_vertices: array<f32>;\n@group(0) @binding(4) var<storage, read_write> b_attributes: array<f32>;\n@group(0) @binding(5) var<storage, read_write> b_secondary_colors: array<f32>;\nstruct CWParams {\n  p_vertex_count: u32,\n  cw_pad_4: u32,\n  cw_pad_8: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(6) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= cw_params.p_vertex_count)) {\n    return;\n  }\n  var v_d: u32 = (b_matrix_ids[v_i] * 32u);\n  var v_j: u32 = (v_i - b_layouts[v_d]);\n  var v_v: u32 = (v_i * 10u);\n  var v_a: u32 = (v_i * 34u);\n  if ((b_layouts[(v_d + 3u)] == 0u)) {\n    {\n      var v_k: u32 = u32(0i);\n      loop {\n        if (!(v_k < u32(10i))) { break; }\n        b_vertices[(v_v + v_k)] = b_inputs[((b_layouts[(v_d + 6u)] + (v_j * 10u)) + v_k)];\n        continuing {\n          v_k += u32(1);\n        }\n      }\n    }\n    {\n      var v_k: u32 = u32(0i);\n      loop {\n        if (!(v_k < u32(34i))) { break; }\n        b_attributes[(v_a + v_k)] = b_inputs[((b_layouts[(v_d + 7u)] + (v_j * 34u)) + v_k)];\n        continuing {\n          v_k += u32(1);\n        }\n      }\n    }\n    {\n      var v_k: u32 = u32(0i);\n      loop {\n        if (!(v_k < u32(3i))) { break; }\n        b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[((b_layouts[(v_d + 8u)] + (v_j * 3u)) + v_k)];\n        continuing {\n          v_k += u32(1);\n        }\n      }\n    }\n    return;\n  }\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(34i))) { break; }\n      b_attributes[(v_a + v_k)] = 0.0f;\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  if ((v_j >= b_layouts[(v_d + 2u)])) {\n    {\n      var v_k: u32 = u32(0i);\n      loop {\n        if (!(v_k < u32(10i))) { break; }\n        b_vertices[(v_v + v_k)] = 0.0f;\n        continuing {\n          v_k += u32(1);\n        }\n      }\n    }\n    {\n      var v_k: u32 = u32(0i);\n      loop {\n        if (!(v_k < u32(3i))) { break; }\n        b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[(b_layouts[(v_d + 5u)] + v_k)];\n        continuing {\n          v_k += u32(1);\n        }\n      }\n    }\n    return;\n  }\n  var v_position: u32 = (b_layouts[(v_d + 8u)] + (v_j * b_layouts[(v_d + 9u)]));\n  var v_color: u32 = (b_layouts[(v_d + 10u)] + (v_j * b_layouts[(v_d + 11u)]));\n  var v_secondary: u32 = (b_layouts[(v_d + 12u)] + (v_j * b_layouts[(v_d + 13u)]));\n  var v_normal: u32 = (b_layouts[(v_d + 14u)] + (v_j * b_layouts[(v_d + 15u)]));\n  var v_tangent: u32 = (b_layouts[(v_d + 16u)] + (v_j * b_layouts[(v_d + 17u)]));\n  var v_fog: u32 = (b_layouts[(v_d + 18u)] + (v_j * b_layouts[(v_d + 19u)]));\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(4i))) { break; }\n      b_vertices[(v_v + v_k)] = b_inputs[(v_position + v_k)];\n      b_vertices[((v_v + 4u) + v_k)] = b_inputs[(v_color + v_k)];\n      b_attributes[((v_a + 6u) + v_k)] = b_inputs[(v_tangent + v_k)];\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      b_secondary_colors[((v_i * 3u) + v_k)] = b_inputs[(v_secondary + v_k)];\n      b_attributes[((v_a + 3u) + v_k)] = b_inputs[(v_normal + v_k)];\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  var cw_tmp_1: f32;\n  if ((b_layouts[(v_d + 4u)] == 2u)) {\n    cw_tmp_1 = (-1.0f);\n  } else {\n    var cw_tmp_0: f32;\n    if ((b_layouts[(v_d + 4u)] == 1u)) {\n      cw_tmp_0 = 1.0f;\n    } else {\n      cw_tmp_0 = 0.0f;\n    }\n    cw_tmp_1 = cw_tmp_0;\n  }\n  b_attributes[v_a] = cw_tmp_1;\n  if ((b_layouts[(v_d + 4u)] == 2u)) {\n    b_attributes[(v_a + 2u)] = b_inputs[v_fog];\n  }\n  {\n    var v_unit: u32 = u32(0i);\n    loop {\n      if (!(v_unit < u32(4i))) { break; }\n      var v_coordinate: u32 = (b_layouts[((v_d + 20u) + (v_unit * 2u))] + (v_j * b_layouts[((v_d + 21u) + (v_unit * 2u))]));\n      var cw_tmp_2: u32;\n      if ((v_unit == 0u)) {\n        cw_tmp_2 = 16u;\n      } else {\n        cw_tmp_2 = (8u + (v_unit * 2u));\n      }\n      var v_uv: u32 = cw_tmp_2;\n      b_attributes[(v_a + v_uv)] = b_inputs[v_coordinate];\n      b_attributes[((v_a + v_uv) + 1u)] = b_inputs[(v_coordinate + 1u)];\n      b_attributes[((v_a + 26u) + (v_unit * 2u))] = b_inputs[(v_coordinate + 2u)];\n      b_attributes[((v_a + 27u) + (v_unit * 2u))] = b_inputs[(v_coordinate + 3u)];\n      if ((v_unit == 0u)) {\n        b_vertices[(v_v + 8u)] = b_inputs[v_coordinate];\n        b_vertices[(v_v + 9u)] = b_inputs[(v_coordinate + 1u)];\n      }\n      continuing {\n        v_unit += u32(1);\n      }\n    }\n  }\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "inputs",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "layouts",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "matrix_ids",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "vertices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "attributes",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "secondary_colors",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 5,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "vertex_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 6,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 5101,
+      "beforeBytes": 5101,
+      "afterBytes": 5101,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 4404,
+          "transitiveBytes": 4404,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// Build mutable shader inputs from captured source streams. A stride of zero\n// means one constant value for the draw; no vertex transforms run on the host.\n__global__ void unpack_vertex_inputs(const float* inputs,const unsigned int* layouts,const unsigned int* matrix_ids,\n                                    float* vertices,float* attributes,float* secondary_colors,unsigned int vertex_count) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=vertex_count)return;\n    unsigned int d=matrix_ids[i]*32u,j=i-layouts[d],v=i*10u,a=i*34u;\n    if(layouts[d+3u]==0u) {\n        for(unsigned int k=0;k<10;k++)vertices[v+k]=inputs[layouts[d+6u]+j*10u+k];\n        for(unsigned int k=0;k<34;k++)attributes[a+k]=inputs[layouts[d+7u]+j*34u+k];\n        for(unsigned int k=0;k<3;k++)secondary_colors[i*3u+k]=inputs[layouts[d+8u]+j*3u+k];\n        return;\n    }\n    for(unsigned int k=0;k<34;k++)attributes[a+k]=0.0f;\n    if(j>=layouts[d+2u]) {\n        // Space reserved for CUDA-generated screen primitives has the same\n        // initial state as a dense packet, including its current color input.\n        for(unsigned int k=0;k<10;k++)vertices[v+k]=0.0f;\n        for(unsigned int k=0;k<3;k++)secondary_colors[i*3u+k]=inputs[layouts[d+5u]+k];\n        return;\n    }\n    unsigned int position=layouts[d+8u]+j*layouts[d+9u],color=layouts[d+10u]+j*layouts[d+11u];\n    unsigned int secondary=layouts[d+12u]+j*layouts[d+13u],normal=layouts[d+14u]+j*layouts[d+15u];\n    unsigned int tangent=layouts[d+16u]+j*layouts[d+17u],fog=layouts[d+18u]+j*layouts[d+19u];\n    for(unsigned int k=0;k<4;k++){vertices[v+k]=inputs[position+k];vertices[v+4u+k]=inputs[color+k];attributes[a+6u+k]=inputs[tangent+k];}\n    for(unsigned int k=0;k<3;k++){secondary_colors[i*3u+k]=inputs[secondary+k];attributes[a+3u+k]=inputs[normal+k];}\n    attributes[a]=layouts[d+4u]==2u?-1.0f:(layouts[d+4u]==1u?1.0f:0.0f);\n    if(layouts[d+4u]==2u)attributes[a+2u]=inputs[fog];\n    for(unsigned int unit=0;unit<4;unit++) {\n        unsigned int coordinate=layouts[d+20u+unit*2u]+j*layouts[d+21u+unit*2u];\n        unsigned int uv=unit==0u?16u:8u+unit*2u;\n        attributes[a+uv]=inputs[coordinate];attributes[a+uv+1u]=inputs[coordinate+1u];\n        attributes[a+26u+unit*2u]=inputs[coordinate+2u];attributes[a+27u+unit*2u]=inputs[coordinate+3u];\n        if(unit==0u){vertices[v+8u]=inputs[coordinate];vertices[v+9u]=inputs[coordinate+1u];}\n    }\n}\n",
+    "entry": "unpack_vertex_inputs",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "inputs",
+        "type": "buffer"
+      },
+      {
+        "name": "layouts",
+        "type": "buffer"
+      },
+      {
+        "name": "matrix_ids",
+        "type": "buffer"
+      },
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "attributes",
+        "type": "buffer"
+      },
+      {
+        "name": "secondary_colors",
+        "type": "buffer"
+      },
+      {
+        "name": "vertex_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}
