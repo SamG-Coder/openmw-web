@@ -427,6 +427,7 @@ namespace MWGui
     private:
         unsigned int mOldUpdateMask;
         unsigned int mOldCullMask;
+        bool mSceneDisabled;
 
         const MWWorld::ESMStore* mStore;
         Resource::ResourceSystem* mResourceSystem;
