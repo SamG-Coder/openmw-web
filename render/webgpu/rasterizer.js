@@ -439,7 +439,21 @@ export class HardwareRasterizer {
       this.visibilityCounter=counter;
     }
     const bridge=await this.bridge(config);
-    await Promise.all(runs.map(async run=>{run.pipeline=await this.pipeline(run.state);}));
+    // Compile each unique native pipeline once. A real Morrowind scene contains
+    // many runs that share material state; compiling per-run created hundreds of
+    // duplicate awaiters and made the first 3D frame appear to hang.
+    const pipelineByKey=new Map();
+    for(const run of runs) {
+      let pending=pipelineByKey.get(run.state.key);
+      if(!pending) {
+        pending=this.pipeline(run.state);
+        pipelineByKey.set(run.state.key,pending);
+      }
+      run.pipeline=await pending;
+      // Yield between genuinely new pipelines so the browser can paint the
+      // loading screen and report validation errors during first-world warmup.
+      if(pipelineByKey.get(run.state.key)===pending)await new Promise(resolve=>setTimeout(resolve,0));
+    }
     if(this.disposed)throw Error('HardwareRasterizer was disposed during pipeline compilation');
     this.runtime.assertAlive?.();
     const target=this.textures(config);
