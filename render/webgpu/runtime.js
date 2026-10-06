@@ -373,7 +373,16 @@ export class WebGPURuntime {
     resource.destroyed = true; this.buffers.delete(resource); resource.gpuBuffer.destroy();
   }
 
-  async idle() { this.assertAlive(); this.flush(); await this.device.queue.onSubmittedWorkDone(); this.assertAlive(); }
+  fence() {
+    this.assertAlive();this.flush();
+    return this.device.queue.onSubmittedWorkDone().then(()=>{this.assertAlive();});
+  }
+  destroyBufferCompleted(resource) {
+    if (!resource || resource.runtime !== this) throw new Error('GPU buffer belongs to another runtime');
+    if (resource.destroyed) return;
+    resource.destroyed=true;this.buffers.delete(resource);resource.gpuBuffer.destroy();
+  }
+  async idle() { await this.fence(); }
   describe() { return {backend: this.backend, adapter: this.adapter?.info ?? null,
     features: [...(this.device.features ?? [])], limits: this.device.limits}; }
 
