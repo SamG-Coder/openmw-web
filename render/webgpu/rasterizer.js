@@ -400,11 +400,12 @@ export class HardwareRasterizer {
     }
     try{return await pending;}catch(error){this.pipelines.delete(state.key);throw error;}
   }
-  attachments(target, config, loadOp='load') {
-    const colorAttachments=config.compact?[]:[{view:target.colorView,loadOp,storeOp:'store',clearValue:[0,0,0,0]},
-      ...(config.normal?[{view:target.normalView,loadOp,storeOp:'store',clearValue:[0,0,0,0]}]:[])];
-    const depthStencilAttachment={view:target.depthView,depthLoadOp:loadOp,depthStoreOp:'store',depthClearValue:1,
-      ...(config.stencil?{stencilLoadOp:loadOp,stencilStoreOp:'store',stencilClearValue:0}:{})};
+  attachments(target, config, loadOp='load', clear={}) {
+    const clearColor=clear.color??[0,0,0,0],clearDepth=clear.depth??1,clearStencil=clear.stencil??0;
+    const colorAttachments=config.compact?[]:[{view:target.colorView,loadOp,storeOp:'store',clearValue:clearColor},
+      ...(config.normal?[{view:target.normalView,loadOp,storeOp:'store',clearValue:clearColor}]:[])];
+    const depthStencilAttachment={view:target.depthView,depthLoadOp:loadOp,depthStoreOp:'store',depthClearValue:clearDepth,
+      ...(config.stencil?{stencilLoadOp:loadOp,stencilStoreOp:'store',stencilClearValue:clearStencil}:{})};
     return {colorAttachments,depthStencilAttachment};
   }
   async render(buffers, params, {scene,pass={},triangleCount}) {
@@ -479,15 +480,24 @@ export class HardwareRasterizer {
       {binding:1,resource:{buffer:bridgeUniform,offset:index*this.uniformStride,size:32}},
     ]});
     const encoder=device.createCommandEncoder({label:'OpenMW WebGPU hardware rendering'});
-    // The clear kernel has already applied viewport/component masks in the
-    // engine's ABI. Import those values into actual native attachments.
-    const seed=encoder.beginRenderPass({label:'OpenMW import engine attachments',...this.attachments(target,config,'clear')});
-    seed.setPipeline(bridge.seed);seed.setBindGroup(0,bridgeBindings(bridge.seed));seed.draw(3);seed.end();
-    if(config.stencil)for(let i=0;i<8;i++) {
-      const stencil=encoder.beginRenderPass({label:'OpenMW import stencil',colorAttachments:[],
-        depthStencilAttachment:{view:target.depthView,depthReadOnly:true,stencilLoadOp:'load',stencilStoreOp:'store'}});
-      stencil.setPipeline(bridge.seedStencil[i]);stencil.setBindGroup(0,bridgeBindings(bridge.seedStencil[i],i+1));
-      stencil.setStencilReference(255);stencil.draw(3);stencil.end();
+    if(pass.nativeFullClear) {
+      // Full target clears can stay entirely inside native WebGPU attachments.
+      // This avoids importing a 40-byte/pixel compatibility buffer before every
+      // main-scene camera pass.
+      const clearPass=encoder.beginRenderPass({label:'OpenMW native attachment clear',
+        ...this.attachments(target,config,'clear',{color:pass.clearColor,depth:pass.clearDepth,stencil:pass.clearStencil})});
+      clearPass.end();
+    } else {
+      // Partial clears / preserved attachment regions still need the compatibility
+      // buffer imported before rasterization.
+      const seed=encoder.beginRenderPass({label:'OpenMW import engine attachments',...this.attachments(target,config,'clear')});
+      seed.setPipeline(bridge.seed);seed.setBindGroup(0,bridgeBindings(bridge.seed));seed.draw(3);seed.end();
+      if(config.stencil)for(let i=0;i<8;i++) {
+        const stencil=encoder.beginRenderPass({label:'OpenMW import stencil',colorAttachments:[],
+          depthStencilAttachment:{view:target.depthView,depthReadOnly:true,stencilLoadOp:'load',stencilStoreOp:'store'}});
+        stencil.setPipeline(bridge.seedStencil[i]);stencil.setBindGroup(0,bridgeBindings(bridge.seedStencil[i],i+1));
+        stencil.setStencilReference(255);stencil.draw(3);stencil.end();
+      }
     }
     const queryOffset=Math.ceil(config.width/16)*Math.ceil(config.height/16)+1;
     if(native.counts&&materialCount)encoder.clearBuffer(native.counts,queryOffset*4,materialCount*4);
