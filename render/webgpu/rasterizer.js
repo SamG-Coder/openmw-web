@@ -570,6 +570,53 @@ export class HardwareRasterizer {
     return {gpuMs:null,drawCalls,occlusionQueries:queryRuns.length,nativeTarget:directTarget??null};
     } finally {this.busy=false;}
   }
+  async exportCompatibility(target,buffer,params) {
+    if(!target?.config)throw TypeError('Native target is missing configuration');
+    const base=this.config(params);
+    if(base.samples!==1)throw Error('Compatibility materialization of multisampled native targets is not supported');
+    // Stencil is deliberately omitted here: the remaining compatibility users
+    // are color/depth/normal readers. Rasterization itself keeps stencil native.
+    const config={...base,stencil:false};
+    config.key=JSON.stringify(config);
+    const bridge=await this.bridge(config),device=this.device;
+    const uniform=this.buffer('compat export uniforms',this.uniformStride,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST);
+    const data=new Uint32Array(this.uniformStride/4);
+    data.set([config.width,config.height,config.width*config.height,1,config.compact?1:0,0,
+      params.color_channels,params.normal_channels]);
+    device.queue.writeBuffer(uniform,0,data);
+    const gpuBuffer=nativeBuffer(buffer);
+    const entries=[
+      {binding:0,resource:{buffer:gpuBuffer}},{binding:1,resource:{buffer:uniform,size:32}},
+      {binding:2,resource:target.depth.sampleView},
+      ...(config.compact?[]:[{binding:3,resource:target.color.sampleView}]),
+      ...(config.normal?[{binding:4,resource:target.normal.sampleView}]:[]),
+    ];
+    const bind=device.createBindGroup({layout:bridge.export.getBindGroupLayout(0),entries});
+    const encoder=device.createCommandEncoder({label:'OpenMW materialize native attachment'});
+    const pass=encoder.beginComputePass();pass.setPipeline(bridge.export);pass.setBindGroup(0,bind);
+    pass.dispatchWorkgroups(Math.ceil(config.width/8),Math.ceil(config.height/8),1);pass.end();
+    device.queue.submit([encoder.finish()]);
+  }
+  async importCompatibility(buffer,target,params) {
+    if(!target?.config)throw TypeError('Native target is missing configuration');
+    const config=this.config(params);
+    if(config.samples!==1)throw Error('Compatibility import into multisampled native targets is not supported');
+    const bridge=await this.bridge({...config,stencil:false,key:JSON.stringify({...config,stencil:false})});
+    const uniform=this.buffer('compat import uniforms',this.uniformStride,GPUBufferUsage.UNIFORM|GPUBufferUsage.COPY_DST);
+    const data=new Uint32Array(this.uniformStride/4);
+    data.set([config.width,config.height,config.width*config.height,1,config.compact?1:0,0,
+      params.color_channels,params.normal_channels]);
+    this.device.queue.writeBuffer(uniform,0,data);
+    const bind=this.device.createBindGroup({layout:bridge.seed.getBindGroupLayout(0),entries:[
+      {binding:0,resource:{buffer:nativeBuffer(buffer)}},{binding:1,resource:{buffer:uniform,size:32}}
+    ]});
+    const encoder=this.device.createCommandEncoder({label:'OpenMW import compatibility attachment'});
+    const pass=encoder.beginRenderPass({label:'OpenMW compatibility-to-native import',
+      ...this.attachments(target,config,'clear')});
+    pass.setPipeline(bridge.seed);pass.setBindGroup(0,bind);pass.draw(3);pass.end();
+    this.device.queue.submit([encoder.finish()]);
+  }
+
   snapshot() {
     // Diagnostics only. Rendering is performed by native WebGPU render passes;
     // this object does not implement the old CUDA/software rasterizer.
