@@ -23,6 +23,23 @@ $env:PYTHON = $python.FullName.Replace('\', '/')
 $env:PATH = "$($python.Directory.FullName);$env:PATH"
 Write-Host "Using Python: $($python.FullName)"
 
+$ninja = Get-Command ninja.exe -ErrorAction SilentlyContinue
+if (-not $ninja) {
+    $candidates = @(
+        'C:\msys64\ucrt64\bin\ninja.exe',
+        'C:\msys64\usr\bin\ninja.exe',
+        (Join-Path $ToolsRoot 'ninja\ninja.exe')
+    ) | Where-Object { Test-Path $_ }
+    if ($candidates.Count -gt 0) { $ninja = Get-Item $candidates[0] }
+}
+if (-not $ninja) {
+    throw 'ninja.exe was not found. Install Ninja or MSYS2 ucrt64 tools.'
+}
+$env:PATH = "$($ninja.Directory.FullName);$env:PATH"
+Write-Host "Using Ninja: $($ninja.FullName)"
+
 $bash = (Get-Command bash.exe -ErrorAction Stop).Source
-& $bash -lc 'cd "$ROOT" && ./wasm-build/link-openmw.sh'
+# Do NOT use -l here. A login MSYS shell rewrites PATH and discards the
+# Emscripten/Python/Ninja paths configured above.
+& $bash -c 'cd "$ROOT" && ./wasm-build/link-openmw.sh'
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
