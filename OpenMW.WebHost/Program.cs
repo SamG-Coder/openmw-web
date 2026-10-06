@@ -117,6 +117,29 @@ app.MapGet("/", async context =>
 
 app.MapGet("/status", () => Results.Json(manager.Status));
 
+app.MapGet("/mwdata-manifest.json", () =>
+{
+    var root = Path.Combine(playRoot, "mwdata");
+    if (!Directory.Exists(root))
+        return Results.Json(Array.Empty<object>());
+
+    var files = Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
+        .Where(path =>
+        {
+            var name = Path.GetFileName(path);
+            return !name.StartsWith(".", StringComparison.Ordinal) &&
+                   !name.EndsWith(".br", StringComparison.OrdinalIgnoreCase);
+        })
+        .Select(path => new
+        {
+            p = Path.GetRelativePath(root, path).Replace('\\', '/'),
+            s = new FileInfo(path).Length
+        })
+        .OrderBy(file => file.p, StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    return Results.Json(files);
+});
+
 app.MapGet("/e/{version}/{**asset}", async (HttpContext context, string version, string asset) =>
 {
     var engine = manager.Current;
