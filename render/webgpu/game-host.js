@@ -776,6 +776,16 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         const preserveNormal=pass.normalTargetId&&((clearMask&16384)===0||(pass.clearColorMask??15)!==15);
         const depthHolder=pass.depthTargetId?targets.get(pass.depthTargetId):attachment;
         const normalHolder=pass.normalTargetId?targets.get(pass.normalTargetId):null;
+        // The browser screen gets its world color from the post-process resolve,
+        // not from a camera pass, so its implicit default depth plane may not
+        // exist yet when the GUI overlays arrive with clearMask=0. Initialize it
+        // once natively instead of forcing the whole screen back through the
+        // 40-byte/pixel compatibility buffer.
+        if(id===0&&preserveDepth&&depthHolder===attachment&&attachment.authority==='native'&&!attachment.native?.depth) {
+          nativeTargets.ensureDepth(attachment,attachment.depthFormat,pass.sampleCount??1,
+            (pass.stencilBits??([0x88f0,0x8cad].includes(pass.depthFormat)?8:0))!==0);
+          nativeTargets.clearDepth(attachment,1);
+        }
         let nativeDirect=nativeTargets.canCamera(pass,compactDepth)
           &&(!preserveColor||(attachment.authority==='native'&&Boolean(attachment.native?.color)))
           &&(!preserveDepth||(depthHolder?.authority==='native'&&Boolean(depthHolder.native?.depth)))
