@@ -120,6 +120,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       // browser heaps, textures and diagnostic query buffers are excluded.
       runtimeBufferBytes:Array.from(runtime.buffers??[],buffer=>buffer.byteLength).reduce((sum,bytes)=>sum+bytes,0),
       backend:runtime.backend,hardwareRaster:pipeline.rasterizer?.snapshot()??null,
+      nativeTargets:nativeTargets.snapshot(),
       textureResidency:pipeline.textureResidency?.snapshot()??null,
       vertexResidency:pipeline.vertexResidency?.snapshot()??null,
       wasmHeapCapacityBytes:Module.webcudaTransportStats?.heapCapacityBytes??Module.wasmMemory?.buffer.byteLength??null,
