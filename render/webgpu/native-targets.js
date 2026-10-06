@@ -270,7 +270,7 @@ export class NativeAttachmentStore {
   }
   async resolveColor(source,destination,{scaleX=1,scaleY=1,gamma=1,contrast=1,adjust=false,distortion=null,clear=false}={}){
     if(!source?.color?.sampleView||!destination?.color?.renderView)throw Error('Native color resolve requires color textures');
-    if(source.color.samples!==1||destination.color.samples!==1)throw Error('Native postprocess currently requires single-sample color targets');
+    if(destination.color.samples!==1)throw Error('Native postprocess destination must be single-sample');
     const pipeline=await this.postPipeline(destination.color.format);
     const params=new ArrayBuffer(48),u32=new Uint32Array(params),f32=new Float32Array(params);
     u32[0]=source.color.width;u32[1]=source.color.height;u32[2]=destination.color.width;u32[3]=destination.color.height;
@@ -368,8 +368,9 @@ export class NativeAttachmentStore {
 
   async copyPlaneToAtlas(holder,plane,texels,offset,{floatOutput=false}={}){
     const resource=holder?.native?.[plane];if(!resource)throw Error(`Native ${plane} render texture is unavailable`);
-    if(resource.samples!==1)throw Error('Native render-texture sampling currently requires a single-sample source');
-    const depth=plane==='depth',pipeline=await this.atlasPipeline(depth);
+    const depth=plane==='depth';
+    if(depth&&resource.samples!==1)throw Error('Multisampled depth render-texture sampling requires an explicit depth resolve');
+    const pipeline=await this.atlasPipeline(depth);
     const params=new Uint32Array([resource.width,resource.height,offset,floatOutput?1:0]);
     this.device.queue.writeBuffer(this.atlasUniform,0,params);
     const gpuBuffer=texels?.gpuBuffer??texels?.gpu??texels;
