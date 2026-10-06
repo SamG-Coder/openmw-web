@@ -49,6 +49,11 @@ async function fixture() {
     if(specifier==='./runtime.js')return synthetic(specifier,{WebGPURuntime:{create:async()=>runtime}});
     if(specifier==='./pipeline.js')return synthetic(specifier,{MaterialPipeline:{create:async()=>pipeline}});
     if(specifier==='./legacy-draw-guard.js')return synthetic(specifier,{guardLegacyRendering:()=>({attempts:0})});
+    if(specifier==='./native-targets.js')return synthetic(specifier,{NativeAttachmentStore:class{
+      constructor(){ }
+      destroy(){} dispose(){}
+      canCamera(){return false;}
+    }});
     return new vm.SourceTextModule(await readFile(new URL(specifier,import.meta.url),'utf8'),{context,identifier:specifier});
   });
   await host.evaluate();
