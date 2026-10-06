@@ -17,7 +17,7 @@ $libraries = @('osgParticle', 'osgViewer', 'osgGA', 'osgDB', 'osgText', 'osgUtil
 $node = Get-ChildItem "$ToolsRoot/emsdk/node/*/bin/node.exe", "$ToolsRoot/emsdk/node/*/node.exe" -ErrorAction SilentlyContinue |
     Select-Object -First 1 -ExpandProperty FullName
 if (-not $node) { throw 'Bundled Emscripten Node runtime not found' }
-foreach ($test in @('submission', 'renderer', 'geometrypacket', 'materialstate', 'materialtable', 'browserbridge', 'draw-capture', 'positioned-state', 'draw-state', 'particle-input', 'gui-input', 'color-input', 'raster-state-input', 'light-input')) {
+foreach ($test in @('submission', 'renderer', 'geometrypacket', 'materialstate', 'materialtable', 'browserbridge', 'draw-capture', 'positioned-state', 'draw-state', 'particle-input', 'gui-input', 'color-input', 'raster-state-input', 'light-input', 'cluster-input')) {
     # The exhaustive color suite retains full expanded fixtures for native GPU replay.
     $memoryFlag = if ($test -eq 'color-input') { '-sINITIAL_MEMORY=67108864' } else { '-sINITIAL_MEMORY=16777216' }
     & $compiler @flags "$repo/render/webcuda/$test.test.cpp" "$output/submission.o" "$output/renderer.o" "$output/geometrypacket.o" "$output/materialstate.o" "$output/materialtable.o" "$output/browserbridge.o" `

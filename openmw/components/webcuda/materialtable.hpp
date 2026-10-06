@@ -82,8 +82,11 @@ namespace WebCuda
         // IDs survive material tables; render attachments never enter this list.
         std::vector<std::uint32_t> mTextureResources;
         // Ten words: first light, count, grid XYZ, near/far float bits,
-        // projection index, screen width/height float bits. Materials map pairs
-        // material ID -> snapshot ID. PointLight records contain 20 floats.
+        // projection index (bit31: raw light inputs follow the projection),
+        // screen width/height float bits. Materials map material ID -> snapshot
+        // ID. PointLight records contain 20 floats. Raw input blocks add view16,
+        // radius scale, three reserved zeros and five fade floats per light;
+        // projection pool entries remain aligned to 16 floats.
         std::vector<std::uint32_t> mClusterRecords,mClusterMaterials;
         std::vector<float> mClusterLights,mClusterProjections;
         std::map<std::vector<std::uint32_t>,std::uint32_t> mClusterSnapshots;

@@ -1,5 +1,10 @@
 [
   {
+    "entry": "prepare_cluster_lights",
+    "runtime": true,
+    "artifact": "prepare_cluster_lights.native.json"
+  },
+  {
     "entry": "prepare_fixed_matrices",
     "runtime": true,
     "artifact": "prepare_fixed_matrices.native.json"

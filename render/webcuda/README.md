@@ -13,9 +13,12 @@ After fixing native atlas growth and reducing default shadow storage, the user
 confirmed visible native gameplay; frame times are still too high. Native
 submission coalescing has passed host regressions and awaits a browser check.
 
-The latest local engine is `f9483440294a`. The per-object light path now passes
-raw sun/point-light inputs to CUDA for view transforms, radius scaling and
-distance fading. Its light-list cache includes the camera matrix so cameras
+The latest local engine is `bb8eab1ee40c`. Both per-object and clustered light
+paths now pass raw light inputs to CUDA for view transforms, radius scaling
+and distance fading. Cluster preparation precedes GPU culling, without building
+unused OpenGL cluster resources. Orthographic map cameras provide their own
+cluster inputs and keep constant-width cluster bounds in CUDA. The per-object
+cache includes the camera matrix so cameras
 cannot reuse each other's prepared light positions. Terrain blend masks,
 vertex colors and raster/material normalization also run in CUDA. Geometry
 capture and host validation avoid repeated state/type checks and full-buffer

@@ -9,6 +9,7 @@
 #include <osg/Matrixd>
 #include <osg/Matrixf>
 #include <osg/Uniform>
+#include <components/sceneutil/clusteredlighting.hpp>
 
 namespace WebCuda
 {
@@ -51,6 +52,12 @@ namespace WebCuda
         record(2, 3) = light.getQuadraticAttenuation();
         record(3, 3) = radius;
         target.setElement(index, record);
+    }
+
+    inline SceneUtil::PointLight captureClusterLight(const osg::Light& light, float radius)
+    {
+        return {light.getPosition(), light.getDiffuse(), light.getAmbient(), light.getSpecular(),
+            light.getConstantAttenuation(), light.getLinearAttenuation(), light.getQuadraticAttenuation(), radius};
     }
 }
 #endif

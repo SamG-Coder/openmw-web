@@ -2,6 +2,7 @@
 // Shared source inventory for shader generation and browser loading.
 // runtime:false entries are diagnostic kernels, still generated from .cu.
 export const kernelManifest = Object.freeze([
+  {"file":"cluster-lighting.cu","entry":"prepare_cluster_lights","runtime":true},
   {"file":"positioned-state.cu","entry":"prepare_fixed_matrices","runtime":true},
   {"file":"positioned-state.cu","entry":"prepare_texgen_matrices","runtime":true},
   {"file":"vertex-input.cu","entry":"unpack_vertex_inputs","runtime":true},

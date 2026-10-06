@@ -899,19 +899,25 @@ namespace WebCuda
         if(offset>bytes||size>bytes-offset||offset%sizeof(SceneUtil::PointLight)||size%sizeof(SceneUtil::PointLight))
             throw std::runtime_error("Invalid clustered buffer range");
         const auto count=size/sizeof(SceneUtil::PointLight),first=offset/sizeof(SceneUtil::PointLight);
+        const auto* raw=dynamic_cast<const LightInputs*>(buffer->getUserData());
+        if(raw&&(raw->kind!=LightInputs::Points||first+count>raw->fades.size()
+            ||!std::isfinite(raw->radiusMultiplier)||raw->radiusMultiplier<0.f))
+            throw std::runtime_error("Invalid raw clustered light snapshot");
         if(count>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("Clustered light count overflow");
         osg::Vec3 grid;osg::Vec2 screen;float nearDistance=0.f,farDistance=0.f;
         const auto* gu=state.getUniform("gridSize");const auto* su=state.getUniform("screenRes");
         const auto* nu=state.getUniform("near");const auto* fu=state.getUniform("clusterFar");
-        if(!gu||!gu->get(grid)||!su||!su->get(screen)||!nu||!nu->get(nearDistance)||!fu||!fu->get(farDistance))
-            throw std::runtime_error("Missing clustered camera uniforms");
+        if(!gu||!gu->get(grid))throw std::runtime_error("Missing or invalid clustered gridSize uniform");
+        if(!su||!su->get(screen))throw std::runtime_error("Missing or invalid clustered screenRes uniform");
+        if(!nu||!nu->get(nearDistance))throw std::runtime_error("Missing or invalid clustered near uniform");
+        if(!fu||!fu->get(farDistance))throw std::runtime_error("Missing or invalid clustered clusterFar uniform");
         if(!std::isfinite(nearDistance)||!std::isfinite(farDistance)||nearDistance<=0.f||farDistance<=nearDistance)
             throw std::runtime_error("Invalid clustered camera depth range");
         auto bits=[](float value) {
             if(!std::isfinite(value))throw std::runtime_error("Non-finite clustered light input");
             std::uint32_t result;std::memcpy(&result,&value,4);return result;
         };
-        std::vector<std::uint32_t> key(10);key[1]=static_cast<std::uint32_t>(count);
+        std::vector<std::uint32_t> key(10);key[1]=static_cast<std::uint32_t>(count);key[7]=raw?0x80000000u:0u;
         for(unsigned int axis=0;axis<3;axis++) {
             const double value=grid[axis];
             if(!std::isfinite(value)||value<1||value>std::numeric_limits<std::uint32_t>::max()||std::floor(value)!=value)
@@ -927,6 +933,19 @@ namespace WebCuda
         for(unsigned int i=0;i<16;i++) {
             const float value=static_cast<float>(context.projection->ptr()[i]);projection.push_back(value);key.push_back(bits(value));
         }
+        if(raw) {
+            // Projection pool entries are aligned to 16 floats. A tagged entry
+            // adds the raw view, radius scale, reserved words and per-light fades.
+            auto append=[&](float value){projection.push_back(value);key.push_back(bits(value));};
+            for(unsigned int i=0;i<16;i++)append(raw->view.ptr()[i]);
+            append(raw->radiusMultiplier);for(unsigned int i=0;i<3;i++)append(0.f);
+            for(std::size_t i=first;i<first+count;i++) {
+                const auto& fade=raw->fades[i];
+                if(fade[4]!=0.f&&fade[4]<=fade[3])throw std::runtime_error("Invalid raw clustered fade interval");
+                for(float value:fade)append(value);
+            }
+            while(projection.size()%16)append(0.f);
+        }
         for(std::size_t i=first;i<first+count;i++) {
             const auto& light=lights[i];
             if(light.mRadius<0.f)throw std::runtime_error("Negative clustered light radius");
@@ -938,10 +957,12 @@ namespace WebCuda
         }
         if(const auto found=mClusterSnapshots.find(key);found!=mClusterSnapshots.end())return found->second;
         if(mClusterRecords.size()/10>=std::numeric_limits<std::uint32_t>::max()
-            ||mClusterLights.size()/20+count>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("Clustered snapshot table overflow");
+            ||mClusterLights.size()/20+count>std::numeric_limits<std::uint32_t>::max()
+            ||mClusterProjections.size()/16+projection.size()/16>0x80000000ull)throw std::runtime_error("Clustered snapshot table overflow");
         const auto id=static_cast<std::uint32_t>(mClusterRecords.size()/10);
         std::array<std::uint32_t,10> record;std::copy_n(key.begin(),10,record.begin());
-        record[0]=static_cast<std::uint32_t>(mClusterLights.size()/20);record[7]=id;
+        record[0]=static_cast<std::uint32_t>(mClusterLights.size()/20);
+        record[7]=static_cast<std::uint32_t>(mClusterProjections.size()/16)|(raw?0x80000000u:0u);
         mClusterRecords.insert(mClusterRecords.end(),record.begin(),record.end());
         mClusterLights.insert(mClusterLights.end(),packed.begin(),packed.end());
         mClusterProjections.insert(mClusterProjections.end(),projection.begin(),projection.end());

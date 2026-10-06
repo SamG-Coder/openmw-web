@@ -1957,6 +1957,8 @@ window.omw = (function(){
            // max lights: dynamic point lights evaluated per object. Higher = richer lit scenes but
            // more per-object shading cost. ?maxlights=N overrides (QA); default measured for 60fps.
            'max lights = ' + ((/[?&]maxlights=(\d+)/.exec(location.search)||[])[1] || '16') + '\n' +
+           // CUDA supports clustered lighting; opt in for testing or dense light scenes.
+           'clustered lighting = ' + (/[?&]clustered=1\b/.test(location.search) ? 'true' : 'false') + '\n' +
            // F46 -- REVERTED 2026-08-29. Setting this to 4096 BREAKS s64-real-input, reliably.
            //
            // The reasoning still looks right: maximum light distance decides which objects come
@@ -2000,9 +2002,7 @@ window.omw = (function(){
            // ambient+emission, so interior smoke/fire (lit solely by the hearth/torch point
            // light) renders as a black quad. Cheap at max lights=8.
            'particle point lighting = true\n' +
-           // MODERN LIGHTING knobs (the pipeline itself is already modern: per-object-uniform
-           // shader point lights + forced per-pixel; clustered lighting needs GLSL-430 SSBOs so
-           // it's impossible on WebGL2 and the engine falls back automatically):
+           // Lighting controls for the per-object or optional CUDA cluster path:
            // - clamp lighting=false: drop the legacy fixed-function 0..1 light clamp so point
            //   lights keep their smooth quadratic falloff instead of plateauing (OpenMW's
            //   documented "modern look" switch; pairs with the raised interior floor above).

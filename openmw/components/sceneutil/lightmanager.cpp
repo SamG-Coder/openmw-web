@@ -165,6 +165,7 @@ namespace SceneUtil
 
         const size_t frame = cv->getTraversalNumber();
         const size_t frameId = frame % 2;
+        const bool rawLighting = WebCuda::Viewer::requested();
 
         auto& cache = mCache[cv->getCurrentCamera()];
 
@@ -176,7 +177,7 @@ namespace SceneUtil
 
         bool rebuildCluster = false;
 
-        if (node->getClusteredLighting())
+        if (node->getClusteredLighting() && !rawLighting)
         {
             auto& clusterNode = cache.mClusterComputeNode[frameId];
             auto& cullNode = cache.mCullComputeNode[frameId];
@@ -254,12 +255,13 @@ namespace SceneUtil
                     osg::Vec3f(static_cast<float>(mGridSizeX), static_cast<float>(mGridSizeY),
                         static_cast<float>(mGridSizeZ))));
 
-                const int maxLightIndices = mMaxLightsPerCluster * mNumClusters;
-
-                osg::ref_ptr<osg::UByteArray> clusterData = new osg::UByteArray(sizeof(Cluster) * mNumClusters);
-                clusterData->setBufferObject(new osg::ShaderStorageBufferObject);
-                cache.mClusterSSBB
-                    = new osg::ShaderStorageBufferBinding(1, clusterData, 0, clusterData->getTotalDataSize());
+                if (!rawLighting)
+                {
+                    osg::ref_ptr<osg::UByteArray> clusterData = new osg::UByteArray(sizeof(Cluster) * mNumClusters);
+                    clusterData->setBufferObject(new osg::ShaderStorageBufferObject);
+                    cache.mClusterSSBB
+                        = new osg::ShaderStorageBufferBinding(1, clusterData, 0, clusterData->getTotalDataSize());
+                }
 
                 for (size_t i = 0; i < cache.mPointLightSSBB.size(); ++i)
                 {
@@ -268,6 +270,11 @@ namespace SceneUtil
 
                     cache.mPointLightSSBB[i] = new osg::ShaderStorageBufferBinding(
                         2, cache.mGPULights[i], 0, cache.mGPULights[i]->getTotalDataSize());
+
+                    // CUDA constructs the grid and lists directly on the GPU.
+                    if (rawLighting)
+                        continue;
+                    const int maxLightIndices = mMaxLightsPerCluster * mNumClusters;
 
                     osg::ref_ptr<osg::UIntArray> gridData = new osg::UIntArray(mNumClusters * 2);
                     gridData->setBufferObject(new osg::ShaderStorageBufferObject);
@@ -297,7 +304,7 @@ namespace SceneUtil
             const osg::RefMatrix* viewMatrix = cv->getCurrentRenderStage()->getInitialViewMatrix();
 
             auto* sunPosition = stateset->getUniform(OMW_SUN_UNIFORM("position"));
-            if (WebCuda::Viewer::requested())
+            if (rawLighting)
             {
                 sunPosition->set(sun->getPosition());
                 sunPosition->setUserData(new WebCuda::LightInputs(WebCuda::LightInputs::Sun, *viewMatrix));
@@ -313,7 +320,7 @@ namespace SceneUtil
 
             if (node->getClusteredLighting())
             {
-                if (rebuildCluster)
+                if (rebuildCluster || rawLighting)
                 {
                     stateset->getUniform("clusterFar")->set(clusterFar);
                     stateset->getUniform("gridSize")
@@ -322,12 +329,22 @@ namespace SceneUtil
                 }
 
                 stateset->setAttribute(cache.mPointLightSSBB[frameId]);
-                stateset->setAttribute(cache.mClusterSSBB);
-                stateset->setAttribute(cache.mLightGridSSBB[frameId]);
-                stateset->setAttribute(cache.mLightIndexListSSBB[frameId]);
-                stateset->setAttribute(cache.mLightIndexCounterSSBB[frameId]);
+                if (!rawLighting)
+                {
+                    stateset->setAttribute(cache.mClusterSSBB);
+                    stateset->setAttribute(cache.mLightGridSSBB[frameId]);
+                    stateset->setAttribute(cache.mLightIndexListSSBB[frameId]);
+                    stateset->setAttribute(cache.mLightIndexCounterSSBB[frameId]);
+                }
 
                 cache.mGPULights[frameId]->getData().clear();
+                osg::ref_ptr<WebCuda::LightInputs> raw;
+                if (rawLighting)
+                {
+                    raw = new WebCuda::LightInputs(WebCuda::LightInputs::Points, *viewMatrix);
+                    raw->radiusMultiplier = node->getPointLightRadiusMultiplier();
+                }
+                cache.mGPULights[frameId]->setUserData(raw);
 
                 for (const auto& bound : node->getLightsInViewSpace(cv, viewMatrix, frame))
                 {
@@ -335,16 +352,15 @@ namespace SceneUtil
                         continue;
 
                     const auto& light = bound.mLightSource->getLight(frame);
-                    auto gpuLight = PointLight{
-                        .mPosition = light->getPosition() * (*viewMatrix),
-                        .mDiffuse = light->getDiffuse(),
-                        .mAmbient = light->getAmbient(),
-                        .mSpecular = light->getSpecular(),
-                        .mConstant = light->getConstantAttenuation(),
-                        .mLinear = light->getLinearAttenuation(),
-                        .mQuadratic = light->getQuadraticAttenuation(),
-                        .mRadius = bound.mLightSource->getRadius() * node->getPointLightRadiusMultiplier(),
-                    };
+                    auto gpuLight = WebCuda::captureClusterLight(*light, bound.mLightSource->getRadius());
+                    if (raw)
+                        raw->fades.push_back(node->getPointLightFadeEnd() != 0.f
+                            ? bound.mLightSource->getWebCudaFade() : std::array<float, 5>{});
+                    else
+                    {
+                        gpuLight.mPosition = light->getPosition() * (*viewMatrix);
+                        gpuLight.mRadius *= node->getPointLightRadiusMultiplier();
+                    }
 
                     cache.mGPULights[frame % 2]->getData().push_back(gpuLight);
                 }
@@ -352,20 +368,27 @@ namespace SceneUtil
                 // Always add a dummy light, SSBO can't have zero size
                 auto& lights = cache.mGPULights[frameId]->getData();
                 if (lights.empty())
+                {
                     lights.emplace_back();
+                    if (raw)
+                        raw->fades.emplace_back();
+                }
 
                 cache.mPointLightSSBB[frameId]->setSize(cache.mGPULights[frameId]->getTotalDataSize());
                 cache.mGPULights[frameId]->dirty();
 
-                static_cast<osg::UIntArray*>(cache.mLightIndexCounterSSBB[frameId]->getBufferData())->at(0) = 0;
-                static_cast<osg::UIntArray*>(cache.mLightIndexCounterSSBB[frameId]->getBufferData())->dirty();
+                if (!rawLighting)
+                {
+                    static_cast<osg::UIntArray*>(cache.mLightIndexCounterSSBB[frameId]->getBufferData())->at(0) = 0;
+                    static_cast<osg::UIntArray*>(cache.mLightIndexCounterSSBB[frameId]->getBufferData())->dirty();
+                }
             }
         }
 
         cv->pushStateSet(stateset);
         if (rebuildCluster)
             cache.mClusterComputeNode[frameId]->accept(*cv);
-        if (node->getClusteredLighting())
+        if (node->getClusteredLighting() && !rawLighting)
             cache.mCullComputeNode[frameId]->accept(*cv);
         traverse(node, cv);
         cv->popStateSet();
@@ -621,7 +644,7 @@ namespace SceneUtil
         if (it == mLightsInViewSpace.end())
         {
             it = mLightsInViewSpace.insert(std::make_pair(camPtr, LightSourceViewBoundCollection())).first;
-            const bool rawLighting = WebCuda::Viewer::requested() && !mClusteredLighting;
+            const bool rawLighting = WebCuda::Viewer::requested();
 
             for (const auto& transform : mLights)
             {

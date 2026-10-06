@@ -192,16 +192,26 @@ fn main(
   var v_z: u32 = (v_tile / (cw_params.p_grid_x * cw_params.p_grid_y));
   var v_planeNear: f32 = (cw_params.p_near_distance * cw_pow_f32(cw_divide_f32(cw_params.p_far_distance, cw_params.p_near_distance), cw_divide_f32(f32(v_z), f32(cw_params.p_grid_z))));
   var v_planeFar: f32 = (cw_params.p_near_distance * cw_pow_f32(cw_divide_f32(cw_params.p_far_distance, cw_params.p_near_distance), cw_divide_f32(f32((v_z + u32(1i))), f32(cw_params.p_grid_z))));
-  var v_minX: f32 = cw_divide_f32((cw_divide_f32((2.0f * f32(v_x)), f32(cw_params.p_grid_x)) - 1.0f), b_projection[0i]);
-  var v_maxX: f32 = cw_divide_f32((cw_divide_f32((2.0f * f32((v_x + u32(1i)))), f32(cw_params.p_grid_x)) - 1.0f), b_projection[0i]);
-  var v_minY: f32 = cw_divide_f32((cw_divide_f32((2.0f * f32(v_y)), f32(cw_params.p_grid_y)) - 1.0f), b_projection[5i]);
-  var v_maxY: f32 = cw_divide_f32((cw_divide_f32((2.0f * f32((v_y + u32(1i)))), f32(cw_params.p_grid_y)) - 1.0f), b_projection[5i]);
-  b_clusters[(v_tile * u32(8i))] = min((v_minX * v_planeNear), (v_minX * v_planeFar));
-  b_clusters[((v_tile * u32(8i)) + u32(1i))] = min((v_minY * v_planeNear), (v_minY * v_planeFar));
+  var v_shiftX: f32 = 0.0f;
+  var v_shiftY: f32 = 0.0f;
+  var v_scaleNear: f32 = v_planeNear;
+  var v_scaleFar: f32 = v_planeFar;
+  if ((b_projection[15i] > 0.5f)) {
+    v_shiftX = b_projection[12i];
+    v_shiftY = b_projection[13i];
+    v_scaleNear = 1.0f;
+    v_scaleFar = 1.0f;
+  }
+  var v_minX: f32 = cw_divide_f32(((cw_divide_f32((2.0f * f32(v_x)), f32(cw_params.p_grid_x)) - 1.0f) - v_shiftX), b_projection[0i]);
+  var v_maxX: f32 = cw_divide_f32(((cw_divide_f32((2.0f * f32((v_x + u32(1i)))), f32(cw_params.p_grid_x)) - 1.0f) - v_shiftX), b_projection[0i]);
+  var v_minY: f32 = cw_divide_f32(((cw_divide_f32((2.0f * f32(v_y)), f32(cw_params.p_grid_y)) - 1.0f) - v_shiftY), b_projection[5i]);
+  var v_maxY: f32 = cw_divide_f32(((cw_divide_f32((2.0f * f32((v_y + u32(1i)))), f32(cw_params.p_grid_y)) - 1.0f) - v_shiftY), b_projection[5i]);
+  b_clusters[(v_tile * u32(8i))] = min((v_minX * v_scaleNear), (v_minX * v_scaleFar));
+  b_clusters[((v_tile * u32(8i)) + u32(1i))] = min((v_minY * v_scaleNear), (v_minY * v_scaleFar));
   b_clusters[((v_tile * u32(8i)) + u32(2i))] = (-v_planeFar);
   b_clusters[((v_tile * u32(8i)) + u32(3i))] = 0.0f;
-  b_clusters[((v_tile * u32(8i)) + u32(4i))] = max((v_maxX * v_planeNear), (v_maxX * v_planeFar));
-  b_clusters[((v_tile * u32(8i)) + u32(5i))] = max((v_maxY * v_planeNear), (v_maxY * v_planeFar));
+  b_clusters[((v_tile * u32(8i)) + u32(4i))] = max((v_maxX * v_scaleNear), (v_maxX * v_scaleFar));
+  b_clusters[((v_tile * u32(8i)) + u32(5i))] = max((v_maxY * v_scaleNear), (v_maxY * v_scaleFar));
   b_clusters[((v_tile * u32(8i)) + u32(6i))] = (-v_planeNear);
   b_clusters[((v_tile * u32(8i)) + u32(7i))] = 0.0f;
 }

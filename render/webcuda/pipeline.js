@@ -131,20 +131,30 @@ export class MaterialPipeline {
     const r=this.runtime,k=this.kernels;
     if(typeof resourceKey!=='string'||!/^[A-Za-z0-9_.-]{1,64}$/.test(resourceKey))
       throw TypeError('Invalid cluster resource identity');
-    const {projection,lights,gridSize,nearDistance,farDistance}=snapshot;
+    const {projection,lights,gridSize,nearDistance,farDistance,lightInputs}=snapshot;
     if(!(projection instanceof Float32Array)||projection.length!==16||projection.some(v=>!Number.isFinite(v))
-      ||projection[0]<=0||projection[5]<=0||Math.abs(projection[11]+1)>0.00001||Math.abs(projection[15])>0.00001)
-      throw RangeError('Cluster lighting requires a finite perspective projection');
+      ||projection[0]<=0||projection[5]<=0
+      ||!((Math.abs(projection[11]+1)<=0.00001&&Math.abs(projection[15])<=0.00001)
+        ||(Math.abs(projection[11])<=0.00001&&Math.abs(projection[15]-1)<=0.00001)))
+      throw RangeError('Cluster lighting requires a finite perspective or orthographic projection');
     if(!(lights instanceof Float32Array)||lights.length%20||lights.some(v=>!Number.isFinite(v)))
       throw RangeError('Invalid clustered PointLight records');
     for(let i=19;i<lights.length;i+=20)if(lights[i]<0)throw RangeError('Negative clustered light radius');
+    if(lightInputs!=null) {
+      if(!(lightInputs instanceof Float32Array)||lightInputs.length!==20+lights.length/4
+        ||lightInputs.some(value=>!Number.isFinite(value))||lightInputs[16]<0
+        ||lightInputs[17]!==0||lightInputs[18]!==0||lightInputs[19]!==0)
+        throw RangeError('Invalid raw clustered light inputs');
+      for(let i=20;i<lightInputs.length;i+=5)
+        if(lightInputs[i+4]!==0&&lightInputs[i+4]<=lightInputs[i+3])throw RangeError('Invalid raw clustered fade interval');
+    }
     if(!Array.isArray(gridSize)||gridSize.length!==3||!gridSize.every(v=>Number.isInteger(v)&&v>0)
       ||!Number.isFinite(nearDistance)||!Number.isFinite(farDistance)||nearDistance<=0||farDistance<=nearDistance)
       throw RangeError('Invalid logarithmic light grid');
     const clusterCount=gridSize[0]*gridSize[1]*gridSize[2],lightCount=lights.length/20;
     const maxBytes=Math.min(r.device.limits.maxBufferSize,r.device.limits.maxStorageBufferBindingSize);
     const fits=bytes=>Number.isSafeInteger(bytes)&&bytes>=0&&bytes<=maxBytes;
-    if(!fits(clusterCount*32)||!fits(lights.byteLength)||clusterCount>0xffffffff||lightCount>0xffffffff)
+    if(!fits(clusterCount*32)||!fits(lights.byteLength)||(lightInputs&&!fits(lightInputs.byteLength))||clusterCount>0xffffffff||lightCount>0xffffffff)
       throw RangeError('Cluster lighting exceeds GPU buffer capacity');
     const prefix=`cluster.${resourceKey}.`;
     const projectionBuffer=this.buffer(prefix+'projection',64,projection);
@@ -153,7 +163,10 @@ export class MaterialPipeline {
     const grid=this.buffer(prefix+'grid',clusterCount*8);
     const overflow=this.buffer(prefix+'overflow',clusterCount*4);
     const groups=dispatchGroups(clusterCount,r.device.limits);
-    r.batch().dispatch(k.build_light_clusters.bind({projection:projectionBuffer,clusters},
+    const preparation=r.batch();
+    if(lightInputs&&lightCount)preparation.dispatch(k.prepare_cluster_lights.bind({lights:lightBuffer,
+      inputs:this.buffer(prefix+'rawInputs',lightInputs.byteLength,lightInputs)},{light_count:lightCount}),dispatchGroups(lightCount,r.device.limits));
+    preparation.dispatch(k.build_light_clusters.bind({projection:projectionBuffer,clusters},
       {grid_x:gridSize[0],grid_y:gridSize[1],grid_z:gridSize[2],near_distance:nearDistance,far_distance:farDistance}),groups).submit();
     let capacity=Math.max(1,Math.min(lightCount,64)),indices;
     for(;;) {
@@ -184,13 +197,15 @@ export class MaterialPipeline {
     const values=new Float32Array(records.buffer,records.byteOffset,records.length);
     const snapshots=[];
     for(let i=0;i<records.length;i+=10) {
-      const first=records[i],count=records[i+1],projection=records[i+7];
-      if(first+count>lights.length/20||projection>=projections.length/16)
+      const first=records[i],count=records[i+1],projection=records[i+7]&0x7fffffff,raw=Boolean(records[i+7]&0x80000000);
+      if(first+count>lights.length/20||projection>=projections.length/16
+        ||(raw&&projection*16+36+count*5>projections.length))
         throw RangeError('Clustered snapshot exceeds transported buffers');
       const screenSize=[values[i+8],values[i+9]];
       if(!screenSize.every(v=>Number.isFinite(v)&&v>0))throw RangeError('Invalid clustered screen size');
       snapshots.push({lights:lights.subarray(first*20,(first+count)*20),
         projection:projections.subarray(projection*16,(projection+1)*16),
+        lightInputs:raw?projections.subarray(projection*16+16,projection*16+36+count*5):undefined,
         gridSize:[records[i+2],records[i+3],records[i+4]],nearDistance:values[i+5],farDistance:values[i+6],screenSize});
     }
     const materials=new Map(),prepared=new Map();
@@ -1031,8 +1046,12 @@ export class MaterialPipeline {
         for(const [id,index] of queryEntries)queryResults.set(id,(queryResults.get(id)??0)+samples[index]);
         return {queryResults};
       },error=>({error})):Promise.resolve({queryResults:new Map()});
+      let rawClusterSnapshotCount=0;
+      if(pass.profileGpu&&scene.clusterRecords)for(let i=7;i<scene.clusterRecords.length;i+=10)
+        if(scene.clusterRecords[i]&0x80000000)rawClusterSnapshotCount++;
       const queryCompletion=Promise.all([sizingCompletion,queryReadback,rasterTiming]).then(([sized,queries,timing])=>
         sized.error?{error:sized.error}:timing.error?{error:timing.error}:{...queries,diagnostic:{triangleCount:triangleCount,tileReferences:sized.words-tiles-1,clearAndRasterGpuMs:timing.gpuMs,
+          clusterSnapshotCount:(scene.clusterRecords?.length??0)/10,rawClusterSnapshotCount,
           textureDecodeCount:decodePlans.filter(plan=>!plan.cached).length,textureCacheHits:texturePlan.hits.length,textureCacheMisses:texturePlan.misses.length}});
       if(pass.deferCompletion)return {pixels:null,target,width,height,row_pixels,capacity,queryCompletion};
       const completed=await queryCompletion;

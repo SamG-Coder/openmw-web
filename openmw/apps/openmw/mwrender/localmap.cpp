@@ -68,6 +68,7 @@ namespace MWRender
     class LocalMapRenderToTexture : public SceneUtil::RTTNode
     {
     public:
+        static constexpr float sNear = 5.f;
         LocalMapRenderToTexture(osg::Node* sceneRoot, int res, int mapWorldSize, float x, float y,
             const osg::Vec3d& upVector, float zmin, float zmax, osg::Texture2D* restoreTexture=nullptr);
 
@@ -916,10 +917,10 @@ namespace MWRender
 
         if (SceneUtil::AutoDepth::isReversed())
             mProjectionMatrix = SceneUtil::getReversedZProjectionMatrixAsOrtho(
-                -mapWorldSize / 2, mapWorldSize / 2, -mapWorldSize / 2, mapWorldSize / 2, 5, (zmax - zmin) + 10);
+                -mapWorldSize / 2, mapWorldSize / 2, -mapWorldSize / 2, mapWorldSize / 2, sNear, (zmax - zmin) + 10);
         else
             mProjectionMatrix.makeOrtho(
-                -mapWorldSize / 2, mapWorldSize / 2, -mapWorldSize / 2, mapWorldSize / 2, 5, (zmax - zmin) + 10);
+                -mapWorldSize / 2, mapWorldSize / 2, -mapWorldSize / 2, mapWorldSize / 2, sNear, (zmax - zmin) + 10);
 
         mViewMatrix.makeLookAt(osg::Vec3d(x, y, zmax + 5), osg::Vec3d(x, y, zmin), upVector);
 
@@ -1047,7 +1048,13 @@ namespace MWRender
         stateset->addUniform(new osg::Uniform("webcudaDisableSkyBlending", true));
         stateset->addUniform(new osg::Uniform("far", 10000000.0f));
         stateset->addUniform(new osg::Uniform("skyBlendingStart", 8000000.0f));
-        stateset->addUniform(new osg::Uniform("screenRes", osg::Vec2f{ 1, 1 }));
+        // The map is an orthographic camera, outside the main view's shared
+        // uniforms. CUDA's cluster builder and lookup need its actual viewport
+        // and the same near plane used in mProjectionMatrix above.
+        stateset->addUniform(new osg::Uniform("screenRes", mWebCuda
+            ? osg::Vec2f(width(), height()) : osg::Vec2f{ 1, 1 }));
+        if (mWebCuda)
+            stateset->addUniform(new osg::Uniform("near", sNear));
 
         osg::ref_ptr<osg::Light> light = new osg::Light;
         light->setPosition(osg::Vec4(-0.3f, -0.3f, 0.7f, 0.f));

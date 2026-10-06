@@ -1122,6 +1122,78 @@ remain in the ownership audit. Custom postprocessing that consumes
 light metadata handling. This change does not establish an FPS gain, current
 native-browser gameplay acceptance or smooth 60-180 Hz presentation.
 
+## Raw clustered-light preparation
+
+Engine `bb8eab1ee40c` extends raw point-light capture to clustered lighting.
+`prepare_cluster_lights` in `cluster-lighting.cu` evaluates view transforms,
+distance fading of diffuse/specular RGBA and radius scaling before the existing
+GPU cluster culler. The per-frame source snapshot stays unchanged. Preparation
+and cluster construction share one batch; the added kernel needs no readback.
+Overflow handling continues to grow and retry complete ordered light lists.
+
+The captured OSG buffer owns its raw metadata. Binding offsets select matching
+fade records, and camera/fade edits enter the snapshot cache key. Record word7
+uses bit31 to tag raw inputs; its remaining bits select a 16-float-aligned
+projection-pool entry. Raw entries append the view matrix, radius multiplier,
+three reserved zeros and five fade inputs per light. The retained WASM bridge
+and existing kernel parameter contracts stay unchanged. JavaScript validates
+and uploads this data without calculating transforms or fades.
+
+For the CUDA viewer, the engine no longer creates unused OpenGL cluster grids,
+index/counter arrays or compute nodes, nor calculates their inverse projection.
+The ordinary OpenGL path retains those resources. CPU scene bounds, ordering
+and visibility decisions still remain in the broader rendering audit.
+
+The real exterior startup check caught a camera contract gap: the local-map
+camera supplied no `near` uniform and a placeholder `screenRes` of 1x1, while
+the cluster builder accepted only perspective projections. The CUDA map path
+now supplies its existing near plane and real texture dimensions. The authored
+cluster builder supports orthographic XY bounds without perspective widening,
+including translated and reverse-Z projections. Missing camera uniforms still
+fail explicitly; capture does not invent values from another camera.
+
+All 15 WASM64 suites and 78 host checks pass. There are 234 real OSG capture
+fixtures covering canonical/raw metadata, binding slices, empty/dummy lights,
+up to 130 lights, three views, perspective/orthographic projections, four fade
+cases and cache/ownership edits. Native GPU replay checks 382,752
+prepared/packed words and 309,384 exact culling/list words, with 76 overflow
+retries, 1,024 orthographic boundary checks and intact guards. Changed float
+fields use the previous light test's documented tolerance; unchanged fields
+and list indices remain exact. All real packets also pass host validation
+unchanged. Both changed paged kernels compile with NVRTC 13.3.
+
+All 91 WebGPU runtime pipelines and 242 GPU checks pass, including 213
+production-pipeline checks. The 96 new cases compare prepared light records
+and rendered color/depth/normal/stencil against independent test-only
+canonicalization, assert actual light contribution, exercise overflow, and
+check source ownership and target guards. All 383 generated files reproduce
+byte-for-byte. The existing culler/packer WGSL and native parameter contracts
+remain unchanged; the cluster builder adds orthographic bounds. The SDK has
+no tracked modifications.
+
+To reproduce, set `WEBCUDA_CLUSTER_FIXTURES` to a `.bin` path before
+`wasm-build/test-webcuda-submission.ps1`. Build
+`render/webcuda/cluster-input-gpu.test.cpp` with
+`nvcc -x cu -std=c++17 -O2 --use_fast_math -arch=sm_120`, then pass it the saved
+fixture. Both validator pages include the production GPU cases. The optional
+`?clustered=1` selects clustered lighting in the baseline game settings; saved
+game options retain precedence. Existing debug reports include cluster and
+raw-cluster snapshot counts to verify which source path a pass used.
+
+The rebuilt WebGPU Seyda Neen check with `?clustered=1` records
+350 presentations and 4 completed passes carrying raw clustered
+snapshots in the saved frame. There are zero renderer errors, aborted captures
+or legacy draw attempts; all 120 sampled completed frames release captured
+packets. This verifies the engine producer and GPU consumer together. It is
+a debug scene check, not a matched performance benchmark or native-browser
+test. Reports use `D:/OpenMW-local/webcuda-cluster-input-*` and
+`D:/OpenMW-local/webcuda-seyda-neen-cluster-input-2026-10-07`.
+
+Upstream light animation/actor fading, custom light-consuming postprocessing,
+sky/camera and scene visibility calculations remain in the ownership audit.
+These checks do not establish native-browser gameplay acceptance, an FPS gain
+or smooth 60-180 Hz presentation.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal
