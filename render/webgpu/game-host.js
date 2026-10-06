@@ -771,12 +771,13 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         if(pass.normalTargetId)planeStorage(pass.normalTargetId,pass.width,pass.height,pass.sampleCount??1,1,false);
         if(pass.stencilTargetId)planeStorage(pass.stencilTargetId,pass.width,pass.height,pass.sampleCount??1,1,false);
 
-        const preserveColor=(pass.clearMask&16384)===0;
-        const preserveDepth=(pass.clearMask&256)===0;
-        const preserveNormal=pass.normalTargetId&&((pass.clearMask&16384)===0||(pass.clearColorMask??15)!==15);
+        const clearMask=pass.clearMask??16640;
+        const preserveColor=(clearMask&16384)===0;
+        const preserveDepth=(clearMask&256)===0;
+        const preserveNormal=pass.normalTargetId&&((clearMask&16384)===0||(pass.clearColorMask??15)!==15);
         const depthHolder=pass.depthTargetId?targets.get(pass.depthTargetId):attachment;
         const normalHolder=pass.normalTargetId?targets.get(pass.normalTargetId):null;
-        let nativeDirect=nativeTargets.canCamera(pass)
+        let nativeDirect=nativeTargets.canCamera(pass,compactDepth)
           &&(!preserveColor||attachment.authority!=='compat')
           &&(!preserveDepth||depthHolder?.authority!=='compat')
           &&(!preserveNormal||normalHolder?.authority!=='compat');
@@ -946,9 +947,12 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       release(()=>pipeline.retireBuffer(buffer));
     }
     release(()=>pipeline.dispose());
-    const buffers=new Set([...targets.values()].flatMap(target=>[target.buffer,...(target.sampleBuffer?[target.sampleBuffer]:[])]));
+    const holders=[...new Set(targets.values())];
+    const buffers=new Set(holders.flatMap(target=>[target.buffer,...(target.sampleBuffer?[target.sampleBuffer]:[])].filter(Boolean)));
+    for(const holder of holders)release(()=>nativeTargets.destroy(holder));
     targets.clear();
     for(const buffer of buffers)release(()=>runtime.destroyBuffer(buffer));
+    release(()=>nativeTargets.dispose());
     release(()=>context.unconfigure());
     release(()=>canvas.remove());
     release(()=>diagnosticPanel?.remove());
