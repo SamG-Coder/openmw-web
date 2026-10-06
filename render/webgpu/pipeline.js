@@ -739,15 +739,17 @@ export class MaterialPipeline {
       const capture_endpoints=fixed_enabled&&((scene.ribbonRanges?.length??0)>0||attributeFlags.lineParticles)?1:0;
       const fixedEndpoints=this.buffer('fixedLightingEndpoints',capture_endpoints?vertexCount*128:4);
       const positions=this.buffer('positions',rawSlots*48), weights=this.buffer('weights',rawSlots*48), rawValid=this.buffer('valid',rawSlots*4);
+      const nativeDirect=Boolean(pass.nativeTarget);
       const targetBytes=width*height*(pass.compactDepth?4:40);
-      if(pass.compactDepth&&((pass.sampleCount??1)!==1||pass.normalTargetId||pass.stencilTargetId||(pass.stencilBits??0)||[0x88f0,0x8cad].includes(pass.depthFormat)||!pass.deferCompletion||context))throw Error('Invalid compact depth camera');
-      const counts=this.buffer('counts',(tiles+1+scene.materials.length/12)*4,new Uint32Array(tiles+1+scene.materials.length/12)), target=pass.target??this.buffer('target',targetBytes);
-      const pixels=(!pass.deferCompletion||context)?this.buffer('pixels',row_pixels*height*4):null;
-      if(target.byteLength<targetBytes)throw RangeError('Camera target buffer is too small');
+      if(pass.compactDepth&&((pass.sampleCount??1)!==1||pass.normalTargetId||pass.stencilTargetId||(pass.stencilBits??0)||[0x88f0,0x8cad].includes(pass.depthFormat)||(!pass.deferCompletion&&!nativeDirect)||context))throw Error('Invalid compact depth camera');
+      const counts=this.buffer('counts',(tiles+1+scene.materials.length/12)*4,new Uint32Array(tiles+1+scene.materials.length/12));
+      const target=nativeDirect?null:(pass.target??this.buffer('target',targetBytes));
+      const pixels=(!nativeDirect&&(!pass.deferCompletion||context))?this.buffer('pixels',row_pixels*height*4):null;
+      if(target&&target.byteLength<targetBytes)throw RangeError('Camera target buffer is too small');
       const sample_count=pass.sampleCount??1;
       if(![1,4].includes(sample_count))throw RangeError('Invalid raster sample count');
-      const rasterTarget=sample_count===1?target:pass.sampleTarget;
-      if(sample_count!==1) {
+      const rasterTarget=nativeDirect?null:(sample_count===1?target:pass.sampleTarget);
+      if(!nativeDirect&&sample_count!==1) {
         if(!rasterTarget)throw RangeError('Multisample pass has no persistent sample target');
         this.validateMultisampleStorage(target,rasterTarget,width,height,sample_count);
       }
@@ -804,9 +806,16 @@ export class MaterialPipeline {
         if(floatColor){floatMipOffsets.add(offset);floatMipStorage.set(offset,colorStorage(((id&0x40000000)!==0?attachment?.normalFormat:attachment?.colorFormat)??0x8814));}
         if(!attachment||attachment.width!==w||attachment.height!==h||offset+w*h*(floatColor?4:1)>scene.texelWordCount)
           throw Error(`Unavailable render texture ${id}`);
-        if(attachment.buffer===target)throw Error('Camera reads its own attachment');
-        r.batch().dispatch(((id&0x80000000)!==0?(attachment.compactDepth?k.compact_depth_to_texture:k.depth_to_texture):(id&0x40000000)!==0?(floatColor?k.float_normals_to_texture:k.normals_to_texture):floatColor?k.float_target_to_texture:k.target_to_texture).bind({target:attachment.buffer,texels},
-          {width:w,height:h,offset}),groups(w*h)).submit();
+        if(pass.targetHolder===attachment)throw Error('Camera reads its own attachment');
+        const plane=(id&0x80000000)!==0?'depth':(id&0x40000000)!==0?'normal':'color';
+        if(attachment.native?.[plane]&&typeof pass.copyNativePlaneToAtlas==='function') {
+          await pass.copyNativePlaneToAtlas(attachment,plane,texels,offset,{floatOutput:floatColor});
+        } else {
+          if(!attachment.buffer)throw Error(`Render texture ${id} has neither native nor compatibility storage`);
+          if(target&&attachment.buffer===target)throw Error('Camera reads its own attachment');
+          r.batch().dispatch(((id&0x80000000)!==0?(attachment.compactDepth?k.compact_depth_to_texture:k.depth_to_texture):(id&0x40000000)!==0?(floatColor?k.float_normals_to_texture:k.normals_to_texture):floatColor?k.float_target_to_texture:k.target_to_texture).bind({target:attachment.buffer,texels},
+            {width:w,height:h,offset}),groups(w*h)).submit();
+        }
       }
       const mips=scene.mipGenerations??new Uint32Array();
       if(!(mips instanceof Uint32Array)||mips.length%4)throw RangeError('Invalid mip generation records');
@@ -990,20 +999,20 @@ export class MaterialPipeline {
       // A zero clear mask has no attachment side effects, and an empty packet
       // cannot produce fragments. Keep texture preparation, status validation
       // and resolves: an empty camera can still clear or publish an attachment.
-      if(clearMask!==0&&!nativeFullClear)r.batch().dispatch(k.clear_attachment.bind({target:rasterTarget},
+      if(!nativeDirect&&clearMask!==0&&!nativeFullClear)r.batch().dispatch(k.clear_attachment.bind({target:rasterTarget},
         {pixel_count:width*height,mask:clearMask,red:clear[0],green:clear[1],blue:clear[2],alpha:clear[3],depth,
          normal_enabled,normal_channels,normal_storage,color_channels,color_storage,depth_bits,stencil_enabled,
          stencil_clear,clear_color_mask,width,height,...viewportArgs,sample_count}),groups(width*height*sample_count)).submit();
       let rasterTiming={gpuMs:null,drawCalls:0};
       if(slots!==0)rasterTiming=await this.rasterizer.render(
-        {vertices,triangles:output_triangles,counts,materials,texels,target:rasterTarget,attributes:clippedAttributes},
+        {vertices,triangles:output_triangles,counts,materials,texels,...(rasterTarget?{target:rasterTarget}:{}),attributes:clippedAttributes},
         {width,height,capacity,raster_offset,boundary_offset,point_fade_offset,lighting_offset,cluster_offset,
          fixed_offset,falloff_offset,fixed_enabled,normal_enabled,normal_channels,normal_storage,
          color_channels,color_storage,depth_bits,stencil_enabled,sample_count},
         {scene,pass:{...pass,nativeFullClear,clearColor:clear,clearDepth:depth,clearStencil:stencil_clear},triangleCount:slots});
-      if(sample_count!==1)this.resolveMultisample(rasterTarget,target,width,height,sample_count,
+      if(!nativeDirect&&sample_count!==1)this.resolveMultisample(rasterTarget,target,width,height,sample_count,
         {mask:16384|256|1024,colorFormat:pass.colorFormat,depthFormat:pass.depthFormat,normalFormat:pass.normalFormat,normals:normal_enabled!==0,stencil:stencil_enabled!==0});
-      if(!pass.deferCompletion||context)r.batch().dispatch(k.pack_target.bind({target,pixels},{width,height,row_pixels}),groups(width*height)).submit();
+      if(!nativeDirect&&(!pass.deferCompletion||context))r.batch().dispatch(k.pack_target.bind({target,pixels},{width,height,row_pixels}),groups(width*height)).submit();
       const queryEntries=[];
       for(let m=0;m<scene.materials.length;m+=12) {
         const data=scene.materials[m];
@@ -1027,7 +1036,7 @@ export class MaterialPipeline {
         status.error?{error:status.error}:{...queries,diagnostic:{triangleCount,packedTriangles:slots,hardwareDrawCalls:rasterTiming?.drawCalls??0,clearAndRasterGpuMs:rasterTiming?.gpuMs??null,
           clusterSnapshotCount:(scene.clusterRecords?.length??0)/10,rawClusterSnapshotCount,
           textureDecodeCount:decodePlans.filter(plan=>!plan.cached).length,textureCacheHits:texturePlan.hits.length,textureCacheMisses:texturePlan.misses.length}});
-      if(pass.deferCompletion)return {pixels:null,target,width,height,row_pixels,capacity,queryCompletion};
+      if(pass.deferCompletion)return {pixels:null,target,width,height,row_pixels,capacity,queryCompletion,nativeTarget:pass.nativeTarget??null};
       const completed=await queryCompletion;
       if(completed.error) {
         await r.idle();this.collectRetired();
