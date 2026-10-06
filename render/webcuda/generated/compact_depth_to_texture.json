@@ -1,0 +1,106 @@
+{
+  "version": "0.1.1",
+  "name": "compact_depth_to_texture",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel compact_depth_to_texture.\n@group(0) @binding(0) var<storage, read> b_target: array<f32>;\n@group(0) @binding(1) var<storage, read_write> b_texels: array<u32>;\nstruct CWParams {\n  p_width: u32,\n  p_height: u32,\n  p_offset: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i < (cw_params.p_width * cw_params.p_height))) {\n    let cw_argument_index_0 = v_i;\n    b_texels[((cw_params.p_offset + (((cw_params.p_height - 1u) - (v_i / cw_params.p_width)) * cw_params.p_width)) + (v_i % cw_params.p_width))] = bitcast<u32>(b_target[cw_argument_index_0]);\n  }\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "target",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "texels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "offset",
+        "type": "u32",
+        "offset": 8
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 987,
+      "beforeBytes": 987,
+      "afterBytes": 987,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 578,
+          "transitiveBytes": 578,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// Scalar depth planes keep full resolution without unused color/normal storage.\n__global__ void clear_compact_depth(float* target,unsigned int pixel_count,float depth) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<pixel_count)target[i]=depth;\n}\n__global__ void copy_depth_layout(const float* source,float* target,unsigned int pixel_count,unsigned int source_compact,unsigned int target_compact) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<pixel_count)target[target_compact!=0u?i:i*9u+4u]=source[source_compact!=0u?i:i*9u+4u];\n}\n__global__ void compact_depth_to_texture(const float* target,unsigned int* texels,unsigned int width,unsigned int height,unsigned int offset) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<width*height)texels[offset+(height-1u-i/width)*width+i%width]=__float_as_uint(target[i]);\n}\n",
+    "entry": "compact_depth_to_texture",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "target",
+        "type": "buffer"
+      },
+      {
+        "name": "texels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

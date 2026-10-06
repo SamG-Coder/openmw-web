@@ -950,6 +950,14 @@ namespace Shader
             // Append shader source filename for debugging.
             static unsigned int counter = 0;
             shader->setName(std::format("{} {}", counter++, templateName));
+            // Preserve the resolved material variant for the WebCuda backend.
+            // Reconstructing these switches from preprocessed GLSL is lossy.
+            shader->setUserValue("webcuda.template",templateName);
+            auto webcudaDefines=mGlobalDefines;
+            for(const auto& [name,value]:defines)webcudaDefines.insert_or_assign(name,value);
+            std::string webcudaVariant;
+            for(const auto& [name,value]:webcudaDefines)webcudaVariant+=name+"="+value+"\n";
+            shader->setUserValue("webcuda.defines",webcudaVariant);
 
             mHotReloadManager->addShaderFiles(templateName, defines);
 
@@ -1061,6 +1069,12 @@ namespace Shader
             mergeLinkedShadersForGLES(shaderSource, linkedShaderNames, defines, shader->getType());
 #endif
             shader->setShaderSource(shaderSource);
+            shader->setUserValue("webcuda.template",templateId);
+            auto webcudaDefines=mGlobalDefines;
+            for(const auto& [name,value]:defines)webcudaDefines.insert_or_assign(name,value);
+            std::string webcudaVariant;
+            for(const auto& [name,value]:webcudaDefines)webcudaVariant+=name+"="+value+"\n";
+            shader->setUserValue("webcuda.defines",webcudaVariant);
 
             getLinkedShaders(shader, linkedShaderNames, defines);
         }

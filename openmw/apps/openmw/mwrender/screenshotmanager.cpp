@@ -1,6 +1,7 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "screenshotmanager.hpp"
+#include <components/webcuda/viewer.hpp>
 
 #include <condition_variable>
 #include <mutex>
@@ -121,6 +122,20 @@ namespace MWRender
     }
 
     ScreenshotManager::~ScreenshotManager() {}
+
+    void ScreenshotManager::screenshotAsync(int w,int h,std::function<void(osg::ref_ptr<osg::Image>,std::string)> completion)
+    {
+        if(w<=0||h<=0||!completion)throw std::invalid_argument("Invalid asynchronous screenshot request");
+        if(auto* viewer=dynamic_cast<WebCuda::Viewer*>(mViewer.get())) {
+            auto camera=MWBase::Environment::get().getWorld()->getPostProcessor()->getHUDCamera();
+            viewer->captureImage(camera,w,h,std::move(completion));
+            return;
+        }
+        osg::ref_ptr<osg::Image> image=new osg::Image;
+        std::string error;
+        try {screenshot(image,w,h);} catch(const std::exception& e) {image=nullptr;error=e.what();}
+        completion(image,std::move(error));
+    }
 
     void ScreenshotManager::screenshot(osg::Image* image, int w, int h)
     {

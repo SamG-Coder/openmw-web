@@ -107,7 +107,7 @@ build_bullet() {
     -DBUILD_BULLET2_DEMOS=OFF -DBUILD_CPU_DEMOS=OFF -DBUILD_OPENGL3_DEMOS=OFF \
     -DBUILD_UNIT_TESTS=OFF -DBUILD_EXTRAS=OFF -DBUILD_PYBULLET=OFF \
     -DCMAKE_CXX_FLAGS="$CFLAGS_COMMON -DBT_USE_DOUBLE_PRECISION" -DCMAKE_C_FLAGS="$CFLAGS_COMMON"
-  ninja -C "$SRC/bullet3/$BUILD_DIR" BulletDynamics BulletCollision BulletSoftBody LinearMath
+  ninja -j "$JOBS" -C "$SRC/bullet3/$BUILD_DIR" BulletDynamics BulletCollision BulletSoftBody LinearMath
   find "$SRC/bullet3/$BUILD_DIR" \( -name 'libBullet*.a' -o -name 'libLinearMath.a' \) -exec cp -f {} "$DW/lib/" \;
 }
 
@@ -118,7 +118,7 @@ build_recast() {
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_SHARED_LIBS=OFF \
     -DRECASTNAVIGATION_DEMO=OFF -DRECASTNAVIGATION_TESTS=OFF -DRECASTNAVIGATION_EXAMPLES=OFF \
     -DCMAKE_CXX_FLAGS="$CFLAGS_COMMON" -DCMAKE_C_FLAGS="$CFLAGS_COMMON"
-  ninja -C "$SRC/recast/$BUILD_DIR" Recast Detour DetourCrowd DetourTileCache DebugUtils
+  ninja -j "$JOBS" -C "$SRC/recast/$BUILD_DIR" Recast Detour DetourCrowd DetourTileCache DebugUtils
   find "$SRC/recast/$BUILD_DIR" -name 'lib*.a' -exec cp -f {} "$DW/lib/" \;
 }
 
@@ -155,6 +155,15 @@ CFG
 
 build_mygui() {
   log "mygui"
+  # Upstream adds browser-demo SDL_image/preload flags to every library compile.
+  # On Windows its shell quoting turns ["png"] into the invalid LOAD_[PNG] macro.
+  # OpenMW owns the window/assets, so its MyGUI library must not carry demo flags.
+  local patch_file="$ROOT/wasm-build/patches/mygui-library-only.patch"
+  if patch -d "$SRC/mygui" -p1 --dry-run --forward < "$patch_file" >/dev/null 2>&1; then
+    patch -d "$SRC/mygui" -p1 --forward < "$patch_file"
+  elif ! patch -d "$SRC/mygui" -p1 --dry-run --reverse < "$patch_file" >/dev/null 2>&1; then
+    echo 'MyGUI source does not match the pinned library-only patch' >&2; return 1
+  fi
   # MyGUI needs FreeType, from the emscripten port. VERIFIED 2026-08-24: cmake DOES find it, but
   # only once the port has been materialised into the sysroot — a port does not exist as a .a
   # until something links it, so build_em_ports must have run first (it now builds this set).
@@ -165,18 +174,18 @@ build_mygui() {
   # for the standard character types — newer releases removed the primary template it relied on,
   # so 3.4.3 no longer compiles as-is. Force-include a forwarding specialisation rather than
   # patching upstream. See deps/shim/ushort_char_traits.h for why this is safe.
-  local SHIM=""
+  local SHIM="-include $ROOT/wasm-build/include/mygui_char_traits_fix.h"
   [ -f "$ROOT/deps/shim/ushort_char_traits.h" ] && SHIM="-include $ROOT/deps/shim/ushort_char_traits.h"
   emcmake cmake -S "$SRC/mygui" -B "$SRC/mygui/$BUILD_DIR" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -DMYGUI_STATIC=ON -DMYGUI_RENDERSYSTEM=1 -DMYGUI_DISABLE_PLUGINS=ON \
+    -DMYGUI_ENGINE_ONLY=ON -DMYGUI_STATIC=ON -DMYGUI_RENDERSYSTEM=1 -DMYGUI_DISABLE_PLUGINS=ON \
     -DMYGUI_BUILD_DEMOS=OFF -DMYGUI_BUILD_TOOLS=OFF -DMYGUI_BUILD_PLUGINS=OFF \
     -DMYGUI_BUILD_UNITTESTS=OFF -DMYGUI_BUILD_TEST_APP=OFF -DMYGUI_DONT_USE_OBSOLETE=ON \
     -DCMAKE_CXX_FLAGS="$CFLAGS_COMMON $FT $SHIM" -DCMAKE_C_FLAGS="$CFLAGS_COMMON $FT"
   # MyGUIEngine, NOT MyGUIEngineStatic. MYGUI_STATIC=ON changes the library TYPE, not the target
   # NAME — 3.4.3 has no MyGUIEngineStatic target at all, so this failed with "unknown target"
   # every time. (It had never been run: the VERIFY note above was still standing.)
-  ninja -C "$SRC/mygui/$BUILD_DIR" MyGUIEngine
+  ninja -j "$JOBS" -C "$SRC/mygui/$BUILD_DIR" MyGUIEngine
   find "$SRC/mygui/$BUILD_DIR" -name 'libMyGUIEngine*.a' -exec cp -f {} "$DW/lib/" \;
   # Headers OpenMW's configure expects under MYGUI_HOME=$DW (include/MYGUI/*).
   mkdir -p "$DW/include/MYGUI"
@@ -188,7 +197,7 @@ build_ffmpeg() {
   log "ffmpeg"
   arch_guard "$SRC/ffmpeg-6.1.2" make distclean
   cd "$SRC/ffmpeg-6.1.2"
-  emconfigure ./configure \
+  emconfigure bash ./configure \
     --cc=emcc --cxx=em++ --ar=emar --ranlib=emranlib --nm=emnm \
     --enable-cross-compile --target-os=none --arch=$WASM_ARCH \
     --disable-x86asm --disable-inline-asm --disable-asm \
@@ -217,12 +226,17 @@ build_boost() {
   log "boost"   ### VERIFY ### emscripten b2 toolset wiring is the fiddliest of the set.
   arch_guard "$SRC/boost_1_85_0" rm -rf bin.v2
   cd "$SRC/boost_1_85_0"
-  ./bootstrap.sh --with-libraries=program_options,iostreams || ./bootstrap.sh
+  if [ ! -x ./b2 ] && [ ! -x ./b2.exe ]; then
+    ./bootstrap.sh --with-libraries=program_options,iostreams
+  fi
   # Point b2 at em++ via a user-config so it cross-compiles.
-  printf 'using clang : emscripten : em++ : <cxxflags>"%s" <archiver>emar <ranlib>emranlib ;\n' \
-    "$CFLAGS_COMMON" > "$SRC/boost_1_85_0/user-config-em.jam"
+  local suffix=""
+  [ -f "$EM_LIBEXEC/em++.exe" ] && suffix=".exe"
+  printf 'using clang : emscripten : "%s/em++%s" : <cxxflags>"%s" <archiver>"%s/emar%s" <ranlib>"%s/emranlib%s" ;\n' \
+    "$EM_LIBEXEC" "$suffix" "$CFLAGS_COMMON" "$EM_LIBEXEC" "$suffix" "$EM_LIBEXEC" "$suffix" \
+    > "$SRC/boost_1_85_0/user-config-em.jam"
   ./b2 --user-config="$SRC/boost_1_85_0/user-config-em.jam" toolset=clang-emscripten \
-    link=static runtime-link=static threading=multi variant=release \
+    target-os=linux link=static runtime-link=static threading=multi variant=release \
     --with-program_options --with-iostreams \
     --prefix="$DW" -j"$JOBS" install
   # (OpenMW's configure sets Boost_DIR=$DW/lib/cmake/Boost-1.85.0 and Boost_INCLUDE_DIR=$SRC/boost_1_85_0)

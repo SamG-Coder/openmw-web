@@ -11,6 +11,7 @@
 #include <osgParticle/Shooter>
 
 #include <components/nif/particle.hpp> // NiGravity::ForceType
+#include <components/webcuda/submission.hpp>
 
 #include <components/sceneutil/nodecallback.hpp>
 
@@ -25,7 +26,7 @@ namespace NifOsg
 {
 
     // Subclass ParticleSystem to support a limit on the number of active particles.
-    class ParticleSystem : public osgParticle::ParticleSystem
+    class ParticleSystem : public osgParticle::ParticleSystem, public WebCuda::CustomDrawable
     {
     public:
         ParticleSystem();
@@ -38,6 +39,7 @@ namespace NifOsg
         void setQuota(int quota);
 
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
+        void submitWebCuda(WebCuda::SubmissionSink&, const WebCuda::DrawContext&) const override;
 
     private:
         int mQuota;

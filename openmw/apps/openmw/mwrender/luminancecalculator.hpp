@@ -7,6 +7,8 @@
 #include <osg/Program>
 #include <osg/Texture2D>
 
+namespace WebCuda { class SubmissionSink; }
+
 namespace Shader
 {
     class ShaderManager;
@@ -26,6 +28,8 @@ namespace MWRender
 
         void draw(const PingPongCanvas& canvas, osg::RenderInfo& renderInfo, osg::State& state, osg::GLExtensions* ext,
             size_t frameId);
+
+        void submitWebCuda(WebCuda::SubmissionSink&,const osg::Texture2D&);
 
         bool isEnabled() const { return mEnabled; }
 

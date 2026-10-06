@@ -23,6 +23,7 @@
 #include <components/sceneutil/nodecallback.hpp>
 #include <components/settings/values.hpp>
 #include <components/shader/shadermanager.hpp>
+#include <components/webcuda/viewer.hpp>
 #include <components/stereo/multiview.hpp>
 #include <components/stereo/stereomanager.hpp>
 #include <components/vfs/manager.hpp>
@@ -226,11 +227,12 @@ namespace MWRender
         //
         // OMW_FORCE_NORMALS_RT (QA only): skip this guard to reproduce the pre-fix behaviour and
         // A/B the indexed-blend smoke bug. Never set in normal runs.
-        if (getenv("OMW_FORCE_NORMALS_RT") == nullptr)
+        if (!WebCuda::Viewer::requested() && getenv("OMW_FORCE_NORMALS_RT") == nullptr)
             ext->glDisablei = nullptr;
 #endif
 
-        if (ext->glDisablei)
+        // WebCuda writes its normal plane in .cu and does not use indexed GL calls.
+        if (WebCuda::Viewer::requested() || ext->glDisablei)
             mNormalsSupported = true;
         else
             // Info, not Error: on Emscripten we deliberately null glDisablei above (the pass-normals
@@ -238,7 +240,8 @@ namespace MWRender
             Log(Debug::Info) << "'glDisablei' unsupported, pass normals will not be available to shaders.";
 
         mGLSLVersion = static_cast<int>(ext->glslLanguageVersion * 100);
-        mUBO = ext->isUniformBufferObjectSupported && mGLSLVersion >= 330;
+        // CUDA capture reads named uniforms, independently of the GL driver's UBO support.
+        mUBO = !WebCuda::Viewer::requested() && ext->isUniformBufferObjectSupported && mGLSLVersion >= 330;
 #ifdef __EMSCRIPTEN__
         // Protective: keep the fx uniform path off the std140 nested-struct UBO on WebGL2. WebGL2 is
         // GLSL ES 3.00 (mGLSLVersion==300) so this is already false, but pin it so a driver reporting
@@ -452,7 +455,9 @@ namespace MWRender
         // sample count + rebuilding those FBOs re-applies MSAA live — no window/context recreation.
         if (samples < 0)
             samples = 0;
-        if (samples > 1)
+        if(WebCuda::Viewer::requested()&&samples>1&&samples!=2&&samples!=4&&samples!=8&&samples!=16)
+            throw std::runtime_error("WebCuda antialiasing supports 2, 4, 8 or 16 samples");
+        if (samples > 1&&!WebCuda::Viewer::requested())
         {
 #ifndef GL_MAX_SAMPLES
 #define GL_MAX_SAMPLES 0x8D57
@@ -585,7 +590,9 @@ namespace MWRender
         // first PP render hung the main thread on exactly this resolve. Render the PP scene
         // SINGLE-SAMPLE so depth goes straight to a texture with no resolve; AA under PP is
         // provided by SSAA (?ss=N supersampling) instead of hardware MSAA.
-        const int effectiveSamples = 1;
+        // WebCuda owns sample storage and depth/normal resolve in its .cu
+        // kernels, so it does not inherit the WebGL2 resolve restriction.
+        const int effectiveSamples = WebCuda::Viewer::requested()?mSamples:1;
 #else
         const int effectiveSamples = mSamples;
 #endif
@@ -743,7 +750,9 @@ namespace MWRender
             if (!technique->isValid())
                 continue;
 
-            if (technique->getGLSLVersion() > mGLSLVersion)
+            // The CUDA submission path selects authored kernels and reports
+            // unsupported techniques itself; GL language limits cannot gate it.
+            if (!WebCuda::Viewer::requested() && technique->getGLSLVersion() > mGLSLVersion)
             {
                 Log(Debug::Warning) << "Technique " << technique->getName() << " requires GLSL version "
                                     << technique->getGLSLVersion() << " which is unsupported by your hardware.";

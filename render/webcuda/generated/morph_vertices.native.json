@@ -1,0 +1,33 @@
+{
+  "name": "morph_vertices",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// One thread owns each morphed vertex, preserving authored target order.\r\n__global__ void morph_vertices(float* vertices,const unsigned int* ranges,const float* offsets,unsigned int range_count) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=range_count)return;\r\n    unsigned int vertex=ranges[i*3]*10,first=ranges[i*3+1],count=ranges[i*3+2];\r\n    for(unsigned int k=0;k<3;k++) {\r\n        float value=vertices[vertex+k];\r\n        for(unsigned int j=0;j<count;j++)value+=offsets[(first+j)*4+k]*offsets[(first+j)*4+3];\r\n        vertices[vertex+k]=value;\r\n    }\r\n}\r\n__global__ void skin_vertices(float* vertices,float* attributes,const unsigned int* ranges,\r\n    const unsigned int* weights,const float* bones,const float* transforms,unsigned int range_count) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=range_count)return;\r\n    unsigned int vertex=ranges[i*4],first=ranges[i*4+1],count=ranges[i*4+2],transform=ranges[i*4+3]*32;\r\n    float matrix[16];for(unsigned int k=0;k<16;k++)matrix[k]=k==15?1.0f:0.0f;\r\n    for(unsigned int influence=0;influence<count;influence++) {\r\n        unsigned int bone=weights[(first+influence)*2]*32;\r\n        float weight=__uint_as_float(weights[(first+influence)*2+1]);\r\n        for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<3;col++) {\r\n            float value=0.0f;\r\n            for(unsigned int k=0;k<4;k++)value+=bones[bone+row*4+k]*bones[bone+16+k*4+col];\r\n            matrix[row*4+col]+=value*weight;\r\n        }\r\n    }\r\n    for(unsigned int stage=0;stage<2;stage++) {\r\n        float result[16];\r\n        for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<4;col++) {\r\n            float value=0.0f;for(unsigned int k=0;k<4;k++)value+=matrix[row*4+k]*transforms[transform+stage*16+k*4+col];\r\n            result[row*4+col]=value;\r\n        }\r\n        for(unsigned int k=0;k<16;k++)matrix[k]=result[k];\r\n    }\r\n    float position[3],normal[3],tangent[3];\r\n    float w=matrix[15];for(unsigned int k=0;k<3;k++)w+=vertices[vertex*10+k]*matrix[k*4+3];\r\n    for(unsigned int col=0;col<3;col++) {\r\n        position[col]=matrix[12+col];normal[col]=0.0f;tangent[col]=0.0f;\r\n        for(unsigned int row=0;row<3;row++) {\r\n            position[col]+=vertices[vertex*10+row]*matrix[row*4+col];\r\n            normal[col]+=attributes[vertex*34+3+row]*matrix[row*4+col];\r\n            tangent[col]+=attributes[vertex*34+6+row]*matrix[row*4+col];\r\n        }\r\n    }\r\n    for(unsigned int k=0;k<3;k++) {\r\n        vertices[vertex*10+k]=position[k]/w;\r\n        attributes[vertex*34+3+k]=normal[k];attributes[vertex*34+6+k]=tangent[k];\r\n    }\r\n}\r\n",
+    "entry": "morph_vertices",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "ranges",
+        "type": "buffer"
+      },
+      {
+        "name": "offsets",
+        "type": "buffer"
+      },
+      {
+        "name": "range_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

@@ -12,6 +12,7 @@
 
 #include <components/sceneutil/depth.hpp>
 #include <components/shader/shadermanager.hpp>
+#include <components/webcuda/materialstate.hpp>
 #include <components/stereo/multiview.hpp>
 #include <components/stereo/stereomanager.hpp>
 
@@ -46,6 +47,36 @@ namespace MWRender
         for (unsigned int unit = 1; unit < 8; ++unit)
             mStateSet->setTextureMode(unit, GL_TEXTURE_2D, modeOff);
     }
+
+    const osg::StateSet* TransparentDepthBinCallback::beginWebCuda(WebCuda::SubmissionSink& sink)
+    {
+        const auto frame=sink.frameNumber()%2;
+        if(!mFbo[frame]||!mOpaqueFbo[frame])return nullptr;
+        const auto* color=dynamic_cast<const osg::Texture2D*>(mFbo[frame]->getAttachment(osg::Camera::COLOR_BUFFER0).getTexture());
+        if(!color||!sink.isColorTarget(*color))return nullptr;
+        const auto* depth=dynamic_cast<const osg::Texture2D*>(mOpaqueFbo[frame]->getAttachment(osg::Camera::PACKED_DEPTH_STENCIL_BUFFER).getTexture());
+        if(!depth)throw std::runtime_error("Opaque depth capture requires 2D depth texture");
+        sink.captureDepth(*depth);return nullptr;
+    }
+    const osg::StateSet* TransparentDepthBinCallback::beginReplayWebCuda(WebCuda::SubmissionSink& sink)
+    {
+        if(!mPostPass)return nullptr;
+        const auto frame=sink.frameNumber()%2;
+        if(!mFbo[frame]||!mOpaqueFbo[frame])return nullptr;
+        const auto* color=dynamic_cast<const osg::Texture2D*>(mFbo[frame]->getAttachment(osg::Camera::COLOR_BUFFER0).getTexture());
+        if(!color||!sink.isColorTarget(*color))return nullptr;
+        const auto* depth=dynamic_cast<const osg::Texture2D*>(mOpaqueFbo[frame]->getAttachment(osg::Camera::PACKED_DEPTH_STENCIL_BUFFER).getTexture());
+        if(!depth)throw std::runtime_error("Transparent postpass requires depth texture");
+        sink.beginDepthTarget(*depth);return mStateSet;
+    }
+    bool TransparentDepthBinCallback::acceptReplayWebCuda(const osg::Drawable& drawable,const WebCuda::DrawContext& context) const
+    {
+        if(drawable.getNodeMask()==Mask_ParticleSystem)return false;
+        const auto state=WebCuda::resolveState(context);
+        const auto* material=dynamic_cast<const osg::Material*>(state->getAttribute(osg::StateAttribute::MATERIAL));
+        return !material||material->getDiffuse(osg::Material::FRONT).a()>=0.5f;
+    }
+    void TransparentDepthBinCallback::endReplayWebCuda(WebCuda::SubmissionSink& sink) { sink.endColorTarget(); }
 
     void TransparentDepthBinCallback::drawImplementation(
         osgUtil::RenderBin* bin, osg::RenderInfo& renderInfo, osgUtil::RenderLeaf*& previous)

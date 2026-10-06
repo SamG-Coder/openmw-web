@@ -1,4 +1,4 @@
-<!doctype html><html lang="en"><head><!-- Copyright (C) 2025-2026 Virtastic - https://virtastic.app | SPDX-License-Identifier: GPL-3.0-or-later | part of openmw-web --><meta charset="utf-8"><title>OpenMW-Web</title><script>
+<!doctype html><html lang="en"><head><!-- Copyright (C) 2025-2026 Virtastic - https://virtastic.app | SPDX-License-Identifier: GPL-3.0-or-later | part of openmw-web --><meta charset="utf-8"><title>OpenMW-Web</title><script src="frame-pump.js"></script><script>
 // THE PAGE<->GAME BRIDGE, defined before any other script so nothing has to guard against it
 // being absent: the overlays, the cell-load watch and the error modal all read it.
 // THE PAGE<->GAME BRIDGE. window.omw.state is what Lua mirrors (mp.set); the page
@@ -381,6 +381,9 @@ window.omw = (function(){
          stack: new Error().stack }); } catch(e){}
      }
      var ctx = orig.call(this, type, attrs);
+     if (ctx && typeof Module !== 'undefined' && Module && this === Module.canvas
+         && Module.webcudaGuardContext && /^(webgl2|webgl|experimental-webgl)$/.test(type))
+       Module.webcudaGuardContext(ctx);
      // Enable EXT_texture_filter_anisotropic on the context: WebGL2 reports it in the extension
      // string (so OSG thinks it's usable) but the GL_TEXTURE_MAX_ANISOTROPY_EXT pname is only
      // ACCEPTED after getExtension() is called on the context — otherwise glTexParameterf raises
@@ -1804,18 +1807,23 @@ window.omw = (function(){
          // The working set settles at 259 chunks, so high:384 is headroom, not a guess. A streamfs
          // miss blocks the main thread, so this buys frame time, not just bandwidth.
          var TIER = {
-           low:  { vd: '8192',  minSize: '0.02',  shadowRes: '2048', shadowDist: '512',  rtt: '512',  actors: '3072', lru: 48 },
-           mid:  { vd: '12288', minSize: '0.01',  shadowRes: '4096', shadowDist: '768',  rtt: '1024', actors: '7168', lru: 96 },
-           high: { vd: '16384', minSize: '0.005', shadowRes: '8192', shadowDist: '1024', rtt: '1024', actors: '7168', lru: 192 }
+           low:  { vd: '8192',  minSize: '0.02',  shadowDist: '512',  rtt: '512',  actors: '3072', lru: 48 },
+           mid:  { vd: '12288', minSize: '0.01',  shadowDist: '768',  rtt: '1024', actors: '7168', lru: 96 },
+           high: { vd: '16384', minSize: '0.005', shadowDist: '1024', rtt: '1024', actors: '7168', lru: 192 }
          }[__tier];
+         // The CUDA rasterizer keeps both a depth target and its sampling atlas.
+         // An 8192 shadow map costs 256 MiB for EACH copy. Browser system-RAM
+         // hints do not describe the native session's shared GPU budget.
+         // Use 2048 (16 MiB per copy) by default; explicit shadowres still wins.
+         var shadowResolution = (/[?&]shadowres=(\d+)/.exec(location.search)||[])[1] || '2048';
          // actors: the engine's "actors processing range" also decides which actors are DRAWN
          // (348). Player puppets are exempt in actors.cpp, but peer-moved NPCs are not, so
          // mid/high reach toward the server's lodMidRadius (server/config.default.toml) — an
          // NPC the server streams at mid LOD should still be on screen. low stays tight.
          // streamfs.js is parsed before this runs, so it resolves LRU_MAX lazily from this global.
          try { window.__omwLruDefault = TIER.lru; } catch(e){}
-         try { window.__omwTier = { tier: __tier, deviceMemory: __devMem || null }; } catch(e){}
-         append('[tier] '+__tier+' (navigator.deviceMemory='+(__devMem||'unknown')+', lru='+TIER.lru+')');
+         try { window.__omwTier = { tier: __tier, deviceMemory: __devMem || null, shadowResolution: Number(shadowResolution) }; } catch(e){}
+         append('[tier] '+__tier+' (navigator.deviceMemory='+(__devMem||'unknown')+', lru='+TIER.lru+', shadow='+shadowResolution+')');
          // IMPORTANT: OpenMW loads user settings from <last active config dir>/settings.cfg.
          // In this build the only config dir is '/' (where openmw.cfg lives), NOT the XDG
          // path — write the file to BOTH so the engine actually reads it.
@@ -1906,10 +1914,7 @@ window.omw = (function(){
            // objects crossing the split boundaries get re-shadowed at a different cascade resolution as
            // the camera moves, which reads as swimming. ONE cascade = no transitions = rock-steady
            // shadows; a high-res single map makes up the resolution a cascade stack would have provided.
-           // 8192 (was 16384, user request 2026-07-07): a 16384 depth map is ~1GB — the single biggest
-           // memory consumer — and 8192 (~256MB) frees that headroom (e.g. for SSAA) at a still-crisp
-           // texel density over the 2048 shadow range. ?shadowres=N / ?shadowmaps=N override (QA).
-           'shadow map resolution = ' + ((/[?&]shadowres=(\d+)/.exec(location.search)||[])[1] || TIER.shadowRes) + '\n' +
+           'shadow map resolution = ' + shadowResolution + '\n' +
            'number of shadow maps = ' + ((/[?&]shadowmaps=(\d+)/.exec(location.search)||[])[1] || '1') + '\n' +
            'actor shadows = true\n' +
            'player shadows = true\n' +
@@ -3705,7 +3710,10 @@ window.omw = (function(){
                function(){ return noGameData('no manifest'); })
          .then(function(list){
            if (!list.length) noGameData('mwdata/ is empty');
-           try { StreamFS.init(); } catch(e){ append('[mw] streamfs unavailable: '+e,'err'); }
+           // A missing streaming layer is fatal: continuing would report a
+           // successful mount and start the engine with an empty data directory.
+           if (typeof StreamFS === 'undefined') throw new Error('Streaming filesystem failed to load (streamfs.js)');
+           StreamFS.init();
            var tars = [], bytes = 0;
            list.forEach(function(f){
              bytes += f.s;
@@ -3718,7 +3726,7 @@ window.omw = (function(){
              // No mtime in the key here: retail files are immutable (mwdata-routes.ts), and
              // folding `m` in would throw away every player's cached base game once for nothing.
              try { StreamFS.mount('/mwdata/' + f.p, 'mwdata/' + f.p, f.s); }
-             catch(e){ append('[mw] mount failed '+f.p+': '+e, 'err'); }
+             catch(e){ throw new Error('Could not mount '+f.p+': '+e); }
            });
            append('[mw] mounted '+(list.length-tars.length)+' files from mwdata/ ('
                   +Math.round(bytes/1048576)+'MB, streamed on demand)');
@@ -3831,51 +3839,11 @@ window.omw = (function(){
      // wasm compiled, instantiated and the runtime is up. Everything before this is download +
      // WebAssembly.compile; everything after is game data, the ESM store and engine init.
      if (window.__omwMark) window.__omwMark('runtimeInit');
-     // Drive the engine frame from a MessageChannel: unlike setTimeout/requestAnimationFrame,
-     // MessageChannel messages are NOT throttled when the tab is hidden/backgrounded, so the
-     // game keeps running (and stays interactive) even in the background. omw_pump_frame() is a
-     // no-op until the C++ main loop registers itself; the engine's own FrameRateLimiter paces it.
+     // Browser refresh callbacks pace visible frames; a task handoff preserves SDL input.
      try {
-       var mc = new MessageChannel();
-       // FPS instrumentation: count real engine frames + per-frame wall time.
        window.__fps = 0; window.__frameMs = 0;
        var __frames = 0, __t0 = performance.now(), __accum = 0;
-       // SINGLE frame driver (the engine no longer registers emscripten_set_main_loop):
-       // visible tab -> next tick scheduled via requestAnimationFrame (vsync-aligned, smooth);
-       // hidden tab  -> direct postMessage (unthrottled, game keeps running in background).
-       var scheduled = false;
-       function scheduleNext(){
-         if (scheduled) return; scheduled = true;
-         // Visible: run the frame INSIDE the rAF callback. Hidden: pace with a timer (~30fps
-         // target; browsers throttle background timers further) and go through the
-         // MessageChannel, which is NOT throttled in a background tab — an unpaced background
-         // MessageChannel loop pins a CPU core at 100% for a tab nobody is looking at.
-         //
-         // F42 -- REVERTED 2026-08-29, and DO NOT RE-APPLY without re-running s64-real-input.
-         //
-         // The idea was sound on paper: posting a MessageChannel message from the rAF callback
-         // and doing the frame in the message handler puts GL submission in a macrotask AFTER
-         // the vsync-aligned slot, de-aligning what rAF is there to align. So this ran the frame
-         // directly inside rAF instead.
-         //
-         // IT BREAKS REAL KEYBOARD INPUT. s64-real-input asserts that a real W keypress moves the
-         // player, and with the frame inside rAF the pose does not change at all -- which is the
-         // reported "cannot attack" fault, because bound actions never fire. Proven by isolation:
-         // applying ONLY this one line to an otherwise-unmodified origin/dev build reproduces the
-         // failure with a byte-identical before/after pose, and origin/dev passes s64.
-         //
-         // WHY: emscripten's SDL queues DOM key events as tasks. Running the frame synchronously
-         // inside the rAF callback drains the queue BEFORE the browser dispatches the pending
-         // keydown/keyup, so the engine sees no input. The MessageChannel hop is what lets those
-         // events land first -- it is load-bearing, not an accident, which is what the finding
-         // assumed it was.
-         //
-         // The latency claim was never measured; the input regression is. Keep the hop.
-         if (document.hidden) setTimeout(function(){ mc.port2.postMessage(0); }, 33);
-         else requestAnimationFrame(function(){ mc.port2.postMessage(0); });
-       }
        function pumpFrame(){
-         scheduled = false;
          var a = performance.now();
          try { if (Module._omw_pump_frame) Module._omw_pump_frame(); }
          catch(e){
@@ -3904,16 +3872,10 @@ window.omw = (function(){
          if (window.__glCalls){ var gc = window.__glCalls; window.__glPerFrame = { total: gc.total - (window.__glLast||0), draw: gc.draw - (window.__glLastDraw||0) }; window.__glLast = gc.total; window.__glLastDraw = gc.draw; }
          var dt = b - __t0;
          if (dt >= 1000){ window.__fps = Math.round(__frames*1000/dt); window.__frameMs = +(__accum/__frames).toFixed(2); __frames = 0; __accum = 0; __t0 = b; }
-         scheduleNext();
        }
-       // The hidden-tab path still arrives as a message; visible frames call pumpFrame directly.
-       mc.port1.onmessage = pumpFrame;
-       // If the tab hides while an rAF-scheduled tick is frozen, take over directly.
-       // (The stale rAF firing later causes at most one harmless extra tick.)
-       document.addEventListener('visibilitychange', function(){
-         if (document.hidden && scheduled) mc.port2.postMessage(0);
-       });
-       mc.port2.postMessage(0);
+       if (window.__omwFramePump) window.__omwFramePump.stop();
+       window.__omwFramePump = createOpenMWFramePump(window, pumpFrame);
+       window.__omwFramePump.start();
        append('[pump] frame pump started (rAF-paced when visible)');
      } catch(e){ append('[pump error] '+e,'err'); }
    },
@@ -3928,7 +3890,10 @@ window.omw = (function(){
    // click). e.preventDefault() only suppresses the browser's own console logging, so this must be
    // the ONLY unhandledrejection handler or the filtered case still gets logged/opens the debug log.
    if (String(e.reason && e.reason.message || e.reason).indexOf('Pointer lock') !== -1) { e.preventDefault(); return; }
-   append('unhandled rejection: '+(e.reason && e.reason.message || e.reason),'err');
+   var promiseOrigin = window.__omwPromiseOrigins && window.__omwPromiseOrigins.get(e.promise);
+   append('unhandled rejection'+(promiseOrigin?' ('+promiseOrigin+')':'')+': '+(e.reason && e.reason.message || e.reason),'err');
+   if (new URLSearchParams(location.search).has('renderdebug') && e.reason && e.reason.stack)
+     append('REJECTION STACK:\n'+e.reason.stack,'err');
    showLogOnce();
    // The engine's file package failed to arrive: emscripten's loadPackage rejects with
    // "Network Error: .../openmw.data" or "<status>: <url>" and nothing else ever fires --
@@ -3944,7 +3909,21 @@ window.omw = (function(){
 <script>
   // Load the version-stamped engine loader from the versioned dir; its wasm/data follow via
   // Module.locateFile. (streamfs.js above is unversioned + loaded first — StreamFS is used in preRun.)
-  (function(){
+  (async function(){
+    // This fork requires the CUDA-authored WebGPU renderer before the engine
+    // starts. A missing query parameter must not silently select OpenGL.
+    {
+      try {
+        const backend = await import('./webcuda/game-host.js');
+        await backend.installWebCuda(Module, {onError: function(error) {
+          append('[WebCuda] ' + String(error && error.stack || error), 'err');
+          fatalOverlay('WebCuda renderer stopped', String(error && error.message || error));
+        }});
+      } catch(error) {
+        fatalOverlay('WebCuda could not start', String(error && error.message || error));
+        return;
+      }
+    }
     var s = document.createElement('script');
     s.src = __ENGINE_DIR + 'openmw.js';
     s.onerror = function(){ if (typeof fatalOverlay === 'function') fatalOverlay('Engine failed to load',
@@ -4622,7 +4601,12 @@ window.omw = (function(){
   var _requestPointerLock = Element.prototype.requestPointerLock;
   Element.prototype.requestPointerLock = function(){
     if (window.__omwUiHold) return Promise.resolve();
-    return _requestPointerLock.apply(this, arguments);
+    var result = _requestPointerLock.apply(this, arguments);
+    if (new URLSearchParams(location.search).has('renderdebug') && result && typeof result.then === 'function') {
+      if (!window.__omwPromiseOrigins) window.__omwPromiseOrigins = new WeakMap();
+      window.__omwPromiseOrigins.set(result, 'requestPointerLock');
+    }
+    return result;
   };
   // Focus shield. SDL's mouse handlers sit on document/window and call preventDefault() on
   // mousedown — and moving focus to a clicked field is a DEFAULT ACTION, so that silently

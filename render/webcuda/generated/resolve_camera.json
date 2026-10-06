@@ -1,0 +1,115 @@
+{
+  "version": "0.1.1",
+  "name": "resolve_camera",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel resolve_camera.\n@group(0) @binding(0) var<storage, read_write> b_texels: array<u32>;\n@group(0) @binding(1) var<storage, read> b_materials: array<u32>;\n@group(0) @binding(2) var<storage, read_write> b_status: array<atomic<u32>>;\nstruct CWParams {\n  p_material_count: u32,\n  p_status_index: u32,\n  cw_pad_8: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(3) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if (((v_i >= cw_params.p_material_count) || ((b_materials[((v_i * u32(12i)) + u32(3i))] & u32(2048i)) == u32(0i)))) {\n    return;\n  }\n  var v_data: u32 = b_materials[(v_i * u32(12i))];\n  {\n    var v_kind: u32 = u32(0i);\n    loop {\n      if (!(v_kind < u32(2i))) { break; }\n      if (((v_kind == u32(0i)) && ((b_texels[(v_data + u32(4i))] & u32(32768i)) == u32(0i)))) {\n        continue;\n      }\n      if (((v_kind == u32(1i)) && ((b_texels[(v_data + u32(4i))] & u32(2097152i)) == u32(0i)))) {\n        continue;\n      }\n      var cw_tmp_0: u32;\n      if ((v_kind == u32(0i))) {\n        cw_tmp_0 = (v_data + u32(52i));\n      } else {\n        cw_tmp_0 = ((v_data + b_texels[(v_data + u32(321i))]) + u32(40i));\n      }\n      var v_matrix: u32 = cw_tmp_0;\n      var v_augmented: array<f32, 32>;\n      {\n        var v_row: u32 = u32(0i);\n        loop {\n          if (!(v_row < u32(4i))) { break; }\n          {\n            var v_col: u32 = u32(0i);\n            loop {\n              if (!(v_col < u32(4i))) { break; }\n              let cw_argument_index_1 = ((v_matrix + (v_col * u32(4i))) + v_row);\n              v_augmented[((v_row * u32(8i)) + v_col)] = bitcast<f32>(b_texels[cw_argument_index_1]);\n              var cw_tmp_2: f32;\n              if ((v_row == v_col)) {\n                cw_tmp_2 = 1.0f;\n              } else {\n                cw_tmp_2 = 0.0f;\n              }\n              v_augmented[(((v_row * u32(8i)) + u32(4i)) + v_col)] = cw_tmp_2;\n              continuing {\n                v_col += u32(1);\n              }\n            }\n          }\n          continuing {\n            v_row += u32(1);\n          }\n        }\n      }\n      {\n        var v_col: u32 = u32(0i);\n        loop {\n          if (!(v_col < u32(4i))) { break; }\n          var v_pivot: u32 = v_col;\n          let cw_argument_index_3 = ((v_col * u32(8i)) + v_col);\n          var v_largest: f32 = abs(v_augmented[cw_argument_index_3]);\n          {\n            var v_row: u32 = (v_col + u32(1i));\n            loop {\n              if (!(v_row < u32(4i))) { break; }\n              let cw_argument_index_4 = ((v_row * u32(8i)) + v_col);\n              if ((abs(v_augmented[cw_argument_index_4]) > v_largest)) {\n                v_pivot = v_row;\n                let cw_argument_index_5 = ((v_row * u32(8i)) + v_col);\n                v_largest = abs(v_augmented[cw_argument_index_5]);\n              }\n              continuing {\n                v_row += u32(1);\n              }\n            }\n          }\n          if ((v_largest < 1e-12f)) {\n            _ = atomicExchange(&b_status[cw_params.p_status_index], u32(1i));\n            return;\n          }\n          if ((v_pivot != v_col)) {\n            {\n              var v_k: u32 = u32(0i);\n              loop {\n                if (!(v_k < u32(8i))) { break; }\n                var v_temp: f32 = v_augmented[((v_col * u32(8i)) + v_k)];\n                v_augmented[((v_col * u32(8i)) + v_k)] = v_augmented[((v_pivot * u32(8i)) + v_k)];\n                v_augmented[((v_pivot * u32(8i)) + v_k)] = v_temp;\n                continuing {\n                  v_k += u32(1);\n                }\n              }\n            }\n          }\n          var v_divisor: f32 = v_augmented[((v_col * u32(8i)) + v_col)];\n          {\n            var v_k: u32 = u32(0i);\n            loop {\n              if (!(v_k < u32(8i))) { break; }\n              v_augmented[((v_col * u32(8i)) + v_k)] = cw_divide_f32(v_augmented[((v_col * u32(8i)) + v_k)], v_divisor);\n              continuing {\n                v_k += u32(1);\n              }\n            }\n          }\n          {\n            var v_row: u32 = u32(0i);\n            loop {\n              if (!(v_row < u32(4i))) { break; }\n              if ((v_row != v_col)) {\n                var v_factor: f32 = v_augmented[((v_row * u32(8i)) + v_col)];\n                {\n                  var v_k: u32 = u32(0i);\n                  loop {\n                    if (!(v_k < u32(8i))) { break; }\n                    v_augmented[((v_row * u32(8i)) + v_k)] = (v_augmented[((v_row * u32(8i)) + v_k)] - (v_factor * v_augmented[((v_col * u32(8i)) + v_k)]));\n                    continuing {\n                      v_k += u32(1);\n                    }\n                  }\n                }\n              }\n              continuing {\n                v_row += u32(1);\n              }\n            }\n          }\n          continuing {\n            v_col += u32(1);\n          }\n        }\n      }\n      {\n        var v_row: u32 = u32(0i);\n        loop {\n          if (!(v_row < u32(4i))) { break; }\n          {\n            var v_col: u32 = u32(0i);\n            loop {\n              if (!(v_col < u32(4i))) { break; }\n              let cw_argument_index_6 = (((v_row * u32(8i)) + u32(4i)) + v_col);\n              b_texels[((v_matrix + (v_col * u32(4i))) + v_row)] = bitcast<u32>(v_augmented[cw_argument_index_6]);\n              continuing {\n                v_col += u32(1);\n              }\n            }\n          }\n          continuing {\n            v_row += u32(1);\n          }\n        }\n      }\n      if ((v_kind == u32(0i))) {\n        b_texels[(v_data + u32(4i))] = (b_texels[(v_data + u32(4i))] & (~32768u));\n      }\n      continuing {\n        v_kind += u32(1);\n      }\n    }\n  }\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "texels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "materials",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "status",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": false,
+        "atomic": true
+      }
+    ],
+    "scalars": [
+      {
+        "name": "material_count",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "status_index",
+        "type": "u32",
+        "offset": 4
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 3,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 6243,
+      "beforeBytes": 6243,
+      "afterBytes": 6243,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 5478,
+          "transitiveBytes": 5748,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Resolve OSG's implicit inverse-view uniform in GPU-owned material storage.\n// status is the extra word after the tile counts, checked before rasterization.\n__global__ void resolve_camera(unsigned int* texels,const unsigned int* materials,\n    unsigned int* status,unsigned int material_count,unsigned int status_index) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=material_count||(materials[i*12+3]&2048)==0)return;\n    unsigned int data=materials[i*12];\n    for(unsigned int kind=0;kind<2;kind++) {\r\n    if(kind==0&&(texels[data+4]&32768)==0)continue;\r\n    if(kind==1&&(texels[data+4]&2097152)==0)continue;\r\n    unsigned int matrix=kind==0?data+52:data+texels[data+321]+40;\n    float augmented[32];\n    for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<4;col++) {\n        augmented[row*8+col]=__uint_as_float(texels[matrix+col*4+row]);\n        augmented[row*8+4+col]=row==col?1.0f:0.0f;\n    }\n    for(unsigned int col=0;col<4;col++) {\n        unsigned int pivot=col;float largest=fabsf(augmented[col*8+col]);\n        for(unsigned int row=col+1;row<4;row++)if(fabsf(augmented[row*8+col])>largest){pivot=row;largest=fabsf(augmented[row*8+col]);}\n        if(largest<0.000000000001f){atomicExch(&status[status_index],1);return;}\n        if(pivot!=col)for(unsigned int k=0;k<8;k++){float temp=augmented[col*8+k];augmented[col*8+k]=augmented[pivot*8+k];augmented[pivot*8+k]=temp;}\n        float divisor=augmented[col*8+col];\n        for(unsigned int k=0;k<8;k++)augmented[col*8+k]/=divisor;\n        for(unsigned int row=0;row<4;row++)if(row!=col) {\n            float factor=augmented[row*8+col];\n            for(unsigned int k=0;k<8;k++)augmented[row*8+k]-=factor*augmented[col*8+k];\n        }\n    }\n    for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<4;col++)texels[matrix+col*4+row]=__float_as_uint(augmented[row*8+4+col]);\n    if(kind==0)texels[data+4]&=~32768u;\r\n    }\n}\n",
+    "entry": "resolve_camera",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "texels",
+        "type": "buffer"
+      },
+      {
+        "name": "materials",
+        "type": "buffer"
+      },
+      {
+        "name": "status",
+        "type": "buffer"
+      },
+      {
+        "name": "material_count",
+        "type": "u32"
+      },
+      {
+        "name": "status_index",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

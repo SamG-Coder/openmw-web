@@ -1,0 +1,182 @@
+{
+  "basis": "Source inspection only; no generated shader or runtime evidence",
+  "shaderFiles": 40,
+  "customRoutes": {
+    "fullscreen_tri": "PingPongCanvas::submitWebCuda handles scene resolve; not an ordinary geometry material",
+    "ripples": "RipplesSurface custom submission",
+    "luminance": "Luminance custom submission",
+    "multiview_resolve": "Explicitly unsupported in PingPongCanvas"
+  },
+  "nextMainGameGap": {
+    "path": "openmw/apps/openmw/mwrender/localmap.cpp",
+    "function": "LocalMap::updatePlayer",
+    "behavior": "Per-texel squared-distance minimum-alpha fog painting",
+    "consumers": [
+      "Map fog texture",
+      "LocalMap::isPositionExplored",
+      "MapSegment::saveFogOfWar"
+    ],
+    "newKernel": "render/webcuda/fog-map.cu",
+    "integration": "GPU display, point queries, cell-owned snapshot production, retained-input reload and deferred-save readiness connected in source. WebCuda updatePlayer skips CPU image painting. Generation/build/gameplay/save-load validation still pending."
+  },
+  "cameraAttachmentAudit": {
+    "basis": "Source review only",
+    "currentLimits": [
+      "Base-level Texture2D attachments only",
+      "Primary color and normal color outputs only",
+      "Primary RGB/RGBA byte image readback only"
+    ],
+    "observedProducers": [
+      "SceneUtil RTT uses level 0 but can request generated mipmaps",
+      "SceneUtil util.cpp forwards level/face/mip-generation parameters",
+      "Shadow and precipitation cameras attach depth or primary color",
+      "Global map attaches primary color and image readback"
+    ],
+    "next": "Runtime verification after implementation; arbitrary non-base attachment levels and multiview remain pending compatibility work.",
+    "findings": [
+      "RTT helper callers use level 0; texture arrays/faces belong to the unsupported multiview route.",
+      "MaterialTable::encode schedules render-target mip chains when the minification filter requires them.",
+      "Pipeline copies source attachments before dispatching CUDA packed-color, float-color or depth mip generation.",
+      "LuminanceCalculator native last-mip FBO is replaced by submitWebCuda -> sceneLuminance for the CUDA route."
+    ]
+  },
+  "postprocessAudit": {
+    "basis": "Source inventory only; not compiled or visually verified",
+    "shippedTechniques": [
+      "bloomlinear",
+      "adjustments",
+      "debug",
+      "internal_distortion"
+    ],
+    "captureRoutes": "All four shipped names have explicit PingPongCanvas::submitWebCuda branches.",
+    "remaining": "Arbitrary custom .omwfx techniques and multiview are explicitly rejected; dedicated routes require build and runtime verification.",
+    "debugSourceTrace": {
+      "basis": "Source comparison only; no generated shader or runtime evidence",
+      "sources": [
+        "openmw/files/data/shaders/debug.omwfx",
+        "openmw/components/fx/pass.cpp",
+        "openmw/apps/openmw/mwrender/postprocessor.cpp",
+        "render/webcuda/postprocess.cu",
+        "render/webcuda/game-host.js"
+      ],
+      "findings": [
+        "Postprocessor initializes scene, depth and normal textures with LINEAR min/mag filtering and CLAMP_TO_EDGE, matching post_sample.",
+        "debug_scene uses separate source, depth and normal dimensions and samples normal plane channels 5-7.",
+        "Reverse and conventional depth linearization match omw_GetLinearDepth.",
+        "Normal decoding uses RGB*2-1; world conversion matches row-vector multiplication by viewMatrix.",
+        "Depth display sets alpha one; normal display overwrites RGB only and follows the left-half split when depth display is enabled.",
+        "Postprocess output runs destination format conversion after each stage and broadcasts final color to multisample storage."
+      ],
+      "next": "Compare bloom extraction, blur, merge and intermediate target sizing with the shipped bloomlinear technique; runtime image parity remains deferred."
+    },
+    "bloomSourceTrace": {
+      "basis": "Source comparison only; not generated, compiled or visually verified",
+      "sources": [
+        "openmw/files/data/shaders/bloomlinear.omwfx",
+        "openmw/components/fx/types.hpp",
+        "openmw/components/fx/technique.cpp",
+        "openmw/apps/openmw/mwrender/pingpongcanvas.cpp",
+        "render/webcuda/postprocess.cu",
+        "render/webcuda/game-host.js"
+      ],
+      "findings": [
+        "RGB16F intermediate rounding occurs after extraction and each blur.",
+        "Extraction uses linear source/depth sampling; blur uses nearest intermediates; combine linearly samples final blur.",
+        "Threshold, sky factor, edge-expanded radius, gaussian weights, time dithering, clamp and strength match the shipped formulas for finite nonnegative color inputs.",
+        "Intermediate dimensions now derive from scene input dimensions at one-quarter scale, separately from the shader resolution used by blur math."
+      ],
+      "remaining": [
+        "Visual/runtime parity, half-precision behavior and resolution changes need validation.",
+        "Negative HDR input powers differ intentionally from undefined GLSL pow behavior because CUDA clamps to zero.",
+        "Arbitrary edited/custom effects remain unimplemented."
+      ]
+    },
+    "capabilityTrace": {
+      "basis": "Source inspection only",
+      "findings": [
+        "Normal-plane capability and antialiasing settings already select WebCuda behavior rather than indexed GL or GL_MAX_SAMPLES.",
+        "Technique GLSL-version gating now applies only to the GL path; CUDA dispatch remains responsible for supported techniques.",
+        "WebCuda now explicitly selects named uniforms instead of a GL-dependent UBO choice on every build profile."
+      ],
+      "remaining": "Unknown/custom techniques still lack CUDA implementations; bypassing the GL version gate does not implement them."
+    }
+  },
+  "buildProfileAudit": {
+    "source": "deps/wasm64/include/osg/GL",
+    "fixedFunction": false,
+    "gl1": false,
+    "implication": "Active browser profile uses Material::apply emulated current diffuse color; legacy GL1 material-parameter persistence is outside this configured path. Recheck after dependency rebuild."
+  },
+  "deviceRecoveryAudit": {
+    "basis": "Source inspection only",
+    "persistentOwners": [
+      "Viewer target identities and submitted camera completion tickets",
+      "LocalMap segment map textures whose cameras are retired after rendering",
+      "GlobalMap overlay texture and CPU overlay image",
+      "Loading previous-frame snapshot textures",
+      "Host luminance/ripple histories"
+    ],
+    "requiredRecovery": [
+      "Reject or cancel old-device image requests before replacing callbacks",
+      "Invalidate viewer GPU completion tickets and target residency",
+      "Recreate local-map cameras without clearing exploration inputs",
+      "Reupload/reconstruct global-map overlay",
+      "Reset transient luminance/ripple/loading histories explicitly",
+      "Resume submission only after persistent owners are ready"
+    ],
+    "status": "Host replacement and engine generation invalidation are connected in source, including local/global maps, loading loops and pending fog snapshots. Disposal shares a promise, explicit disposal cancels recovery, and resource-release failures no longer skip later cleanup steps. Concurrent installation/lifecycle behavior and runtime recovery remain unverified."
+  },
+  "implementedFamiliesPendingValidation": [
+    {
+      "family": "bs/default",
+      "producer": "openmw/components/nifosg/nifloader.cpp",
+      "gap": "Dedicated CUDA material route and endpoint transport are present in source. Generated shader, build, numerical and gameplay validation remain pending."
+    },
+    {
+      "family": "bs/nolighting",
+      "producer": "openmw/components/nifosg/nifloader.cpp",
+      "gap": "Dedicated CUDA material route and endpoint transport are present in source. Generated shader, build, numerical and gameplay validation remain pending."
+    }
+  ],
+  "shaderSelectionTrace": {
+    "basis": "Source inventory and dispatch inspection only",
+    "materialFamilies": [
+      "objects",
+      "terrain",
+      "terrain_composite",
+      "groundcover",
+      "sky",
+      "shadowcasting",
+      "depthclipped",
+      "water",
+      "debug",
+      "outline",
+      "bs/default",
+      "bs/nolighting"
+    ],
+    "dedicatedSubmission": [
+      "MyGUI gui pair",
+      "fullscreen scene resolve and shipped postprocess effects",
+      "ripples_blobber and ripples_simulate",
+      "luminance and luminance resolve"
+    ],
+    "capabilities": [
+      "LightManager explicitly permits WebCuda clustered-light capture without GLSL 430 support.",
+      "Water DepthClampCallback supplies CUDA capture state independently of its GL draw callback capability check."
+    ],
+    "remainingUnsupported": [
+      "multiview_resolve and multiview camera layers",
+      "arbitrary custom shader programs and custom omwfx effects"
+    ],
+    "next": "Inspect wireframe/polygon modes and user clip-plane coverage, which are outside the shader-family inventory. Inventory coverage does not prove shader parity or executable rendering."
+  },
+  "polygonAndClipTrace": {
+    "basis": "Source only",
+    "implemented": "Water browser clipPlane uniforms reach object-family CUDA fragment clipping. Ordinary screen point/line expansion now preserves depth-clamp state in record flag32 and skips near/far clipping in CUDA. Particle point/line and thin-ribbon preparation now also transports depth clamp and applies it during CUDA projection.",
+    "pending": [
+      "PolygonMode LINE/POINT: produced by NIF wireframe, terrain borders and renderer toggle, but not yet captured/rendered.",
+      "General fixed-function user clip planes beyond browser water shader uniforms."
+    ],
+    "validation": "Generation, build and raster/runtime checks deferred."
+  }
+}

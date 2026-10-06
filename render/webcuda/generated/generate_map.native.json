@@ -1,0 +1,45 @@
+{
+  "name": "generate_map",
+  "native": {
+    "version": 1,
+    "source": "// Generate global-map palette color and land alpha from raw 9x9 WNAM cells.\r\n__global__ void generate_map(const unsigned int* blocks,unsigned int* pixels,unsigned int width,unsigned int height,\r\n                            unsigned int block_offset,unsigned int pixel_offset,unsigned int alpha_only) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    unsigned int cells_x=blocks[block_offset],cell_size=blocks[block_offset+2u];\r\n    unsigned int x=i%width,y=i/width;\r\n    unsigned int cell=(y/cell_size)*cells_x+x/cell_size;\r\n    unsigned int sample=((y%cell_size)*9u/cell_size)*9u+(x%cell_size)*9u/cell_size;\r\n    unsigned int index=blocks[block_offset+1027u+cell*81u+sample];\r\n    if(index>255u)index=255u;\r\n    unsigned int packed=4278190080u;\r\n    if(alpha_only!=0u)packed=16777215u|(index<128u?0u:4278190080u);\r\n    else for(unsigned int channel=0;channel<3;channel++) {\r\n        float value=__uint_as_float(blocks[block_offset+3u+index*4u+channel]);\r\n        unsigned int byte=(unsigned int)(fminf(1.0f,fmaxf(0.0f,value))*255.0f);\r\n        packed|=byte<<(channel*8u);\r\n    }\r\n    pixels[pixel_offset+i]=packed;\r\n}\r\n",
+    "entry": "generate_map",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      },
+      {
+        "name": "alpha_only",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

@@ -57,9 +57,31 @@ if [ "${OMW_WASM64:-1}" != "1" ]; then
 fi
 WASM_ARCH="wasm64"; ARCH_FLAG="-m64"; DW="$ROOT/deps/wasm64"; BUILD_DIR="build-wasm64"
 SYSROOT_LIBGL="$EM_LIBEXEC/cache/sysroot/lib/$WASM_ARCH-emscripten/libGL-getprocaddr.a"
+[ -f "$SYSROOT_LIBGL" ] || SYSROOT_LIBGL="$EM_LIBEXEC/cache/sysroot/lib/$WASM_ARCH-emscripten/libGL-mt-getprocaddr.a"
 SRC="$ROOT/deps/src/osg"
 BUILD="$SRC/$BUILD_DIR"
 mkdir -p "$DW/lib" "$DW/include"
+
+PATCH="$ROOT/wasm-build/patches/osg-emscripten.patch"
+if patch -d "$SRC" -p1 --dry-run --forward < "$PATCH" >/dev/null 2>&1; then
+  patch -d "$SRC" -p1 --forward < "$PATCH"
+elif ! patch -d "$SRC" -p1 --dry-run --reverse < "$PATCH" >/dev/null 2>&1; then
+  echo 'OpenSceneGraph source does not match the pinned Emscripten patch' >&2; exit 1
+fi
+
+PARTICLE_PATCH="$ROOT/wasm-build/patches/osg-particle-submission.patch"
+if patch -d "$SRC" -p1 --dry-run --forward < "$PARTICLE_PATCH" >/dev/null 2>&1; then
+  patch -d "$SRC" -p1 --forward < "$PARTICLE_PATCH"
+elif ! patch -d "$SRC" -p1 --dry-run --reverse < "$PARTICLE_PATCH" >/dev/null 2>&1; then
+  echo 'OpenSceneGraph source does not match the particle submission patch' >&2; exit 1
+fi
+
+TEXT_PATCH="$ROOT/wasm-build/patches/osg-text-submission.patch"
+if patch -d "$SRC" -p1 --dry-run --forward < "$TEXT_PATCH" >/dev/null 2>&1; then
+  patch -d "$SRC" -p1 --forward < "$TEXT_PATCH"
+elif ! patch -d "$SRC" -p1 --dry-run --reverse < "$TEXT_PATCH" >/dev/null 2>&1; then
+  echo 'OpenSceneGraph source does not match the text submission patch' >&2; exit 1
+fi
 
 mkdir -p "$BUILD" && cd "$BUILD"
 
@@ -111,14 +133,13 @@ emcmake cmake .. \
 # OSGPlugins_osgdb_serializers_osg_LIBRARY=<not found>. A fallback that only runs on failure
 # cannot be where a required target lives.
 #
-# `|| ninja` is kept as a genuine last resort, but it now builds every plugin including ones
-# that need -Wno-register (see the flags above).
-ninja osg osgUtil osgDB osgGA osgViewer osgAnimation osgFX osgParticle osgShadow osgSim osgText OpenThreads \
+# Fail on a requested-target error; silently building unrelated plugins obscures it.
+ninja -j "${JOBS:-6}" osg osgUtil osgDB osgGA osgViewer osgAnimation osgFX osgParticle osgShadow osgSim osgText OpenThreads \
       osgdb_bmp osgdb_dds osgdb_freetype osgdb_jpeg osgdb_osg osgdb_png osgdb_tga \
       osgdb_serializers_osg osgdb_serializers_osganimation osgdb_serializers_osgfx \
       osgdb_serializers_osgga osgdb_serializers_osgmanipulator osgdb_serializers_osgparticle \
       osgdb_serializers_osgshadow osgdb_serializers_osgsim osgdb_serializers_osgtext \
-      osgdb_serializers_osgterrain osgdb_serializers_osgvolume || ninja
+      osgdb_serializers_osgterrain osgdb_serializers_osgvolume
 
 # Collect outputs where the OpenMW link expects them.
 cp -f lib/*.a "$DW/lib/"

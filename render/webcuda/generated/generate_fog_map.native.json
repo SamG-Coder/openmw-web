@@ -1,0 +1,41 @@
+{
+  "name": "generate_fog_map",
+  "native": {
+    "version": 1,
+    "source": "// Local-map exploration mask. Inputs are saved RGBA8 pixels plus brush history.\r\n// One thread owns one pixel; each brush applies the engine's minimum-alpha rule.\r\n// Brush records: center X, center Y, squared exploration radius, in texel units.\r\n__global__ void generate_fog_map(const unsigned int* blocks,unsigned int* pixels,\r\n                                unsigned int width,unsigned int height,unsigned int block_offset,unsigned int pixel_offset) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    unsigned int brush_count=blocks[block_offset],saved=blocks[block_offset+1u+i];\r\n    unsigned int brushes=block_offset+1u+width*height;\r\n    unsigned int alpha=saved>>24u;\r\n    float x=(float)(i%width),y=(float)(i/width);\r\n    for(unsigned int b=0;b<brush_count;b++) {\r\n        float dx=x-__uint_as_float(blocks[brushes+b*3u]),dy=y-__uint_as_float(blocks[brushes+b*3u+1u]);\r\n        float fraction=fminf(1.0f,fmaxf(0.0f,(dx*dx+dy*dy)/__uint_as_float(blocks[brushes+b*3u+2u])));\r\n        unsigned int candidate=(unsigned int)(fraction*255.0f);\r\n        if(candidate<alpha)alpha=candidate;\r\n    }\r\n    pixels[pixel_offset+i]=brush_count==0u?saved:alpha<<24u;\r\n}\r\n",
+    "entry": "generate_fog_map",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

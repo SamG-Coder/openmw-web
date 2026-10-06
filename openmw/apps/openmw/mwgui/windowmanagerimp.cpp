@@ -1,3 +1,4 @@
+#include <components/webcuda/viewer.hpp>
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "windowmanagerimp.hpp"
@@ -369,7 +370,7 @@ namespace MWGui
         mGuiModeStates[GM_MainMenu] = GuiModeState(menu.get());
         mWindows.push_back(std::move(menu));
 
-        mLocalMapRender = std::make_unique<MWRender::LocalMap>(mViewer->getSceneData()->asGroup());
+        mLocalMapRender = std::make_unique<MWRender::LocalMap>(mViewer->getSceneData()->asGroup(),mViewer);
         auto map = std::make_unique<MapWindow>(mCustomMarkers, mDragAndDrop.get(), mLocalMapRender.get(), mWorkQueue);
         mMap = map.get();
         mWindows.push_back(std::move(map));
@@ -1042,8 +1043,18 @@ namespace MWGui
             playSound(ESM::RefId::stringRefId("Menu Size"));
     }
 
+    void WindowManager::restoreRenderTargetsIfNeeded()
+    {
+        if(auto* viewer=dynamic_cast<WebCuda::Viewer*>(mViewer);viewer&&viewer->refreshDeviceGeneration()) {
+            if(mLocalMapRender)mLocalMapRender->restoreRenderTargets();
+            if(mMap)mMap->restoreRenderTargets();
+            viewer->completeDeviceRecovery();
+        }
+    }
+
     void WindowManager::update(float frameDuration)
     {
+        restoreRenderTargetsIfNeeded();
         handleScheduledMessageBoxes();
 
         bool gameRunning
@@ -2141,6 +2152,12 @@ namespace MWGui
             marker.load(reader);
             mCustomMarkers.addMarker(marker, false);
         }
+    }
+
+    bool WindowManager::isMapSaveReady() const {
+        const bool localReady=!mLocalMapRender||mLocalMapRender->isSaveReady();
+        const bool globalReady=!mMap||mMap->isMapSaveReady();
+        return localReady&&globalReady;
     }
 
     size_t WindowManager::countSavedGameRecords() const

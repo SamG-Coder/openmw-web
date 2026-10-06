@@ -535,6 +535,7 @@ namespace MWWorld
 
         /// \todo this does not belong here
         void screenshot(osg::Image* image, int w, int h) override;
+        void screenshotAsync(int w,int h,std::function<void(osg::ref_ptr<osg::Image>,std::string)> completion) override;
 
         /// Find center of exterior cell above land surface
         /// \return false if exterior with given name not exists, true otherwise

@@ -1,0 +1,106 @@
+{
+  "version": "0.1.1",
+  "name": "pack_present",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel pack_present.\n@group(0) @binding(0) var<storage, read> b_rgba: array<f32>;\n@group(0) @binding(1) var<storage, read_write> b_pixels: array<u32>;\nstruct CWParams {\n  p_width: u32,\n  p_height: u32,\n  p_row_pixels: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= (cw_params.p_width * cw_params.p_height))) {\n    return;\n  }\n  let cw_argument_index_0 = (v_i * u32(4i));\n  var v_r: u32 = u32(((min(1.0f, max(0.0f, b_rgba[cw_argument_index_0])) * 255.0f) + 0.5f));\n  let cw_argument_index_1 = ((v_i * u32(4i)) + u32(1i));\n  var v_g: u32 = u32(((min(1.0f, max(0.0f, b_rgba[cw_argument_index_1])) * 255.0f) + 0.5f));\n  let cw_argument_index_2 = ((v_i * u32(4i)) + u32(2i));\n  var v_b: u32 = u32(((min(1.0f, max(0.0f, b_rgba[cw_argument_index_2])) * 255.0f) + 0.5f));\n  let cw_argument_index_3 = ((v_i * u32(4i)) + u32(3i));\n  var v_a: u32 = u32(((min(1.0f, max(0.0f, b_rgba[cw_argument_index_3])) * 255.0f) + 0.5f));\n  b_pixels[(((v_i / cw_params.p_width) * cw_params.p_row_pixels) + (v_i % cw_params.p_width))] = (((v_r | (v_g << u32(8i))) | (v_b << u32(16i))) | (v_a << u32(24i)));\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "rgba",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "pixels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "row_pixels",
+        "type": "u32",
+        "offset": 8
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 1518,
+      "beforeBytes": 1518,
+      "afterBytes": 1518,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 1119,
+          "transitiveBytes": 1119,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Write a padded RGBA8 buffer for a WebGPU copy into the canvas texture.\n// No JavaScript fragment shader and no CPU pixel readback are used to present.\n__global__ void pack_present(const float* rgba, unsigned int* pixels,\n                             unsigned int width, unsigned int height,\n                             unsigned int row_pixels) {\n    unsigned int i = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\n    if (i >= width * height) return;\n    unsigned int r = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4])) * 255.0f + 0.5f);\n    unsigned int g = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4 + 1])) * 255.0f + 0.5f);\n    unsigned int b = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4 + 2])) * 255.0f + 0.5f);\n    unsigned int a = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4 + 3])) * 255.0f + 0.5f);\n    pixels[(i / width) * row_pixels + i % width] = r | (g << 8) | (b << 16) | (a << 24);\n}\n",
+    "entry": "pack_present",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "rgba",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "row_pixels",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

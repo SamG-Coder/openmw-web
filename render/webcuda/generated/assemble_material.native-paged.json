@@ -1,0 +1,158 @@
+{
+  "name": "assemble_material",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "source",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "triangles",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "positions",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "weights",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "valid",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "vertices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 5,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "output_triangles",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 6,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "flat_colors",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 7,
+        "readOnly": true,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "slot_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 8,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 3010,
+      "beforeBytes": 3010,
+      "afterBytes": 3010,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 2196,
+          "transitiveBytes": 2196,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Packed material vertices: position xyzw, color RGBA, UV. Each draw matrix\r\n// record holds column-major model-view then projection (32 floats).\r\n__global__ void transform_material(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_matrices,const unsigned long long* omw_pages_matrix_ids,const unsigned long long* omw_pages_vertices,\r\n                                  unsigned int vertex_count) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<const float> matrices(omw_pages_matrices);\nOmwPaged<const unsigned int> matrix_ids(omw_pages_matrix_ids);\nOmwPaged<float> vertices(omw_pages_vertices);\n\r\n    unsigned int i = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\r\n    if (i >= vertex_count) return;\r\n    unsigned int m = matrix_ids[i] * 32;\r\n    float view[4];\r\n    for (unsigned int row = 0; row < 4; row++) {\r\n        view[row] = 0.0f;\r\n        for (unsigned int col = 0; col < 4; col++)\r\n            view[row] += matrices[m + col*4 + row] * source[i*10+col];\r\n    }\r\n    for (unsigned int row = 0; row < 4; row++) {\r\n        float sum = 0.0f;\r\n        for (unsigned int col = 0; col < 4; col++) sum += matrices[m+16+col*4+row] * view[col];\r\n        vertices[i*10+row] = sum;\r\n    }\r\n    for (unsigned int k = 4; k < 10; k++) vertices[i*10+k] = source[i*10+k];\r\n}\r\n\r\n// Reconstruct attributes at newly clipped vertices from the original-vertex\r\n__global__ void transform_uv(const unsigned long long* omw_pages_vertices,const unsigned long long* omw_pages_uv_matrices,const unsigned long long* omw_pages_matrix_ids, unsigned int vertex_count) {\nOmwPaged<float> vertices(omw_pages_vertices);\nOmwPaged<const float> uv_matrices(omw_pages_uv_matrices);\nOmwPaged<const unsigned int> matrix_ids(omw_pages_matrix_ids);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=vertex_count)return;\r\n    unsigned int m=matrix_ids[i]*16;\r\n    float u=vertices[i*10+8],v=vertices[i*10+9];\r\n    vertices[i*10+8]=uv_matrices[m]*u+uv_matrices[m+4]*v+uv_matrices[m+12];\r\n    vertices[i*10+9]=uv_matrices[m+1]*u+uv_matrices[m+5]*v+uv_matrices[m+13];\r\n}\r\n\r\n// Reconstruct attributes at newly clipped vertices from the original-vertex\r\n// weights emitted by clip_triangles. Fixed seven output slots per input triangle\r\n// keep order stable. Invalid slots are w=0 so binning rejects them explicitly.\r\n__global__ void assemble_material(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_triangles,const unsigned long long* omw_pages_positions,const unsigned long long* omw_pages_weights,const unsigned long long* omw_pages_valid,const unsigned long long* omw_pages_vertices,const unsigned long long* omw_pages_output_triangles,const unsigned long long* omw_pages_flat_colors, unsigned int slot_count) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<const unsigned int> triangles(omw_pages_triangles);\nOmwPaged<const float> positions(omw_pages_positions);\nOmwPaged<const float> weights(omw_pages_weights);\nOmwPaged<const unsigned int> valid(omw_pages_valid);\nOmwPaged<float> vertices(omw_pages_vertices);\nOmwPaged<unsigned int> output_triangles(omw_pages_output_triangles);\nOmwPaged<const unsigned int> flat_colors(omw_pages_flat_colors);\n\r\n    unsigned int slot = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\r\n    if (slot >= slot_count) return;\r\n    unsigned int original = slot / 7;\r\n    output_triangles[slot*4+3] = triangles[original*4+3];\r\n    for (unsigned int v = 0; v < 3; v++) {\r\n        unsigned int dst = (slot*3+v)*10;\r\n        output_triangles[slot*4+v] = slot*3+v;\r\n        for (unsigned int k = 0; k < 10; k++) vertices[dst+k] = 0.0f;\r\n        if (valid[slot] == 0) continue;\r\n        for (unsigned int k = 0; k < 4; k++) vertices[dst+k] = positions[slot*12+v*4+k];\r\n        for (unsigned int k = 4; k < 10; k++) {\r\n            float value = 0.0f;\r\n            for (unsigned int corner = 0; corner < 3; corner++)\r\n                value += weights[slot*12+v*4+corner] * source[triangles[original*4+corner]*10+k];\r\n            if(k<8u&&flat_colors[original]!=0xffffffffu)value=source[flat_colors[original]*10u+k];\r\n            vertices[dst+k] = value;\r\n        }\r\n    }\r\n}\r\n\r\n// Apply the window viewport only after homogeneous frustum clipping. Keeping\r\n// w unchanged preserves perspective interpolation and clip-depth semantics.\r\n__global__ void map_viewport(const unsigned long long* omw_pages_vertices,const unsigned long long* omw_pages_attributes,unsigned int point_fade_offset,unsigned int vertex_count,\r\n    unsigned int width,unsigned int height,int viewport_x,int viewport_y,\r\n    unsigned int viewport_width,unsigned int viewport_height) {\nOmwPaged<float> vertices(omw_pages_vertices);\nOmwPaged<float> attributes(omw_pages_attributes);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=vertex_count)return;\r\n    unsigned int v=i*10;float w=vertices[v+3];\r\n    vertices[v]=vertices[v]*(float)viewport_width/(float)width\r\n        +w*((2.0f*(float)viewport_x+(float)viewport_width)/(float)width-1.0f);\r\n    vertices[v+1]=vertices[v+1]*(float)viewport_height/(float)height\r\n        +w*((2.0f*(float)viewport_y+(float)viewport_height)/(float)height-1.0f);\r\n    // Centreline endpoint records are constant over each expanded line quad.\r\n    // Map them with the same affine homogeneous transform as its support mesh.\r\n    unsigned int metadata=point_fade_offset+i*12u;\r\n    if(attributes[metadata+7u]>0.0f&&attributes[metadata+11u]>0.0f)\r\n        for(unsigned int endpoint=0u;endpoint<2u;endpoint++) {\r\n            unsigned int base=metadata+4u+endpoint*4u;\r\n            float endpointW=attributes[base+3u];\r\n            attributes[base]=attributes[base]*(float)viewport_width/(float)width\r\n                +endpointW*((2.0f*(float)viewport_x+(float)viewport_width)/(float)width-1.0f);\r\n            attributes[base+1u]=attributes[base+1u]*(float)viewport_height/(float)height\r\n                +endpointW*((2.0f*(float)viewport_y+(float)viewport_height)/(float)height-1.0f);\r\n        }\r\n}\r\n",
+    "entry": "assemble_material",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "source",
+        "type": "buffer"
+      },
+      {
+        "name": "triangles",
+        "type": "buffer"
+      },
+      {
+        "name": "positions",
+        "type": "buffer"
+      },
+      {
+        "name": "weights",
+        "type": "buffer"
+      },
+      {
+        "name": "valid",
+        "type": "buffer"
+      },
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "output_triangles",
+        "type": "buffer"
+      },
+      {
+        "name": "flat_colors",
+        "type": "buffer"
+      },
+      {
+        "name": "slot_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

@@ -1,0 +1,100 @@
+{
+  "version": "0.1.1",
+  "name": "morph_vertices",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel morph_vertices.\n@group(0) @binding(0) var<storage, read_write> b_vertices: array<f32>;\n@group(0) @binding(1) var<storage, read> b_ranges: array<u32>;\n@group(0) @binding(2) var<storage, read> b_offsets: array<f32>;\nstruct CWParams {\n  p_range_count: u32,\n  cw_pad_4: u32,\n  cw_pad_8: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(3) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= cw_params.p_range_count)) {\n    return;\n  }\n  var v_vertex: u32 = (b_ranges[(v_i * u32(3i))] * u32(10i));\n  var v_first: u32 = b_ranges[((v_i * u32(3i)) + u32(1i))];\n  var v_count: u32 = b_ranges[((v_i * u32(3i)) + u32(2i))];\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      var v_value: f32 = b_vertices[(v_vertex + v_k)];\n      {\n        var v_j: u32 = u32(0i);\n        loop {\n          if (!(v_j < v_count)) { break; }\n          v_value = (v_value + (b_offsets[(((v_first + v_j) * u32(4i)) + v_k)] * b_offsets[(((v_first + v_j) * u32(4i)) + u32(3i))]));\n          continuing {\n            v_j += u32(1);\n          }\n        }\n      }\n      b_vertices[(v_vertex + v_k)] = v_value;\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "vertices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "ranges",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "offsets",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "range_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 3,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 1556,
+      "beforeBytes": 1556,
+      "afterBytes": 1556,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 1085,
+          "transitiveBytes": 1085,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// One thread owns each morphed vertex, preserving authored target order.\r\n__global__ void morph_vertices(float* vertices,const unsigned int* ranges,const float* offsets,unsigned int range_count) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=range_count)return;\r\n    unsigned int vertex=ranges[i*3]*10,first=ranges[i*3+1],count=ranges[i*3+2];\r\n    for(unsigned int k=0;k<3;k++) {\r\n        float value=vertices[vertex+k];\r\n        for(unsigned int j=0;j<count;j++)value+=offsets[(first+j)*4+k]*offsets[(first+j)*4+3];\r\n        vertices[vertex+k]=value;\r\n    }\r\n}\r\n__global__ void skin_vertices(float* vertices,float* attributes,const unsigned int* ranges,\r\n    const unsigned int* weights,const float* bones,const float* transforms,unsigned int range_count) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=range_count)return;\r\n    unsigned int vertex=ranges[i*4],first=ranges[i*4+1],count=ranges[i*4+2],transform=ranges[i*4+3]*32;\r\n    float matrix[16];for(unsigned int k=0;k<16;k++)matrix[k]=k==15?1.0f:0.0f;\r\n    for(unsigned int influence=0;influence<count;influence++) {\r\n        unsigned int bone=weights[(first+influence)*2]*32;\r\n        float weight=__uint_as_float(weights[(first+influence)*2+1]);\r\n        for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<3;col++) {\r\n            float value=0.0f;\r\n            for(unsigned int k=0;k<4;k++)value+=bones[bone+row*4+k]*bones[bone+16+k*4+col];\r\n            matrix[row*4+col]+=value*weight;\r\n        }\r\n    }\r\n    for(unsigned int stage=0;stage<2;stage++) {\r\n        float result[16];\r\n        for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<4;col++) {\r\n            float value=0.0f;for(unsigned int k=0;k<4;k++)value+=matrix[row*4+k]*transforms[transform+stage*16+k*4+col];\r\n            result[row*4+col]=value;\r\n        }\r\n        for(unsigned int k=0;k<16;k++)matrix[k]=result[k];\r\n    }\r\n    float position[3],normal[3],tangent[3];\r\n    float w=matrix[15];for(unsigned int k=0;k<3;k++)w+=vertices[vertex*10+k]*matrix[k*4+3];\r\n    for(unsigned int col=0;col<3;col++) {\r\n        position[col]=matrix[12+col];normal[col]=0.0f;tangent[col]=0.0f;\r\n        for(unsigned int row=0;row<3;row++) {\r\n            position[col]+=vertices[vertex*10+row]*matrix[row*4+col];\r\n            normal[col]+=attributes[vertex*34+3+row]*matrix[row*4+col];\r\n            tangent[col]+=attributes[vertex*34+6+row]*matrix[row*4+col];\r\n        }\r\n    }\r\n    for(unsigned int k=0;k<3;k++) {\r\n        vertices[vertex*10+k]=position[k]/w;\r\n        attributes[vertex*34+3+k]=normal[k];attributes[vertex*34+6+k]=tangent[k];\r\n    }\r\n}\r\n",
+    "entry": "morph_vertices",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "ranges",
+        "type": "buffer"
+      },
+      {
+        "name": "offsets",
+        "type": "buffer"
+      },
+      {
+        "name": "range_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

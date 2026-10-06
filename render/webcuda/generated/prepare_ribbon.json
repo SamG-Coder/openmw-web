@@ -1,0 +1,145 @@
+{
+  "version": "0.1.1",
+  "name": "prepare_ribbon",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel prepare_ribbon.\n@group(0) @binding(0) var<storage, read> b_particles: array<f32>;\n@group(0) @binding(1) var<storage, read> b_matrices: array<f32>;\n@group(0) @binding(2) var<storage, read_write> b_vertices: array<f32>;\n@group(0) @binding(3) var<storage, read_write> b_summary: array<u32>;\nstruct CWParams {\n  p_particle_count: u32,\n  p_max_skip: u32,\n  p_width: u32,\n  p_height: u32,\n}\n@group(0) @binding(4) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i != 0u)) {\n    return;\n  }\n  b_summary[0i] = 0u;\n  b_summary[1i] = 0u;\n  b_summary[2i] = 0u;\n  if ((cw_params.p_particle_count == 0u)) {\n    return;\n  }\n  var v_p00: f32 = (b_matrices[16i] * (f32(cw_params.p_width) * 0.5f));\n  var v_p20: f32 = ((b_matrices[24i] + b_matrices[27i]) * (f32(cw_params.p_width) * 0.5f));\n  var v_p11: f32 = (b_matrices[21i] * (f32(cw_params.p_height) * 0.5f));\n  var v_p21: f32 = ((b_matrices[25i] + b_matrices[27i]) * (f32(cw_params.p_height) * 0.5f));\n  var v_magnitude: f32 = 0.0f;\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      var v_a: f32 = ((b_matrices[(v_k * u32(4i))] * v_p00) + (b_matrices[((v_k * u32(4i)) + u32(2i))] * v_p20));\n      var v_b: f32 = ((b_matrices[((v_k * u32(4i)) + u32(1i))] * v_p11) + (b_matrices[((v_k * u32(4i)) + u32(2i))] * v_p21));\n      v_magnitude = (v_magnitude + ((v_a * v_a) + (v_b * v_b)));\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  if ((v_magnitude <= 0.0f)) {\n    b_summary[2i] = 1u;\n    return;\n  }\n  var v_ratio: f32 = cw_divide_f32(0.7071067811f, sqrt(v_magnitude));\n  var v_inverse_pixel: f32 = ((b_matrices[14i] * b_matrices[27i]) + (b_matrices[15i] * b_matrices[31i]));\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      v_inverse_pixel = (v_inverse_pixel + ((b_particles[v_k] * b_matrices[((v_k * u32(4i)) + u32(2i))]) * b_matrices[27i]));\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  v_inverse_pixel = (v_inverse_pixel * v_ratio);\n  var v_error2: f32 = (v_inverse_pixel * v_inverse_pixel);\n  var cw_tmp_0: u32;\n  if ((abs(v_inverse_pixel) > b_particles[3i])) {\n    cw_tmp_0 = 1u;\n  } else {\n    cw_tmp_0 = 0u;\n  }\n  var v_thin: u32 = cw_tmp_0;\n  b_summary[1i] = v_thin;\n  var v_eye: array<f32, 3>;\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      v_eye[v_k] = 0.0f;\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  if ((v_thin == 0u)) {\n    var v_augmented: array<f32, 32>;\n    {\n      var v_row: u32 = u32(0i);\n      loop {\n        if (!(v_row < u32(4i))) { break; }\n        {\n          var v_col: u32 = u32(0i);\n          loop {\n            if (!(v_col < u32(4i))) { break; }\n            v_augmented[((v_row * u32(8i)) + v_col)] = b_matrices[((v_col * u32(4i)) + v_row)];\n            var cw_tmp_1: f32;\n            if ((v_row == v_col)) {\n              cw_tmp_1 = 1.0f;\n            } else {\n              cw_tmp_1 = 0.0f;\n            }\n            v_augmented[(((v_row * u32(8i)) + u32(4i)) + v_col)] = cw_tmp_1;\n            continuing {\n              v_col += u32(1);\n            }\n          }\n        }\n        continuing {\n          v_row += u32(1);\n        }\n      }\n    }\n    {\n      var v_col: u32 = u32(0i);\n      loop {\n        if (!(v_col < u32(4i))) { break; }\n        var v_pivot: u32 = v_col;\n        let cw_argument_index_2 = ((v_col * u32(8i)) + v_col);\n        var v_largest: f32 = abs(v_augmented[cw_argument_index_2]);\n        {\n          var v_row: u32 = (v_col + u32(1i));\n          loop {\n            if (!(v_row < u32(4i))) { break; }\n            let cw_argument_index_3 = ((v_row * u32(8i)) + v_col);\n            if ((abs(v_augmented[cw_argument_index_3]) > v_largest)) {\n              v_pivot = v_row;\n              let cw_argument_index_4 = ((v_row * u32(8i)) + v_col);\n              v_largest = abs(v_augmented[cw_argument_index_4]);\n            }\n            continuing {\n              v_row += u32(1);\n            }\n          }\n        }\n        if ((v_largest < 1e-12f)) {\n          b_summary[2i] = 1u;\n          return;\n        }\n        if ((v_pivot != v_col)) {\n          {\n            var v_k: u32 = u32(0i);\n            loop {\n              if (!(v_k < u32(8i))) { break; }\n              var v_temp: f32 = v_augmented[((v_col * u32(8i)) + v_k)];\n              v_augmented[((v_col * u32(8i)) + v_k)] = v_augmented[((v_pivot * u32(8i)) + v_k)];\n              v_augmented[((v_pivot * u32(8i)) + v_k)] = v_temp;\n              continuing {\n                v_k += u32(1);\n              }\n            }\n          }\n        }\n        var v_divisor: f32 = v_augmented[((v_col * u32(8i)) + v_col)];\n        {\n          var v_k: u32 = u32(0i);\n          loop {\n            if (!(v_k < u32(8i))) { break; }\n            v_augmented[((v_col * u32(8i)) + v_k)] = cw_divide_f32(v_augmented[((v_col * u32(8i)) + v_k)], v_divisor);\n            continuing {\n              v_k += u32(1);\n            }\n          }\n        }\n        {\n          var v_row: u32 = u32(0i);\n          loop {\n            if (!(v_row < u32(4i))) { break; }\n            if ((v_row != v_col)) {\n              var v_factor: f32 = v_augmented[((v_row * u32(8i)) + v_col)];\n              {\n                var v_k: u32 = u32(0i);\n                loop {\n                  if (!(v_k < u32(8i))) { break; }\n                  v_augmented[((v_row * u32(8i)) + v_k)] = (v_augmented[((v_row * u32(8i)) + v_k)] - (v_factor * v_augmented[((v_col * u32(8i)) + v_k)]));\n                  continuing {\n                    v_k += u32(1);\n                  }\n                }\n              }\n            }\n            continuing {\n              v_row += u32(1);\n            }\n          }\n        }\n        continuing {\n          v_col += u32(1);\n        }\n      }\n    }\n    var v_w: f32 = v_augmented[31i];\n    if ((abs(v_w) < 1e-12f)) {\n      b_summary[2i] = 1u;\n      return;\n    }\n    {\n      var v_k: u32 = u32(0i);\n      loop {\n        if (!(v_k < u32(3i))) { break; }\n        v_eye[v_k] = cw_divide_f32(v_augmented[((v_k * u32(8i)) + u32(7i))], v_w);\n        continuing {\n          v_k += u32(1);\n        }\n      }\n    }\n  }\n  var v_delta: array<f32, 3>;\n  v_delta[0i] = 0.0f;\n  v_delta[1i] = 0.0f;\n  v_delta[2i] = 1.0f;\n  var v_current: u32 = 0u;\n  var v_selected: u32 = 0u;\n  {\n    loop {\n      if (!(v_current < cw_params.p_particle_count)) { break; }\n      var v_next: u32 = (v_current + 1u);\n      if ((v_next < cw_params.p_particle_count)) {\n        var v_direction: array<f32, 3>;\n        var v_length2: f32 = 0.0f;\n        {\n          var v_k: u32 = u32(0i);\n          loop {\n            if (!(v_k < u32(3i))) { break; }\n            v_delta[v_k] = (b_particles[((v_next * 10u) + v_k)] - b_particles[((v_current * 10u) + v_k)]);\n            v_direction[v_k] = v_delta[v_k];\n            v_length2 = (v_length2 + (v_delta[v_k] * v_delta[v_k]));\n            continuing {\n              v_k += u32(1);\n            }\n          }\n        }\n        if ((v_length2 > 0.0f)) {\n          {\n            var v_k: u32 = u32(0i);\n            loop {\n              if (!(v_k < u32(3i))) { break; }\n              v_direction[v_k] = cw_divide_f32(v_direction[v_k], sqrt(v_length2));\n              continuing {\n                v_k += u32(1);\n              }\n            }\n          }\n        }\n        var v_distance2: f32 = 0.0f;\n        {\n          var v_skipped: u32 = u32(0i);\n          loop {\n            if (!(((v_skipped < cw_params.p_max_skip) && (v_distance2 < v_error2)) && ((v_next + 1u) < cw_params.p_particle_count))) { break; }\n            v_next += u32(1);\n            {\n              var v_k: u32 = u32(0i);\n              loop {\n                if (!(v_k < u32(3i))) { break; }\n                v_delta[v_k] = (b_particles[((v_next * 10u) + v_k)] - b_particles[((v_current * 10u) + v_k)]);\n                continuing {\n                  v_k += u32(1);\n                }\n              }\n            }\n            var v_x: f32 = ((v_delta[1i] * v_direction[2i]) - (v_delta[2i] * v_direction[1i]));\n            var v_y: f32 = ((v_delta[2i] * v_direction[0i]) - (v_delta[0i] * v_direction[2i]));\n            var v_z: f32 = ((v_delta[0i] * v_direction[1i]) - (v_delta[1i] * v_direction[0i]));\n            v_distance2 = (((v_x * v_x) + (v_y * v_y)) + (v_z * v_z));\n            continuing {\n              v_skipped += u32(1);\n            }\n          }\n        }\n      }\n      var v_offset: array<f32, 3>;\n      {\n        var v_k: u32 = u32(0i);\n        loop {\n          if (!(v_k < u32(3i))) { break; }\n          v_offset[v_k] = 0.0f;\n          continuing {\n            v_k += u32(1);\n          }\n        }\n      }\n      if ((v_thin == 0u)) {\n        var v_eye_direction: array<f32, 3>;\n        {\n          var v_k: u32 = u32(0i);\n          loop {\n            if (!(v_k < u32(3i))) { break; }\n            v_eye_direction[v_k] = (b_particles[((v_current * 10u) + v_k)] - v_eye[v_k]);\n            continuing {\n              v_k += u32(1);\n            }\n          }\n        }\n        v_offset[0i] = ((v_delta[1i] * v_eye_direction[2i]) - (v_delta[2i] * v_eye_direction[1i]));\n        v_offset[1i] = ((v_delta[2i] * v_eye_direction[0i]) - (v_delta[0i] * v_eye_direction[2i]));\n        v_offset[2i] = ((v_delta[0i] * v_eye_direction[1i]) - (v_delta[1i] * v_eye_direction[0i]));\n        var v_length: f32 = sqrt((((v_offset[0i] * v_offset[0i]) + (v_offset[1i] * v_offset[1i])) + (v_offset[2i] * v_offset[2i])));\n        if ((v_length > 0.0f)) {\n          {\n            var v_k: u32 = u32(0i);\n            loop {\n              if (!(v_k < u32(3i))) { break; }\n              v_offset[v_k] = (v_offset[v_k] * cw_divide_f32(b_particles[((v_current * 10u) + 3u)], v_length));\n              continuing {\n                v_k += u32(1);\n              }\n            }\n          }\n        }\n      }\n      {\n        var v_side: u32 = u32(0i);\n        loop {\n          if (!(v_side < u32(2i))) { break; }\n          var v_out: u32 = (((v_selected * 2u) + v_side) * 10u);\n          {\n            var v_k: u32 = u32(0i);\n            loop {\n              if (!(v_k < u32(3i))) { break; }\n              var cw_tmp_5: f32;\n              if ((v_side == 0u)) {\n                cw_tmp_5 = (-1.0f);\n              } else {\n                cw_tmp_5 = 1.0f;\n              }\n              b_vertices[(v_out + v_k)] = (b_particles[((v_current * 10u) + v_k)] + (v_offset[v_k] * cw_tmp_5));\n              continuing {\n                v_k += u32(1);\n              }\n            }\n          }\n          b_vertices[(v_out + 3u)] = 1.0f;\n          {\n            var v_c: u32 = u32(0i);\n            loop {\n              if (!(v_c < u32(4i))) { break; }\n              b_vertices[((v_out + 4u) + v_c)] = b_particles[(((v_current * 10u) + 4u) + v_c)];\n              continuing {\n                v_c += u32(1);\n              }\n            }\n          }\n          b_vertices[(v_out + 7u)] = (b_vertices[(v_out + 7u)] * b_particles[((v_current * 10u) + 8u)]);\n          b_vertices[(v_out + 8u)] = b_particles[((v_current * 10u) + 9u)];\n          var cw_tmp_6: f32;\n          if ((v_thin != 0u)) {\n            cw_tmp_6 = 0.5f;\n          } else {\n            cw_tmp_6 = f32(v_side);\n          }\n          b_vertices[(v_out + 9u)] = cw_tmp_6;\n          continuing {\n            v_side += u32(1);\n          }\n        }\n      }\n      v_selected += u32(1);\n      v_current = v_next;\n    }\n  }\n  b_summary[0i] = v_selected;\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "particles",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "matrices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "vertices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "summary",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "particle_count",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "max_skip",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 12
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 4,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 12010,
+      "beforeBytes": 12010,
+      "afterBytes": 12010,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 11191,
+          "transitiveBytes": 11461,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// ConnectedParticleSystem preparation. Input follows linked-list order:\r\n// position xyz, size, color rgba, alpha, S texture coordinate (10 floats).\r\n// Output is compact pairs of packed position4/color4/UV2 vertices. Thin-line\r\n// pairs coincide; the downstream line raster path expands them in screen space.\r\n// summary: selected particle count, thin-line flag, singular-matrix status.\r\n__global__ void prepare_ribbon(const float* particles,const float* matrices,\r\n    float* vertices,unsigned int* summary,unsigned int particle_count,\r\n    unsigned int max_skip,unsigned int width,unsigned int height) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i!=0u)return;\r\n    summary[0]=0u;summary[1]=0u;summary[2]=0u;\r\n    if(particle_count==0u)return;\r\n    // OSG matrices are row-major; their uploaded representation is consumed\r\n    // as column-major by the common transform kernels.\r\n    float p00=matrices[16]*((float)width*0.5f);\r\n    float p20=(matrices[24]+matrices[27])*((float)width*0.5f);\r\n    float p11=matrices[21]*((float)height*0.5f);\r\n    float p21=(matrices[25]+matrices[27])*((float)height*0.5f);\r\n    float magnitude=0.0f;\r\n    for(unsigned int k=0;k<3;k++) {\r\n        float a=matrices[k*4]*p00+matrices[k*4+2]*p20;\r\n        float b=matrices[k*4+1]*p11+matrices[k*4+2]*p21;\r\n        magnitude+=a*a+b*b;\r\n    }\r\n    if(magnitude<=0.0f){summary[2]=1u;return;}\r\n    float ratio=0.7071067811f/sqrtf(magnitude);\r\n    float inverse_pixel=matrices[14]*matrices[27]+matrices[15]*matrices[31];\r\n    for(unsigned int k=0;k<3;k++)inverse_pixel+=particles[k]*matrices[k*4+2]*matrices[27];\r\n    inverse_pixel*=ratio;\r\n    float error2=inverse_pixel*inverse_pixel;\r\n    unsigned int thin=fabsf(inverse_pixel)>particles[3]?1u:0u;\r\n    summary[1]=thin;\r\n    float eye[3];for(unsigned int k=0;k<3;k++)eye[k]=0.0f;\r\n    if(thin==0u) {\r\n        float augmented[32];\r\n        for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<4;col++) {\r\n            augmented[row*8+col]=matrices[col*4+row];\r\n            augmented[row*8+4+col]=row==col?1.0f:0.0f;\r\n        }\r\n        for(unsigned int col=0;col<4;col++) {\r\n            unsigned int pivot=col;float largest=fabsf(augmented[col*8+col]);\r\n            for(unsigned int row=col+1;row<4;row++)if(fabsf(augmented[row*8+col])>largest){pivot=row;largest=fabsf(augmented[row*8+col]);}\r\n            if(largest<0.000000000001f){summary[2]=1u;return;}\r\n            if(pivot!=col)for(unsigned int k=0;k<8;k++){float temp=augmented[col*8+k];augmented[col*8+k]=augmented[pivot*8+k];augmented[pivot*8+k]=temp;}\r\n            float divisor=augmented[col*8+col];for(unsigned int k=0;k<8;k++)augmented[col*8+k]/=divisor;\r\n            for(unsigned int row=0;row<4;row++)if(row!=col) {\r\n                float factor=augmented[row*8+col];\r\n                for(unsigned int k=0;k<8;k++)augmented[row*8+k]-=factor*augmented[col*8+k];\r\n            }\r\n        }\r\n        float w=augmented[31];\r\n        if(fabsf(w)<0.000000000001f){summary[2]=1u;return;}\r\n        for(unsigned int k=0;k<3;k++)eye[k]=augmented[k*8+7]/w;\r\n    }\r\n    float delta[3];delta[0]=0.0f;delta[1]=0.0f;delta[2]=1.0f;\r\n    unsigned int current=0u,selected=0u;\r\n    while(current<particle_count) {\r\n        unsigned int next=current+1u;\r\n        if(next<particle_count) {\r\n            float direction[3],length2=0.0f;\r\n            for(unsigned int k=0;k<3;k++){delta[k]=particles[next*10u+k]-particles[current*10u+k];direction[k]=delta[k];length2+=delta[k]*delta[k];}\r\n            if(length2>0.0f)for(unsigned int k=0;k<3;k++)direction[k]/=sqrtf(length2);\r\n            float distance2=0.0f;\r\n            for(unsigned int skipped=0;skipped<max_skip&&distance2<error2&&next+1u<particle_count;skipped++) {\r\n                next++;\r\n                for(unsigned int k=0;k<3;k++)delta[k]=particles[next*10u+k]-particles[current*10u+k];\r\n                float x=delta[1]*direction[2]-delta[2]*direction[1];\r\n                float y=delta[2]*direction[0]-delta[0]*direction[2];\r\n                float z=delta[0]*direction[1]-delta[1]*direction[0];distance2=x*x+y*y+z*z;\r\n            }\r\n        }\r\n        float offset[3];for(unsigned int k=0;k<3;k++)offset[k]=0.0f;\r\n        if(thin==0u) {\r\n            float eye_direction[3];for(unsigned int k=0;k<3;k++)eye_direction[k]=particles[current*10u+k]-eye[k];\r\n            offset[0]=delta[1]*eye_direction[2]-delta[2]*eye_direction[1];\r\n            offset[1]=delta[2]*eye_direction[0]-delta[0]*eye_direction[2];\r\n            offset[2]=delta[0]*eye_direction[1]-delta[1]*eye_direction[0];\r\n            float length=sqrtf(offset[0]*offset[0]+offset[1]*offset[1]+offset[2]*offset[2]);\r\n            if(length>0.0f)for(unsigned int k=0;k<3;k++)offset[k]*=particles[current*10u+3u]/length;\r\n        }\r\n        for(unsigned int side=0;side<2;side++) {\r\n            unsigned int out=(selected*2u+side)*10u;\r\n            for(unsigned int k=0;k<3;k++)vertices[out+k]=particles[current*10u+k]+offset[k]*(side==0u?-1.0f:1.0f);\r\n            vertices[out+3u]=1.0f;\r\n            for(unsigned int c=0;c<4;c++)vertices[out+4u+c]=particles[current*10u+4u+c];\r\n            vertices[out+7u]*=particles[current*10u+8u];\r\n            vertices[out+8u]=particles[current*10u+9u];vertices[out+9u]=thin!=0u?0.5f:(float)side;\r\n        }\r\n        selected++;current=next;\r\n    }\r\n    summary[0]=selected;\r\n}\r\n\r\n__global__ void assemble_ribbon(const float* prepared,const unsigned int* summary,\r\n    float* vertices,float* attributes,unsigned int* triangles,unsigned int* status,unsigned int* flat_colors,\r\n    unsigned int segment_count,unsigned int vertex_base,unsigned int triangle_base,\r\n    unsigned int material,unsigned int line_material,float line_width,\r\n    float normal_x,float normal_y,float normal_z,unsigned int status_index,unsigned int flat_color,unsigned int point_flags) {\r\n    unsigned int segment=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(segment>=segment_count)return;\r\n    if(summary[2]!=0u){atomicExch(&status[status_index],1u);return;}\r\n    unsigned int first=vertex_base+segment*4u,t=(triangle_base+segment*2u)*4u,thin=summary[1];\r\n    triangles[t]=first;triangles[t+1u]=first+1u;triangles[t+2u]=first+2u;triangles[t+3u]=thin!=0u?line_material:material;\r\n    triangles[t+4u]=first;triangles[t+5u]=first+2u;triangles[t+6u]=first+3u;triangles[t+7u]=triangles[t+3u];\r\n    flat_colors[triangle_base+segment*2]=flat_color!=0u?first+2u:0xffffffffu;\r\n    flat_colors[triangle_base+segment*2+1]=flat_colors[triangle_base+segment*2];\r\n    for(unsigned int corner=0;corner<4;corner++) {\r\n        unsigned int p=(first+corner)*10u,a=(first+corner)*34u;\r\n        for(unsigned int k=0;k<10;k++)vertices[p+k]=0.0f;\r\n        for(unsigned int k=0;k<34;k++)attributes[a+k]=0.0f;\r\n        for(unsigned int unit=0;unit<4;unit++)attributes[a+27u+unit*2u]=1.0f;\r\n        if(segment+1u>=summary[0])continue;\r\n        unsigned int point=segment+(corner>=2u?1u:0u),side=(corner==1u||corner==2u)?1u:0u;\r\n        unsigned int src=(point*2u+side)*10u;\r\n        for(unsigned int k=0;k<10;k++)vertices[p+k]=prepared[src+k];\r\n        attributes[a+3u]=normal_x;attributes[a+4u]=normal_y;attributes[a+5u]=normal_z;\r\n        if(thin!=0u) {\r\n            unsigned int start=segment*20u,end=(segment+1u)*20u;\r\n            for(unsigned int k=0;k<10;k++)vertices[p+k]=prepared[start+k];\r\n            attributes[a+24u]=(float)flat_color;attributes[a+25u]=(float)point_flags;\r\n            attributes[a]=7.0f;attributes[a+1u]=corner>=2u?1.0f:-1.0f;attributes[a+2u]=side!=0u?1.0f:-1.0f;\r\n            for(unsigned int k=0;k<3;k++)attributes[a+10u+k]=prepared[end+k]-prepared[start+k];\r\n            for(unsigned int k=0;k<4;k++)attributes[a+18u+k]=prepared[end+4u+k];\r\n            attributes[a+22u]=prepared[end+8u];attributes[a+15u]=line_width;\r\n        }\r\n        // Both vertices of the selected final particle have the same RGBA.\r\n        // Setting both line endpoints also preserves flat color after clipping.\r\n        if(flat_color!=0u)for(unsigned int k=0;k<4;k++)vertices[p+4u+k]=prepared[(segment+1u)*20u+4u+k];\r\n        attributes[a+16u]=vertices[p+8u];attributes[a+17u]=vertices[p+9u];\r\n    }\r\n}\r\n",
+    "entry": "prepare_ribbon",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "particles",
+        "type": "buffer"
+      },
+      {
+        "name": "matrices",
+        "type": "buffer"
+      },
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "summary",
+        "type": "buffer"
+      },
+      {
+        "name": "particle_count",
+        "type": "u32"
+      },
+      {
+        "name": "max_skip",
+        "type": "u32"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

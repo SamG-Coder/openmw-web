@@ -84,7 +84,7 @@ namespace SceneUtil
 
         void apply(osg::State& state) const override
         {
-            glDepthFunc(static_cast<GLenum>(AutoDepth::isReversed() ? getReversedDepthFunction() : getFunction()));
+            glDepthFunc(static_cast<GLenum>(getEffectiveFunction()));
             glDepthMask(static_cast<GLboolean>(getWriteMask()));
 #if defined(OSG_GLES1_AVAILABLE) || defined(OSG_GLES2_AVAILABLE) || defined(OSG_GLES3_AVAILABLE)
             glDepthRangef(getZNear(), getZFar());
@@ -104,6 +104,11 @@ namespace SceneUtil
         static bool isReversed()
         {
             return AutoDepth::sReversed;
+        }
+
+        osg::Depth::Function getEffectiveFunction() const
+        {
+            return isReversed() ? getReversedDepthFunction() : getFunction();
         }
 
         static void setDepthFormat(GLenum format);

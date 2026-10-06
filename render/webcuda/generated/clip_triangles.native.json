@@ -1,0 +1,57 @@
+{
+  "name": "clip_triangles",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Homogeneous clipping precedes perspective division. Original-vertex weights\r\n// travel with each intersection so material attributes can be interpolated later.\r\n// Each input reserves seven triangles (a triangle clipped by six planes has at\r\n// most nine vertices). positions/weights: 84 floats per input; valid: 7 uints.\r\n// Each weight record has three interpolation weights and an outgoing-edge flag.\r\n// The flag identifies the clipped triangle polygon boundary, not a fan diagonal.\r\n// Original quad/polygon boundary bits arrive from the topology producer.\r\n__global__ void clip_triangles(const float* clip, const unsigned int* indices, const unsigned int* materials,const unsigned int* polygon_edges,\r\n                              float* positions, float* weights,\r\n                              unsigned int* valid, unsigned int triangle_count,\r\n                              unsigned int vertex_stride, unsigned int triangle_stride) {\r\n    unsigned int tri = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\r\n    if (tri >= triangle_count) return;\r\n    unsigned int flags=triangle_stride==4u?materials[indices[tri*triangle_stride+3u]*12u+3u]:0u;\r\n    unsigned int depth_clamp=flags&262144u;\r\n    unsigned int expanded_primitive=flags&4194304u;\r\n    float polygon[40];\r\n    float attributes[40];\r\n    float next_polygon[40];\r\n    float next_attributes[40];\r\n    unsigned int count = 3;\r\n    for (unsigned int i = 0; i < 7; i++) valid[tri * 7 + i] = 0;\r\n    for (unsigned int i = 0; i < 3; i++) {\r\n        unsigned int vertex = indices[tri * triangle_stride + i];\r\n        for (unsigned int k = 0; k < 4; k++) {\r\n            polygon[i * 4 + k] = clip[vertex * vertex_stride + k];\r\n            attributes[i * 4 + k] = i == k ? 1.0f : 0.0f;\r\n        }\r\n        // During clipping component three is the incoming edge flag. It is\r\n        // discrete topology data and must not use intersection interpolation.\r\n        unsigned int previous=i==0u?2u:i-1u;\r\n        attributes[i*4+3]=((polygon_edges[tri]>>previous)&1u)!=0u?1.0f:0.0f;\r\n    }\r\n    for (unsigned int plane = 0; plane < 6; plane++) {\r\n        // Point/line centres already passed homogeneous clipping. Their wide\r\n        // raster footprint may legally extend beyond the viewport side planes.\r\n        if(plane<4u&&expanded_primitive!=0u)continue;\r\n        if(plane>=4u&&depth_clamp!=0u)continue;\r\n        if (count < 3) return;\r\n        unsigned int axis = plane / 2;\r\n        float sign = plane % 2 == 0 ? 1.0f : -1.0f;\r\n        unsigned int output_count = 0;\r\n        for (unsigned int i = 0; i < count; i++) {\r\n            unsigned int previous = i == 0 ? count - 1 : i - 1;\r\n            float d0 = polygon[previous * 4 + 3] + sign * polygon[previous * 4 + axis];\r\n            float d1 = polygon[i * 4 + 3] + sign * polygon[i * 4 + axis];\r\n            if(plane==4u&&(flags&8388608u)!=0u) {\r\n                d0=polygon[previous*4+2];d1=polygon[i*4+2];\r\n            }\r\n            bool inside0 = d0 >= 0.0f;\r\n            bool inside1 = d1 >= 0.0f;\r\n            // An endpoint on the plane is emitted by its inside case. Emitting it\r\n            // again as an intersection can grow a degenerate polygon past 9 vertices.\r\n            if (inside0 != inside1 && d0 != 0.0f && d1 != 0.0f) {\r\n                float t = d0 / (d0 - d1);\r\n                for (unsigned int k = 0; k < 4; k++) {\r\n                    next_polygon[output_count * 4 + k] = polygon[previous * 4 + k]\r\n                        + t * (polygon[i * 4 + k] - polygon[previous * 4 + k]);\r\n                    next_attributes[output_count * 4 + k] = attributes[previous * 4 + k]\r\n                        + t * (attributes[i * 4 + k] - attributes[previous * 4 + k]);\r\n                }\r\n                // Exiting follows the original edge; entering starts a new\r\n                // clipping-plane boundary, which is visible in polygon mode.\r\n                next_attributes[output_count*4+3]=inside0?attributes[i*4+3]:1.0f;\r\n                output_count++;\r\n            }\r\n            if (inside1) {\r\n                for (unsigned int k = 0; k < 4; k++) {\r\n                    next_polygon[output_count * 4 + k] = polygon[i * 4 + k];\r\n                    next_attributes[output_count * 4 + k] = attributes[i * 4 + k];\r\n                }\r\n                // A vertex exactly on the entering plane replaces an explicit\r\n                // intersection and therefore starts the clipping boundary too.\r\n                if(!inside0&&d1==0.0f)next_attributes[output_count*4+3]=1.0f;\r\n                output_count++;\r\n            }\r\n        }\r\n        count = output_count;\r\n        for (unsigned int i = 0; i < count * 4; i++) {\r\n            polygon[i] = next_polygon[i];\r\n            attributes[i] = next_attributes[i];\r\n        }\r\n    }\r\n    if (count < 3) return;\r\n    for (unsigned int fan = 0; fan < count - 2; fan++) {\r\n        unsigned int slot = tri * 7 + fan;\r\n        // The w=0 apex has no projectable area. Do not generate NaN coordinates.\r\n        if (polygon[3] <= 0.0f || polygon[(fan + 1) * 4 + 3] <= 0.0f\r\n            || polygon[(fan + 2) * 4 + 3] <= 0.0f) continue;\r\n        valid[slot] = 1;\r\n        for (unsigned int v = 0; v < 3; v++) {\r\n            unsigned int from = v == 0 ? 0 : fan + v;\r\n            for (unsigned int k = 0; k < 4; k++) {\r\n                positions[slot * 12 + v * 4 + k] = polygon[from * 4 + k];\r\n                weights[slot * 12 + v * 4 + k] = attributes[from * 4 + k];\r\n            }\r\n            // Fan corners are [0, fan+1, fan+2]. Only the first and last\r\n            // spokes belong to the polygon boundary; the middle edge always does.\r\n            // Store after clipping so this discrete flag is never interpolated.\r\n            unsigned int next=from+1u==count?0u:from+1u;\r\n            weights[slot * 12 + v * 4 + 3] =\r\n                (v == 1 || (v == 0 && fan == 0) || (v == 2 && fan == count - 3))\r\n                    ? attributes[next*4+3] : 0.0f;\r\n        }\r\n    }\r\n}\r\n",
+    "entry": "clip_triangles",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "clip",
+        "type": "buffer"
+      },
+      {
+        "name": "indices",
+        "type": "buffer"
+      },
+      {
+        "name": "materials",
+        "type": "buffer"
+      },
+      {
+        "name": "polygon_edges",
+        "type": "buffer"
+      },
+      {
+        "name": "positions",
+        "type": "buffer"
+      },
+      {
+        "name": "weights",
+        "type": "buffer"
+      },
+      {
+        "name": "valid",
+        "type": "buffer"
+      },
+      {
+        "name": "triangle_count",
+        "type": "u32"
+      },
+      {
+        "name": "vertex_stride",
+        "type": "u32"
+      },
+      {
+        "name": "triangle_stride",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "shade_text_gradient",
+  "native": {
+    "version": 1,
+    "source": "// Bounds and bilinear text colors stay on the GPU. One disjoint glyph group\r\n// per invocation; no CPU bounds reduction or vertex-color interpolation.\r\n__global__ void shade_text_gradient(float* vertices,const unsigned int* ranges,const float* colors,unsigned int range_count) {\r\n    unsigned int r=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(r>=range_count)return;\r\n    unsigned int first=ranges[r*3u],count=ranges[r*3u+1u],p=ranges[r*3u+2u]*16u;\r\n    if(count==0u)return;\r\n    float minx=3.402823466e38f,miny=3.402823466e38f,maxx=1.175494351e-38f,maxy=1.175494351e-38f;\r\n    for(unsigned int n=0;n<count;n++) {\r\n        unsigned int v=(first+n)*10u;\r\n        minx=fminf(minx,vertices[v]);maxx=fmaxf(maxx,vertices[v]);\r\n        miny=fminf(miny,vertices[v+1u]);maxy=fmaxf(maxy,vertices[v+1u]);\r\n    }\r\n    for(unsigned int n=0;n<count;n++) {\r\n        unsigned int v=(first+n)*10u;\r\n        float x=maxx!=minx?(vertices[v]-minx)/(maxx-minx):0.0f;\r\n        float y=maxy!=miny?(vertices[v+1u]-miny)/(maxy-miny):0.0f;\r\n        for(unsigned int k=0;k<4;k++) {\r\n            float left=colors[p+4u+k]*(1.0f-y)+colors[p+k]*y;\r\n            float right=colors[p+8u+k]*(1.0f-y)+colors[p+12u+k]*y;\r\n            vertices[v+4u+k]=left*(1.0f-x)+right*x;\r\n        }\r\n    }\r\n}\r\n",
+    "entry": "shade_text_gradient",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "ranges",
+        "type": "buffer"
+      },
+      {
+        "name": "colors",
+        "type": "buffer"
+      },
+      {
+        "name": "range_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

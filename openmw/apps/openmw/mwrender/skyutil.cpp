@@ -1,6 +1,7 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "skyutil.hpp"
+#include <components/webcuda/viewer.hpp>
 
 #include <array>
 #include <cmath>
@@ -162,8 +163,11 @@ namespace MWRender
 
     float OcclusionCallback::getVisibleRatio(osg::Camera* camera)
     {
-        int visible = mOcclusionQueryVisiblePixels->getQueryGeometry()->getNumPixels(camera);
-        int total = mOcclusionQueryTotalPixels->getQueryGeometry()->getNumPixels(camera);
+        const auto* visibleQuery=mOcclusionQueryVisiblePixels->getQueryGeometry();
+        const auto* totalQuery=mOcclusionQueryTotalPixels->getQueryGeometry();
+        const bool webcuda=WebCuda::Viewer::requested();
+        unsigned int visible=webcuda?WebCuda::Viewer::queryPixels(visibleQuery,camera):visibleQuery->getNumPixels(camera);
+        unsigned int total=webcuda?WebCuda::Viewer::queryPixels(totalQuery,camera):totalQuery->getNumPixels(camera);
 
         float visibleRatio = 0.f;
         if (total > 0)

@@ -1,6 +1,7 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "npcanimation.hpp"
+#include <components/webcuda/submission.hpp>
 
 #include <osg/Depth>
 #include <osg/MatrixTransform>
@@ -322,7 +323,7 @@ namespace MWRender
     /// Switches depth attachments to a proxy renderbuffer, reattaches original depth then redraws first person root.
     /// This gives a complete depth buffer which can be used for postprocessing, buffer resolves as if depth was never
     /// cleared.
-    class DepthClearCallback : public osgUtil::RenderBin::DrawCallback
+    class DepthClearCallback : public osgUtil::RenderBin::DrawCallback, public WebCuda::CustomRenderBin
     {
     public:
         DepthClearCallback()
@@ -332,7 +333,33 @@ namespace MWRender
 
             mStateSet = new osg::StateSet;
             mStateSet->setAttributeAndModes(new osg::ColorMask(false, false, false, false), osg::StateAttribute::ON);
+            mWebCudaState=new osg::StateSet;
+            mWebCudaState->setAttributeAndModes(mDepth,osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
         }
+
+        const osg::StateSet* beginWebCuda(WebCuda::SubmissionSink& sink) override
+        {
+            const auto function=mDepth->getFunction();
+            sink.beginDepthIsolation(function==osg::Depth::GREATER||function==osg::Depth::GEQUAL?0.f:1.f);
+            return mWebCudaState;
+        }
+        void endWebCuda(WebCuda::SubmissionSink&) override {}
+        const osg::StateSet* beginReplayWebCuda(WebCuda::SubmissionSink& sink) override
+        {
+            sink.endDepthIsolation();
+            const auto* camera=sink.currentCamera();
+            const auto* post=camera?dynamic_cast<const PostProcessor*>(camera->getUserData()):nullptr;
+            if(!post)return nullptr;
+            // getFbo exposes mutable attachments for rendering; the processor
+            // itself is owned by the camera and remains alive through submission.
+            const auto fbo=const_cast<PostProcessor*>(post)->getFbo(PostProcessor::FBO_OpaqueDepth,sink.frameNumber()%2);
+            if(!fbo)throw std::runtime_error("First-person depth attachment is missing");
+            const auto* depth=dynamic_cast<const osg::Texture2D*>(fbo->getAttachment(osg::Camera::PACKED_DEPTH_STENCIL_BUFFER).getTexture());
+            if(!depth)throw std::runtime_error("First-person depth requires 2D texture");
+            sink.beginDepthTarget(*depth);return mStateSet;
+        }
+        bool replaySubtreeWebCuda() const override { return true; }
+        void endReplayWebCuda(WebCuda::SubmissionSink& sink) override { sink.endColorTarget(); }
 
         void drawImplementation(
             osgUtil::RenderBin* bin, osg::RenderInfo& renderInfo, osgUtil::RenderLeaf*& previous) override
@@ -380,6 +407,7 @@ namespace MWRender
         }
 
         osg::ref_ptr<osg::Depth> mDepth;
+        osg::ref_ptr<osg::StateSet> mWebCudaState;
         osg::ref_ptr<osg::StateSet> mStateSet;
     };
 

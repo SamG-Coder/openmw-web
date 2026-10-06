@@ -1,4 +1,5 @@
 #include "fogstate.hpp"
+#include <stdexcept>
 
 #include "esmreader.hpp"
 #include "esmwriter.hpp"
@@ -99,10 +100,18 @@ namespace ESM
         }
         for (const FogTexture& texture : mFogTextures)
         {
+            const auto* bytes=&texture.mImageData;
+            if(texture.mPendingImage) {
+                const auto& pending=*texture.mPendingImage;
+                if(!pending.mReady)throw std::runtime_error("Fog GPU snapshot is not ready for serialization");
+                if(!pending.mError.empty())throw std::runtime_error("Fog GPU snapshot failed: "+pending.mError);
+                if(pending.mPng.empty())throw std::runtime_error("Fog GPU snapshot produced no PNG data");
+                bytes=&pending.mPng;
+            }
             esm.startSubRecord("FTEX");
             esm.writeT(texture.mX);
             esm.writeT(texture.mY);
-            esm.write(texture.mImageData.data(), texture.mImageData.size());
+            esm.write(bytes->data(), bytes->size());
             esm.endRecord("FTEX");
         }
     }

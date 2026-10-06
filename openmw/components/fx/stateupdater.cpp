@@ -1,6 +1,7 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "stateupdater.hpp"
+#include <components/webcuda/viewer.hpp>
 
 #include <osg/BufferIndexBinding>
 #include <osg/BufferObject>
@@ -28,7 +29,7 @@ namespace Fx
 
     void StateUpdater::setDefaults(osg::StateSet* stateset)
     {
-        if (mUseUBO)
+        if (mUseUBO && !WebCuda::Viewer::requested())
         {
             osg::ref_ptr<osg::UniformBufferObject> ubo = new osg::UniformBufferObject;
 
@@ -55,7 +56,7 @@ namespace Fx
 
     void StateUpdater::apply(osg::StateSet* stateset, osg::NodeVisitor* nv)
     {
-        if (mUseUBO)
+        if (mUseUBO && !WebCuda::Viewer::requested())
         {
             osg::UniformBufferBinding* ubb = dynamic_cast<osg::UniformBufferBinding*>(
                 stateset->getAttribute(osg::StateAttribute::UNIFORMBUFFERBINDING,

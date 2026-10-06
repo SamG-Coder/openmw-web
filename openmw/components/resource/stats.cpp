@@ -9,6 +9,8 @@
 #include <vector>
 
 #include <osg/PolygonMode>
+#include <osg/NodeVisitor>
+#include <osg/FrameStamp>
 
 #include <osgText/Font>
 #include <osgText/Text>
@@ -467,21 +469,22 @@ namespace Resource
 
     namespace
     {
-        class ResourceStatsTextDrawCallback : public osg::Drawable::DrawCallback
+        class ResourceStatsTextUpdateCallback : public osg::Drawable::UpdateCallback
         {
         public:
-            explicit ResourceStatsTextDrawCallback(osg::Stats* stats, std::span<const std::string> statNames)
+            explicit ResourceStatsTextUpdateCallback(osg::Stats* stats, std::span<const std::string> statNames)
                 : mStats(stats)
                 , mStatNames(statNames)
             {
             }
 
-            void drawImplementation(osg::RenderInfo& renderInfo, const osg::Drawable* drawable) const override
+            void update(osg::NodeVisitor* visitor, osg::Drawable* drawable) override
             {
-                if (mStats == nullptr)
+                if (mStats == nullptr || !visitor || !visitor->getFrameStamp())
                     return;
 
-                osgText::Text* text = (osgText::Text*)(drawable);
+                auto* text = dynamic_cast<osgText::Text*>(drawable);
+                if (!text) return;
 
                 std::ostringstream viewStr;
                 viewStr.setf(std::ios::left, std::ios::adjustfield);
@@ -491,7 +494,8 @@ namespace Resource
                 viewStr.setf(std::ios::fixed);
                 viewStr.precision(0);
 
-                const unsigned int frameNumber = renderInfo.getState()->getFrameStamp()->getFrameNumber() - 1;
+                const auto currentFrame = visitor->getFrameStamp()->getFrameNumber();
+                const unsigned int frameNumber = currentFrame > 0 ? currentFrame - 1 : 0;
 
                 for (const std::string& statName : mStatNames)
                 {
@@ -507,9 +511,8 @@ namespace Resource
                     }
                 }
 
+                // Update before culling/submission; rendering never refreshes the text.
                 text->setText(viewStr.str());
-
-                text->drawImplementation(renderInfo);
             }
 
         private:
@@ -574,7 +577,7 @@ namespace Resource
             statsText->setCharacterSize(characterSize);
             statsText->setPosition(pos);
             statsText->setText("");
-            statsText->setDrawCallback(new ResourceStatsTextDrawCallback(viewer.getViewerStats(), currentStatNames));
+            statsText->setUpdateCallback(new ResourceStatsTextUpdateCallback(viewer.getViewerStats(), currentStatNames));
 
             if (mTextFont != nullptr)
             {

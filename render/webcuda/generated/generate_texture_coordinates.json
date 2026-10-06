@@ -1,0 +1,142 @@
+{
+  "version": "0.1.1",
+  "name": "generate_texture_coordinates",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel generate_texture_coordinates.\n@group(0) @binding(0) var<storage, read> b_source: array<f32>;\n@group(0) @binding(1) var<storage, read> b_source_attributes: array<f32>;\n@group(0) @binding(2) var<storage, read> b_matrices: array<f32>;\n@group(0) @binding(3) var<storage, read> b_matrix_ids: array<u32>;\n@group(0) @binding(4) var<storage, read> b_descriptors: array<u32>;\n@group(0) @binding(5) var<storage, read_write> b_attributes: array<f32>;\nstruct CWParams {\n  p_vertex_count: u32,\n  cw_pad_4: u32,\n  cw_pad_8: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(6) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= cw_params.p_vertex_count)) {\n    return;\n  }\n  var v_draw: u32 = b_matrix_ids[v_i];\n  var v_v: u32 = (v_i * 34u);\n  var v_m: u32 = (v_draw * 32u);\n  var v_normal: array<f32, 3>;\n  var v_unitNormal: array<f32, 3>;\n  var v_reflected: array<f32, 3>;\n  var v_eye: array<f32, 3>;\n  var v_a: f32 = b_matrices[v_m];\n  var v_b: f32 = b_matrices[(v_m + 4u)];\n  var v_c: f32 = b_matrices[(v_m + 8u)];\n  var v_d: f32 = b_matrices[(v_m + 1u)];\n  var v_e: f32 = b_matrices[(v_m + 5u)];\n  var v_f: f32 = b_matrices[(v_m + 9u)];\n  var v_g: f32 = b_matrices[(v_m + 2u)];\n  var v_h: f32 = b_matrices[(v_m + 6u)];\n  var v_j: f32 = b_matrices[(v_m + 10u)];\n  var v_determinant: f32 = (((v_a * ((v_e * v_j) - (v_f * v_h))) - (v_b * ((v_d * v_j) - (v_f * v_g)))) + (v_c * ((v_d * v_h) - (v_e * v_g))));\n  var cw_tmp_0: f32;\n  if ((abs(v_determinant) > 1e-12f)) {\n    cw_tmp_0 = cw_divide_f32(1.0f, v_determinant);\n  } else {\n    cw_tmp_0 = 0.0f;\n  }\n  var v_inverse: f32 = cw_tmp_0;\n  var v_nx: f32 = b_source_attributes[(v_v + 3u)];\n  var v_ny: f32 = b_source_attributes[(v_v + 4u)];\n  var v_nz: f32 = b_source_attributes[(v_v + 5u)];\n  v_normal[0i] = ((((((v_e * v_j) - (v_f * v_h)) * v_nx) + (((v_f * v_g) - (v_d * v_j)) * v_ny)) + (((v_d * v_h) - (v_e * v_g)) * v_nz)) * v_inverse);\n  v_normal[1i] = ((((((v_c * v_h) - (v_b * v_j)) * v_nx) + (((v_a * v_j) - (v_c * v_g)) * v_ny)) + (((v_b * v_g) - (v_a * v_h)) * v_nz)) * v_inverse);\n  v_normal[2i] = ((((((v_b * v_f) - (v_c * v_e)) * v_nx) + (((v_c * v_d) - (v_a * v_f)) * v_ny)) + (((v_a * v_e) - (v_b * v_d)) * v_nz)) * v_inverse);\n  var v_length: f32 = 0.0f;\n  var v_eyeLength: f32 = 0.0f;\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      v_length = (v_length + (v_normal[v_k] * v_normal[v_k]));\n      v_eye[v_k] = b_attributes[(v_v + v_k)];\n      v_eyeLength = (v_eyeLength + (v_eye[v_k] * v_eye[v_k]));\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  v_length = sqrt(max(v_length, 1e-12f));\n  v_eyeLength = sqrt(max(v_eyeLength, 1e-12f));\n  var v_dot: f32 = 0.0f;\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      v_unitNormal[v_k] = cw_divide_f32(v_normal[v_k], v_length);\n      v_eye[v_k] = cw_divide_f32(v_eye[v_k], v_eyeLength);\n      v_dot = (v_dot + (v_eye[v_k] * v_unitNormal[v_k]));\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(3i))) { break; }\n      v_reflected[v_k] = (v_eye[v_k] - ((2.0f * v_dot) * v_unitNormal[v_k]));\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  var v_sphere: f32 = (2.0f * sqrt(max(1e-12f, (((v_reflected[0i] * v_reflected[0i]) + (v_reflected[1i] * v_reflected[1i])) + ((v_reflected[2i] + 1.0f) * (v_reflected[2i] + 1.0f))))));\n  var v_rx: f32 = (((v_d * v_h) - (v_e * v_g)) * v_inverse);\n  var v_ry: f32 = (((v_b * v_g) - (v_a * v_h)) * v_inverse);\n  var v_rz: f32 = (((v_a * v_e) - (v_b * v_d)) * v_inverse);\n  var v_rescale: f32 = cw_divide_f32(1.0f, sqrt(max((((v_rx * v_rx) + (v_ry * v_ry)) + (v_rz * v_rz)), 1e-12f)));\n  {\n    var v_unit: u32 = u32(0i);\n    loop {\n      if (!(v_unit < u32(4i))) { break; }\n      var v_descriptor: u32 = ((v_draw * 144u) + (v_unit * 36u));\n      var v_mask: u32 = b_descriptors[v_descriptor];\n      var v_mode: u32 = b_descriptors[(v_descriptor + 1u)];\n      var v_planePosition: array<f32, 4>;\n      {\n        var v_k: u32 = u32(0i);\n        loop {\n          if (!(v_k < u32(4i))) { break; }\n          v_planePosition[v_k] = b_source[((v_i * 10u) + v_k)];\n          continuing {\n            v_k += u32(1);\n          }\n        }\n      }\n      if (((v_mode == 5u) && (v_mask != 0u))) {\n        var v_system: array<f32, 20>;\n        {\n          var v_row: u32 = u32(0i);\n          loop {\n            if (!(v_row < u32(4i))) { break; }\n            var v_eyePosition: f32 = 0.0f;\n            {\n              var v_col: u32 = u32(0i);\n              loop {\n                if (!(v_col < u32(4i))) { break; }\n                let cw_argument_index_1 = (((v_descriptor + 20u) + (v_col * 4u)) + v_row);\n                v_system[((v_row * 5u) + v_col)] = bitcast<f32>(b_descriptors[cw_argument_index_1]);\n                v_eyePosition = (v_eyePosition + (b_matrices[((v_m + (v_col * 4u)) + v_row)] * b_source[((v_i * 10u) + v_col)]));\n                continuing {\n                  v_col += u32(1);\n                }\n              }\n            }\n            v_system[((v_row * 5u) + 4u)] = v_eyePosition;\n            continuing {\n              v_row += u32(1);\n            }\n          }\n        }\n        var v_valid: u32 = 1u;\n        {\n          var v_pivot: u32 = u32(0i);\n          loop {\n            if (!(v_pivot < u32(4i))) { break; }\n            var v_selected: u32 = v_pivot;\n            {\n              var v_row: u32 = (v_pivot + 1u);\n              loop {\n                if (!(v_row < u32(4i))) { break; }\n                let cw_argument_index_2 = ((v_row * 5u) + v_pivot);\n                let cw_argument_index_3 = ((v_selected * 5u) + v_pivot);\n                if ((abs(v_system[cw_argument_index_2]) > abs(v_system[cw_argument_index_3]))) {\n                  v_selected = v_row;\n                }\n                continuing {\n                  v_row += u32(1);\n                }\n              }\n            }\n            {\n              var v_col: u32 = u32(0i);\n              loop {\n                if (!(v_col < u32(5i))) { break; }\n                var v_saved: f32 = v_system[((v_pivot * 5u) + v_col)];\n                v_system[((v_pivot * 5u) + v_col)] = v_system[((v_selected * 5u) + v_col)];\n                v_system[((v_selected * 5u) + v_col)] = v_saved;\n                continuing {\n                  v_col += u32(1);\n                }\n              }\n            }\n            var v_divisor: f32 = v_system[((v_pivot * 5u) + v_pivot)];\n            if ((v_divisor == 0.0f)) {\n              v_valid = 0u;\n              break;\n            }\n            {\n              var v_col: u32 = u32(0i);\n              loop {\n                if (!(v_col < u32(5i))) { break; }\n                v_system[((v_pivot * 5u) + v_col)] = cw_divide_f32(v_system[((v_pivot * 5u) + v_col)], v_divisor);\n                continuing {\n                  v_col += u32(1);\n                }\n              }\n            }\n            {\n              var v_row: u32 = u32(0i);\n              loop {\n                if (!(v_row < u32(4i))) { break; }\n                if ((v_row != v_pivot)) {\n                  var v_factor: f32 = v_system[((v_row * 5u) + v_pivot)];\n                  {\n                    var v_col: u32 = u32(0i);\n                    loop {\n                      if (!(v_col < u32(5i))) { break; }\n                      v_system[((v_row * 5u) + v_col)] = (v_system[((v_row * 5u) + v_col)] - (v_factor * v_system[((v_pivot * 5u) + v_col)]));\n                      continuing {\n                        v_col += u32(1);\n                      }\n                    }\n                  }\n                }\n                continuing {\n                  v_row += u32(1);\n                }\n              }\n            }\n            continuing {\n              v_pivot += u32(1);\n            }\n          }\n        }\n        {\n          var v_k: u32 = u32(0i);\n          loop {\n            if (!(v_k < u32(4i))) { break; }\n            var cw_tmp_4: f32;\n            if ((v_valid != 0u)) {\n              cw_tmp_4 = v_system[((v_k * 5u) + 4u)];\n            } else {\n              cw_tmp_4 = 0.0f;\n            }\n            v_planePosition[v_k] = cw_tmp_4;\n            continuing {\n              v_k += u32(1);\n            }\n          }\n        }\n      }\n      {\n        var v_coordinate: u32 = u32(0i);\n        loop {\n          if (!(v_coordinate < u32(4i))) { break; }\n          if (((v_mask & (1u << v_coordinate)) != 0u)) {\n            var v_value: f32 = 0.0f;\n            if (((v_mode == 1u) || (v_mode == 5u))) {\n              {\n                var v_k: u32 = u32(0i);\n                loop {\n                  if (!(v_k < u32(4i))) { break; }\n                  let cw_argument_index_5 = (((v_descriptor + 4u) + (v_coordinate * 4u)) + v_k);\n                  v_value = (v_value + (v_planePosition[v_k] * bitcast<f32>(b_descriptors[cw_argument_index_5])));\n                  continuing {\n                    v_k += u32(1);\n                  }\n                }\n              }\n            } else {\n              if ((v_mode == 2u)) {\n                v_value = (cw_divide_f32(v_reflected[v_coordinate], v_sphere) + 0.5f);\n              } else {\n                if ((v_mode == 3u)) {\n                  var v_flags: u32 = b_descriptors[(v_descriptor + 2u)];\n                  var cw_tmp_7: f32;\n                  if (((v_flags & 1u) != 0u)) {\n                    cw_tmp_7 = v_unitNormal[v_coordinate];\n                  } else {\n                    var cw_tmp_6: f32;\n                    if (((v_flags & 2u) != 0u)) {\n                      cw_tmp_6 = v_rescale;\n                    } else {\n                      cw_tmp_6 = 1.0f;\n                    }\n                    cw_tmp_7 = (v_normal[v_coordinate] * cw_tmp_6);\n                  }\n                  v_value = cw_tmp_7;\n                } else {\n                  v_value = v_reflected[v_coordinate];\n                }\n              }\n            }\n            var cw_tmp_9: u32;\n            if ((v_coordinate < 2u)) {\n              var cw_tmp_8: u32;\n              if ((v_unit == 0u)) {\n                cw_tmp_8 = 16u;\n              } else {\n                cw_tmp_8 = (10u + ((v_unit - 1u) * 2u));\n              }\n              cw_tmp_9 = (cw_tmp_8 + v_coordinate);\n            } else {\n              cw_tmp_9 = (((26u + (v_unit * 2u)) + v_coordinate) - 2u);\n            }\n            var v_offset: u32 = cw_tmp_9;\n            b_attributes[(v_v + v_offset)] = v_value;\n          }\n          continuing {\n            v_coordinate += u32(1);\n          }\n        }\n      }\n      continuing {\n        v_unit += u32(1);\n      }\n    }\n  }\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "source",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "source_attributes",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "matrices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "matrix_ids",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "descriptors",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "attributes",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 5,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "vertex_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 6,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 11249,
+      "beforeBytes": 11249,
+      "afterBytes": 11249,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 10280,
+          "transitiveBytes": 10550,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Four descriptors per draw: enabled components, mode, normal flags, reserved,\r\n// then four plane equations and the eye-plane application matrix (36 words).\r\n// Execute after deformation and before clipping.\r\n__global__ void generate_texture_coordinates(const float* source,const float* source_attributes,\r\n    const float* matrices,const unsigned int* matrix_ids,const unsigned int* descriptors,\r\n    float* attributes,unsigned int vertex_count) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=vertex_count)return;\r\n    unsigned int draw=matrix_ids[i],v=i*34u,m=draw*32u;\r\n    float normal[3],unitNormal[3],reflected[3],eye[3];\r\n    float a=matrices[m],b=matrices[m+4u],c=matrices[m+8u];\r\n    float d=matrices[m+1u],e=matrices[m+5u],f=matrices[m+9u];\r\n    float g=matrices[m+2u],h=matrices[m+6u],j=matrices[m+10u];\r\n    float determinant=a*(e*j-f*h)-b*(d*j-f*g)+c*(d*h-e*g);\r\n    float inverse=fabsf(determinant)>0.000000000001f?1.0f/determinant:0.0f;\r\n    float nx=source_attributes[v+3u],ny=source_attributes[v+4u],nz=source_attributes[v+5u];\r\n    normal[0]=((e*j-f*h)*nx+(f*g-d*j)*ny+(d*h-e*g)*nz)*inverse;\r\n    normal[1]=((c*h-b*j)*nx+(a*j-c*g)*ny+(b*g-a*h)*nz)*inverse;\r\n    normal[2]=((b*f-c*e)*nx+(c*d-a*f)*ny+(a*e-b*d)*nz)*inverse;\r\n    float length=0.0f,eyeLength=0.0f;\r\n    for(unsigned int k=0;k<3;k++){length+=normal[k]*normal[k];eye[k]=attributes[v+k];eyeLength+=eye[k]*eye[k];}\r\n    length=sqrtf(fmaxf(length,0.000000000001f));eyeLength=sqrtf(fmaxf(eyeLength,0.000000000001f));\r\n    float dot=0.0f;\r\n    for(unsigned int k=0;k<3;k++){unitNormal[k]=normal[k]/length;eye[k]/=eyeLength;dot+=eye[k]*unitNormal[k];}\r\n    for(unsigned int k=0;k<3;k++)reflected[k]=eye[k]-2.0f*dot*unitNormal[k];\r\n    float sphere=2.0f*sqrtf(fmaxf(0.000000000001f,reflected[0]*reflected[0]+reflected[1]*reflected[1]+(reflected[2]+1.0f)*(reflected[2]+1.0f)));\r\n    // RESCALE_NORMAL uses the inverse model-view's third row length.\r\n    float rx=(d*h-e*g)*inverse,ry=(b*g-a*h)*inverse,rz=(a*e-b*d)*inverse;\r\n    float rescale=1.0f/sqrtf(fmaxf(rx*rx+ry*ry+rz*rz,0.000000000001f));\r\n    for(unsigned int unit=0;unit<4;unit++) {\r\n        unsigned int descriptor=draw*144u+unit*36u,mask=descriptors[descriptor],mode=descriptors[descriptor+1u];\r\n        float planePosition[4];\r\n        for(unsigned int k=0;k<4;k++)planePosition[k]=source[i*10u+k];\r\n        if(mode==5u&&mask!=0u) {\r\n            // Solve applicationModelView * position = currentEyePosition.\r\n            // Applying stored eye planes to this position is equivalent to\r\n            // inverse-transposing them at the original state application.\r\n            float system[20];\r\n            for(unsigned int row=0;row<4;row++) {\r\n                float eyePosition=0.0f;\r\n                for(unsigned int col=0;col<4;col++) {\r\n                    system[row*5u+col]=__uint_as_float(descriptors[descriptor+20u+col*4u+row]);\r\n                    eyePosition+=matrices[m+col*4u+row]*source[i*10u+col];\r\n                }\r\n                system[row*5u+4u]=eyePosition;\r\n            }\r\n            unsigned int valid=1u;\r\n            for(unsigned int pivot=0;pivot<4;pivot++) {\r\n                unsigned int selected=pivot;\r\n                for(unsigned int row=pivot+1u;row<4;row++)\r\n                    if(fabsf(system[row*5u+pivot])>fabsf(system[selected*5u+pivot]))selected=row;\r\n                for(unsigned int col=0;col<5;col++) {\r\n                    float saved=system[pivot*5u+col];system[pivot*5u+col]=system[selected*5u+col];system[selected*5u+col]=saved;\r\n                }\r\n                float divisor=system[pivot*5u+pivot];\r\n                if(divisor==0.0f){valid=0u;break;}\r\n                for(unsigned int col=0;col<5;col++)system[pivot*5u+col]/=divisor;\r\n                for(unsigned int row=0;row<4;row++)if(row!=pivot) {\r\n                    float factor=system[row*5u+pivot];\r\n                    for(unsigned int col=0;col<5;col++)system[row*5u+col]-=factor*system[pivot*5u+col];\r\n                }\r\n            }\r\n            for(unsigned int k=0;k<4;k++)planePosition[k]=valid!=0u?system[k*5u+4u]:0.0f;\r\n        }\r\n        for(unsigned int coordinate=0;coordinate<4;coordinate++)if((mask&(1u<<coordinate))!=0u) {\r\n            float value=0.0f;\r\n            if(mode==1u||mode==5u)for(unsigned int k=0;k<4;k++)value+=planePosition[k]*__uint_as_float(descriptors[descriptor+4u+coordinate*4u+k]);\r\n            else if(mode==2u)value=reflected[coordinate]/sphere+0.5f;\r\n            else if(mode==3u) {\r\n                unsigned int flags=descriptors[descriptor+2u];\r\n                value=(flags&1u)!=0u?unitNormal[coordinate]:normal[coordinate]*((flags&2u)!=0u?rescale:1.0f);\r\n            } else value=reflected[coordinate];\r\n            unsigned int offset=coordinate<2u?(unit==0u?16u:10u+(unit-1u)*2u)+coordinate:26u+unit*2u+coordinate-2u;\r\n            attributes[v+offset]=value;\r\n        }\r\n    }\r\n}\r\n",
+    "entry": "generate_texture_coordinates",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "source",
+        "type": "buffer"
+      },
+      {
+        "name": "source_attributes",
+        "type": "buffer"
+      },
+      {
+        "name": "matrices",
+        "type": "buffer"
+      },
+      {
+        "name": "matrix_ids",
+        "type": "buffer"
+      },
+      {
+        "name": "descriptors",
+        "type": "buffer"
+      },
+      {
+        "name": "attributes",
+        "type": "buffer"
+      },
+      {
+        "name": "vertex_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

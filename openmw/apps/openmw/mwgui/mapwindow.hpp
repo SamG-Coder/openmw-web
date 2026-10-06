@@ -261,6 +261,8 @@ namespace MWGui
         /// Clear all savegame-specific data
         void clear() override;
 
+        bool isMapSaveReady() const;
+        void restoreRenderTargets();
         void write(ESM::ESMWriter& writer, Loading::Listener& progress);
         void readRecord(ESM::ESMReader& reader, uint32_t type);
 

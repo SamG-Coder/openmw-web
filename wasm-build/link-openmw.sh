@@ -36,6 +36,10 @@ if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3,10) else 1)'; 
 fi
 
 EMSDK_BIN="${EMSDK_BIN:-/opt/homebrew/Cellar/emscripten/6.0.1/libexec}"
+EMCC="$EMSDK_BIN/emcc"; EMXX="$EMSDK_BIN/em++"
+if [ -f "$EMSDK_BIN/emcc.exe" ]; then
+  EMCC="$EMSDK_BIN/emcc.exe"; EMXX="$EMSDK_BIN/em++.exe"
+fi
 
 # --- WASM64 (MEMORY64) IS THE ONLY TARGET ------------------------------------------------------
 # See configure-openmw.sh: wasm32 cannot hold a Tamriel Rebuilt load order and the client is
@@ -112,6 +116,18 @@ BUILD="$ROOT/$BUILD_DIR"
 
 cd "$BUILD"
 
+# Package from a fresh generated tree. The authored fsroot mirror intentionally
+# differs from some engine resources; linking must not modify tracked source.
+PRELOAD_ROOT="$(mktemp -d "$BUILD/preload-XXXXXX")"
+cp -a "$ROOT/fsroot/." "$PRELOAD_ROOT/"
+# Match the version compiled into this build, and normalize Windows line endings:
+# Emscripten getline retains CR, making an otherwise identical version mismatch.
+if [ ! -f "$BUILD/resources/version" ]; then
+  echo "Missing generated engine resource version: $BUILD/resources/version" >&2
+  exit 1
+fi
+tr -d '\r' < "$BUILD/resources/version" > "$PRELOAD_ROOT/resources/version"
+
 # The multiplayer Lua package is authored in openmw/files/data but packed from the fsroot
 # preload mirror — sync it here so the two can never drift (the rest of resources/vfs is a
 # deliberately-divergent manual mirror; mp/ is exact by construction).
@@ -123,11 +139,18 @@ cd "$BUILD"
 # copy. `rm -rf` then `cp -a` is exactly `rsync -a --delete` for this case: mirror the source,
 # drop anything stale in the destination.
 MP_SRC="$ROOT/openmw/files/data/scripts/mp"
-MP_DST="$ROOT/fsroot/resources/vfs/scripts/mp"
+MP_DST="$PRELOAD_ROOT/resources/vfs/scripts/mp"
+# Resolve before recursively replacing the mirror, including any parent symlinks.
+ROOT_REAL="$(realpath "$PRELOAD_ROOT")"
+MP_DST_REAL="$(realpath -m "$MP_DST")"
+if [ "$MP_DST_REAL" != "$ROOT_REAL/resources/vfs/scripts/mp" ]; then
+  echo "Refusing to replace unexpected multiplayer mirror: $MP_DST_REAL" >&2
+  exit 1
+fi
 rm -rf "$MP_DST"
 mkdir -p "$MP_DST"
 cp -a "$MP_SRC/." "$MP_DST/"
-cp "$ROOT/openmw/files/data/mp.omwscripts" "$ROOT/fsroot/resources/vfs/mp.omwscripts"
+cp "$ROOT/openmw/files/data/mp.omwscripts" "$PRELOAD_ROOT/resources/vfs/mp.omwscripts"
 
 # ICU DATA. The emscripten ICU port links `libicu_stubdata` — ICU's "data supplied elsewhere"
 # placeholder — and ships the actual package under ports/icu without linking it. Nothing was
@@ -145,7 +168,7 @@ cp "$ROOT/openmw/files/data/mp.omwscripts" "$ROOT/fsroot/resources/vfs/mp.omwscr
 # ~/build-artifacts. Looking only in the cache made this script fail every build on the
 # build server while passing on a laptop with a warm emsdk -- so accept a pre-staged copy
 # and fall back to the cache, rather than the other way round.
-ICU_TARGET="$ROOT/fsroot/icu/icudt68l.dat"
+ICU_TARGET="$PRELOAD_ROOT/icu/icudt68l.dat"
 ICU_STAGED="$ROOT/fsroot/icudt68l.dat"
 ICU_DAT="${EMSDK_BIN}/cache/ports/icu/icu/source/data/in/icudt68l.dat"
 # TRIM -- DISABLED. See wasm-build/trim-icu-data.py.
@@ -178,11 +201,11 @@ trim_icu() {   # trim_icu <src> <dst>
 if [ -s "$ICU_TARGET" ]; then
   echo "   ICU data already staged at fsroot/icu/icudt68l.dat"
 elif [ -s "$ICU_STAGED" ]; then
-  mkdir -p "$ROOT/fsroot/icu"
+  mkdir -p "$PRELOAD_ROOT/icu"
   trim_icu "$ICU_STAGED" "$ICU_TARGET"
   echo "   ICU data staged from fsroot/icudt68l.dat"
 elif [ -f "$ICU_DAT" ]; then
-  mkdir -p "$ROOT/fsroot/icu"
+  mkdir -p "$PRELOAD_ROOT/icu"
   trim_icu "$ICU_DAT" "$ICU_TARGET"
   echo "   ICU data staged from the emsdk ports cache"
 else
@@ -203,13 +226,28 @@ fi
 # rebuilt, and the deployed client threw "attempt to call a nil value" at runtime — which
 # killed the whole MP transport, because a throwing Lua handler disables its subsystem.
 # Ninja no-ops these in seconds when nothing changed, so there is no reason to skip them.
-ninja components openmw-lib
-ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
+ninja -j "${JOBS:-6}" components openmw-lib
+ninja -j "${JOBS:-6}" apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
+
+# b2's Windows cross-build emits versioned names; require an unambiguous archive.
+boost_archive() {
+  local base="$1" matches
+  if [ -f "$LIB/libboost_$base.a" ]; then
+    printf '%s' "$LIB/libboost_$base.a"
+    return
+  fi
+  shopt -s nullglob
+  matches=("$LIB/libboost_$base"-clang-mt-s-*.a)
+  [ "${#matches[@]}" = 1 ] || { echo "Expected one Boost $base archive" >&2; return 1; }
+  printf '%s' "${matches[0]}"
+}
+BOOST_OPTIONS="$(boost_archive program_options)"
+BOOST_IOSTREAMS="$(boost_archive iostreams)"
 
 # X11 no-op stubs (osgViewer's X11 backend symbols; see wasm-build/x11_stubs.c).
-"$EMSDK_BIN/emcc" $ARCH_FLAG -O2 -pthread -fwasm-exceptions -msimd128 -c "$ROOT/wasm-build/x11_stubs.c" -o "$BUILD/x11_stubs.o"
+"$EMCC" $ARCH_FLAG -O2 -pthread -fwasm-exceptions -msimd128 -c "$ROOT/wasm-build/x11_stubs.c" -o "$BUILD/x11_stubs.o"
 
-"$EMSDK_BIN/em++" \
+"$EMXX" \
   -D_LIBCPP_ENABLE_CXX17_REMOVED_FEATURES -DBT_USE_DOUBLE_PRECISION \
   `# -msimd128 must match configure-openmw.sh: every hand-built dep already carries it, and` \
   `# main.cpp.o is compiled HERE rather than by cmake, so it would otherwise be the odd one out.` \
@@ -260,10 +298,10 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
   extern/oics/liboics.a extern/oics/liblocal_tinyxml.a \
   components/libcomponents.a \
   "$LIB/libosgParticle.a" "$LIB/libosgViewer.a" "$LIB/libosgShadow.a" \
-  "$LIB/libboost_program_options.a" \
+  "$BOOST_OPTIONS" \
   "$LIB/libosgAnimation.a" "$LIB/libosgGA.a" "$LIB/libosgText.a" \
   "$LIB/libosgDB.a" "$LIB/libosgUtil.a" "$LIB/libosgSim.a" "$LIB/libosg.a" \
-  "$LIB/libOpenThreads.a" "$LIB/libboost_iostreams.a" \
+  "$LIB/libOpenThreads.a" "$BOOST_IOSTREAMS" \
   "$LIBGL_A" \
   "$LIB/libMyGUIEngineStatic.a" "$LIB/liblua.a" "$LIB/libopenal_stub.a" "$LIB/liblz4.a" \
   _deps/recastnavigation-build/DebugUtils/libDebugUtils.a \
@@ -285,7 +323,7 @@ ninja apps/openmw/CMakeFiles/openmw.dir/main.cpp.o
   `# ceiling is no longer a constant that can be assumed -- so it has to be observable.` \
   -sEXPORTED_RUNTIME_METHODS=['FS','ENV','callMain','Browser','ccall','stringToNewUTF8','UTF8ToString','wasmMemory'] \
   -sEXPORTED_FUNCTIONS=['_main','_malloc','_free'] \
-  --preload-file "$ROOT/fsroot@/"
+  --preload-file "$PRELOAD_ROOT@/"
 
 echo "Linked: $(ls -la openmw.js openmw.wasm openmw.data | awk '{print $9, $5}')"
 echo "Deploy: cp $BUILD_DIR/openmw.{js,wasm,data} play/"

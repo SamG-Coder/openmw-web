@@ -1,0 +1,142 @@
+{
+  "version": "0.1.1",
+  "name": "cull_cluster_lights",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel cull_cluster_lights.\n@group(0) @binding(0) var<storage, read> b_clusters: array<f32>;\n@group(0) @binding(1) var<storage, read> b_lights: array<f32>;\n@group(0) @binding(2) var<storage, read_write> b_grid: array<u32>;\n@group(0) @binding(3) var<storage, read_write> b_indices: array<u32>;\n@group(0) @binding(4) var<storage, read_write> b_overflow: array<u32>;\nstruct CWParams {\n  p_cluster_count: u32,\n  p_light_count: u32,\n  p_capacity: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(5) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_tile: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_tile >= cw_params.p_cluster_count)) {\n    return;\n  }\n  var v_count: u32 = u32(0i);\n  {\n    var v_light: u32 = u32(0i);\n    loop {\n      if (!(v_light < cw_params.p_light_count)) { break; }\n      var v_distance: f32 = 0.0f;\n      {\n        var v_axis: u32 = u32(0i);\n        loop {\n          if (!(v_axis < u32(3i))) { break; }\n          var v_center: f32 = b_lights[((v_light * u32(20i)) + v_axis)];\n          let cw_argument_index_0 = (((v_tile * u32(8i)) + u32(4i)) + v_axis);\n          let cw_argument_index_1 = ((v_tile * u32(8i)) + v_axis);\n          var v_closest: f32 = min(b_clusters[cw_argument_index_0], max(b_clusters[cw_argument_index_1], v_center));\n          var v_delta: f32 = (v_closest - v_center);\n          v_distance = (v_distance + (v_delta * v_delta));\n          continuing {\n            v_axis += u32(1);\n          }\n        }\n      }\n      var v_radius: f32 = b_lights[((v_light * u32(20i)) + u32(19i))];\n      if ((v_distance <= (v_radius * v_radius))) {\n        if ((v_count < cw_params.p_capacity)) {\n          b_indices[((v_tile * cw_params.p_capacity) + v_count)] = v_light;\n        }\n        v_count += u32(1);\n      }\n      continuing {\n        v_light += u32(1);\n      }\n    }\n  }\n  b_grid[(v_tile * u32(2i))] = (v_tile * cw_params.p_capacity);\n  var cw_tmp_2: u32;\n  if ((v_count < cw_params.p_capacity)) {\n    cw_tmp_2 = v_count;\n  } else {\n    cw_tmp_2 = cw_params.p_capacity;\n  }\n  b_grid[((v_tile * u32(2i)) + u32(1i))] = cw_tmp_2;\n  var cw_tmp_3: u32;\n  if ((v_count > cw_params.p_capacity)) {\n    cw_tmp_3 = v_count;\n  } else {\n    cw_tmp_3 = 0u;\n  }\n  b_overflow[v_tile] = cw_tmp_3;\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "clusters",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "lights",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "grid",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "indices",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "overflow",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "cluster_count",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "light_count",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "capacity",
+        "type": "u32",
+        "offset": 8
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 5,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 2548,
+      "beforeBytes": 2548,
+      "afterBytes": 2548,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 1925,
+          "transitiveBytes": 1925,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Port of OpenMW's core/lighting/{cluster,cull}.comp. Cluster construction\r\n// reconstructs the symmetric perspective used by LightManager from the raw\r\n// camera projection. Reverse-Z changes depth coefficients, not these XY scales.\r\n// Cluster records are eight floats: min xyz/pad, max xyz/pad.\r\n__global__ void build_light_clusters(const float* projection,float* clusters,\r\n    unsigned int grid_x,unsigned int grid_y,unsigned int grid_z,float near_distance,float far_distance) {\r\n    unsigned int tile=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(tile>=grid_x*grid_y*grid_z)return;\r\n    unsigned int x=tile%grid_x,y=(tile/grid_x)%grid_y,z=tile/(grid_x*grid_y);\r\n    float planeNear=near_distance*powf(far_distance/near_distance,(float)z/(float)grid_z);\r\n    float planeFar=near_distance*powf(far_distance/near_distance,(float)(z+1)/(float)grid_z);\r\n    // Inverse-project XY, then intersect the eye rays with each slice plane.\r\n    float minX=(2.0f*(float)x/(float)grid_x-1.0f)/projection[0];\r\n    float maxX=(2.0f*(float)(x+1)/(float)grid_x-1.0f)/projection[0];\r\n    float minY=(2.0f*(float)y/(float)grid_y-1.0f)/projection[5];\r\n    float maxY=(2.0f*(float)(y+1)/(float)grid_y-1.0f)/projection[5];\r\n    clusters[tile*8]=fminf(minX*planeNear,minX*planeFar);\r\n    clusters[tile*8+1]=fminf(minY*planeNear,minY*planeFar);\r\n    clusters[tile*8+2]=-planeFar;clusters[tile*8+3]=0.0f;\r\n    clusters[tile*8+4]=fmaxf(maxX*planeNear,maxX*planeFar);\r\n    clusters[tile*8+5]=fmaxf(maxY*planeNear,maxY*planeFar);\r\n    clusters[tile*8+6]=-planeNear;clusters[tile*8+7]=0.0f;\r\n}\r\n\r\n// PointLight uses the engine's 20-float std430 layout: position, diffuse,\r\n// ambient, specular, then constant/linear/quadratic attenuation and radius.\r\n// Each invocation owns its fixed list segment. Stable source ordering avoids\r\n// atomics and preserves reproducibility for lighting accumulation. Grid offsets\r\n// and counts still have the same meaning as the engine's compact GPU list.\r\n__global__ void cull_cluster_lights(const float* clusters,const float* lights,\r\n    unsigned int* grid,unsigned int* indices,unsigned int* overflow,\r\n    unsigned int cluster_count,unsigned int light_count,unsigned int capacity) {\r\n    unsigned int tile=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(tile>=cluster_count)return;\r\n    unsigned int count=0;\r\n    for(unsigned int light=0;light<light_count;light++) {\r\n        float distance=0.0f;\r\n        for(unsigned int axis=0;axis<3;axis++) {\r\n            float center=lights[light*20+axis];\r\n            float closest=fminf(clusters[tile*8+4+axis],fmaxf(clusters[tile*8+axis],center));\r\n            float delta=closest-center;distance+=delta*delta;\r\n        }\r\n        float radius=lights[light*20+19];\r\n        if(distance<=radius*radius) {\r\n            if(count<capacity)indices[tile*capacity+count]=light;\r\n            count++;\r\n        }\r\n    }\r\n    grid[tile*2]=tile*capacity;\r\n    grid[tile*2+1]=count<capacity?count:capacity;\r\n    // Preserve the required capacity, not merely a boolean. The host can grow\r\n    // the list and redispatch before any shader consumes a truncated cluster.\r\n    overflow[tile]=count>capacity?count:0u;\r\n}\r\n\r\n// Repack std430 PointLight into the renderer's common 16-word light record.\r\n__global__ void pack_cluster_lights(const float* source,unsigned int* target,\r\n    unsigned int light_count,unsigned int destination) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=light_count)return;\r\n    for(unsigned int k=0;k<3;k++) {\r\n        target[destination+i*16+k]=__float_as_uint(source[i*20+k]);\r\n        target[destination+i*16+4+k]=__float_as_uint(source[i*20+8+k]);\r\n        target[destination+i*16+8+k]=__float_as_uint(source[i*20+4+k]);\r\n        target[destination+i*16+12+k]=__float_as_uint(source[i*20+12+k]);\r\n    }\r\n    target[destination+i*16+3]=__float_as_uint(source[i*20+16]);\r\n    target[destination+i*16+7]=__float_as_uint(source[i*20+17]);\r\n    target[destination+i*16+11]=__float_as_uint(source[i*20+18]);\r\n    target[destination+i*16+15]=__float_as_uint(source[i*20+19]);\r\n}\r\n",
+    "entry": "cull_cluster_lights",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "clusters",
+        "type": "buffer"
+      },
+      {
+        "name": "lights",
+        "type": "buffer"
+      },
+      {
+        "name": "grid",
+        "type": "buffer"
+      },
+      {
+        "name": "indices",
+        "type": "buffer"
+      },
+      {
+        "name": "overflow",
+        "type": "buffer"
+      },
+      {
+        "name": "cluster_count",
+        "type": "u32"
+      },
+      {
+        "name": "light_count",
+        "type": "u32"
+      },
+      {
+        "name": "capacity",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

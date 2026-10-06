@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_TERRAIN_COMPOSITEMAPRENDERER_H
 
 #include <osg/Drawable>
+#include <components/webcuda/submission.hpp>
 
 #include <mutex>
 #include <set>
@@ -30,13 +31,14 @@ namespace Terrain
      * @brief The CompositeMapRenderer is responsible for updating composite map textures in a blocking or non-blocking
      * way.
      */
-    class CompositeMapRenderer : public osg::Drawable
+    class CompositeMapRenderer : public osg::Drawable, public WebCuda::CustomDrawable
     {
     public:
         CompositeMapRenderer();
         ~CompositeMapRenderer();
 
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
+        void submitWebCuda(WebCuda::SubmissionSink&, const WebCuda::DrawContext&) const override;
 
         void compile(CompositeMap& compositeMap, osg::RenderInfo& renderInfo) const;
 

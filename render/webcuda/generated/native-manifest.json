@@ -1,0 +1,437 @@
+[
+  {
+    "entry": "clear_compact_depth",
+    "runtime": true,
+    "artifact": "clear_compact_depth.native.json"
+  },
+  {
+    "entry": "copy_depth_layout",
+    "runtime": true,
+    "artifact": "copy_depth_layout.native.json"
+  },
+  {
+    "entry": "compact_depth_to_texture",
+    "runtime": true,
+    "artifact": "compact_depth_to_texture.native.json"
+  },
+  {
+    "entry": "float_normals_to_texture",
+    "runtime": true,
+    "artifact": "float_normals_to_texture.native.json"
+  },
+  {
+    "entry": "shade_text_gradient",
+    "runtime": true,
+    "artifact": "shade_text_gradient.native.json"
+  },
+  {
+    "entry": "transform_local_vertices",
+    "runtime": true,
+    "artifact": "transform_local_vertices.native.json"
+  },
+  {
+    "entry": "prepare_bethesda_vertices",
+    "runtime": true,
+    "artifact": "prepare_bethesda_vertices.native.json"
+  },
+  {
+    "entry": "shade_unlit_falloff",
+    "runtime": true,
+    "artifact": "shade_unlit_falloff.native.json"
+  },
+  {
+    "entry": "assemble_unlit_falloff",
+    "runtime": true,
+    "artifact": "assemble_unlit_falloff.native.json"
+  },
+  {
+    "entry": "generate_fog_map",
+    "runtime": true,
+    "artifact": "generate_fog_map.native.json"
+  },
+  {
+    "entry": "generate_map",
+    "runtime": true,
+    "artifact": "generate_map.native.json"
+  },
+  {
+    "entry": "snapshot_frame",
+    "runtime": true,
+    "artifact": "snapshot_frame.native.json"
+  },
+  {
+    "entry": "capture_image",
+    "runtime": true,
+    "artifact": "capture_image.native.json"
+  },
+  {
+    "entry": "shade_debug_vertices",
+    "runtime": true,
+    "artifact": "shade_debug_vertices.native.json"
+  },
+  {
+    "entry": "copy_resolved_attachment",
+    "runtime": true,
+    "artifact": "copy_resolved_attachment.native.json"
+  },
+  {
+    "entry": "broadcast_multisample_color",
+    "runtime": true,
+    "artifact": "broadcast_multisample_color.native.json"
+  },
+  {
+    "entry": "copy_multisample_plane",
+    "runtime": true,
+    "artifact": "copy_multisample_plane.native.json"
+  },
+  {
+    "entry": "clear_multisample_depth",
+    "runtime": true,
+    "artifact": "clear_multisample_depth.native.json"
+  },
+  {
+    "entry": "seed_multisample",
+    "runtime": true,
+    "artifact": "seed_multisample.native.json"
+  },
+  {
+    "entry": "resolve_multisample",
+    "runtime": true,
+    "artifact": "resolve_multisample.native.json"
+  },
+  {
+    "entry": "deform_groundcover",
+    "runtime": true,
+    "artifact": "deform_groundcover.native.json"
+  },
+  {
+    "entry": "shade_fixed_vertices",
+    "runtime": true,
+    "artifact": "shade_fixed_vertices.native.json"
+  },
+  {
+    "entry": "assemble_fixed_lighting",
+    "runtime": true,
+    "artifact": "assemble_fixed_lighting.native.json"
+  },
+  {
+    "entry": "pack_cluster_lights",
+    "runtime": true,
+    "artifact": "pack_cluster_lights.native.json"
+  },
+  {
+    "entry": "build_light_clusters",
+    "runtime": true,
+    "artifact": "build_light_clusters.native.json"
+  },
+  {
+    "entry": "cull_cluster_lights",
+    "runtime": true,
+    "artifact": "cull_cluster_lights.native.json"
+  },
+  {
+    "entry": "shade_vertex_lighting",
+    "runtime": true,
+    "artifact": "shade_vertex_lighting.native.json"
+  },
+  {
+    "entry": "assemble_vertex_lighting",
+    "runtime": true,
+    "artifact": "assemble_vertex_lighting.native.json"
+  },
+  {
+    "entry": "generate_depth_mip",
+    "runtime": true,
+    "artifact": "generate_depth_mip.native.json"
+  },
+  {
+    "entry": "generate_texture_coordinates",
+    "runtime": true,
+    "artifact": "generate_texture_coordinates.native.json"
+  },
+  {
+    "entry": "expand_screen_primitives",
+    "runtime": true,
+    "artifact": "expand_screen_primitives.native.json"
+  },
+  {
+    "entry": "assemble_ribbon",
+    "runtime": true,
+    "artifact": "assemble_ribbon.native.json"
+  },
+  {
+    "entry": "prepare_ribbon",
+    "runtime": true,
+    "artifact": "prepare_ribbon.native.json"
+  },
+  {
+    "entry": "debug_scene",
+    "runtime": true,
+    "artifact": "debug_scene.native.json"
+  },
+  {
+    "entry": "place_postprocess",
+    "runtime": true,
+    "artifact": "place_postprocess.native.json"
+  },
+  {
+    "entry": "map_viewport",
+    "runtime": true,
+    "artifact": "map_viewport.native.json"
+  },
+  {
+    "entry": "copy_stencil",
+    "runtime": true,
+    "artifact": "copy_stencil.native.json"
+  },
+  {
+    "entry": "store_postprocess_color",
+    "runtime": true,
+    "artifact": "store_postprocess_color.native.json"
+  },
+  {
+    "entry": "bloom_extract",
+    "runtime": true,
+    "artifact": "bloom_extract.native.json"
+  },
+  {
+    "entry": "bloom_blur",
+    "runtime": true,
+    "artifact": "bloom_blur.native.json"
+  },
+  {
+    "entry": "bloom_combine",
+    "runtime": true,
+    "artifact": "bloom_combine.native.json"
+  },
+  {
+    "entry": "scene_log_luminance",
+    "runtime": true,
+    "artifact": "scene_log_luminance.native.json"
+  },
+  {
+    "entry": "reduce_luminance",
+    "runtime": true,
+    "artifact": "reduce_luminance.native.json"
+  },
+  {
+    "entry": "adapt_luminance",
+    "runtime": true,
+    "artifact": "adapt_luminance.native.json"
+  },
+  {
+    "entry": "adjust_scene",
+    "runtime": true,
+    "artifact": "adjust_scene.native.json"
+  },
+  {
+    "entry": "prefix_tile_blocks",
+    "runtime": true,
+    "artifact": "prefix_tile_blocks.native.json"
+  },
+  {
+    "entry": "prefix_tile_block_totals",
+    "runtime": true,
+    "artifact": "prefix_tile_block_totals.native.json"
+  },
+  {
+    "entry": "finish_tile_prefix",
+    "runtime": true,
+    "artifact": "finish_tile_prefix.native.json"
+  },
+  {
+    "entry": "copy_tile_offsets",
+    "runtime": true,
+    "artifact": "copy_tile_offsets.native.json"
+  },
+  {
+    "entry": "clear_tile_counts",
+    "runtime": true,
+    "artifact": "clear_tile_counts.native.json"
+  },
+  {
+    "entry": "bin_triangle_bounds",
+    "runtime": true,
+    "artifact": "bin_triangle_bounds.native.json"
+  },
+  {
+    "entry": "summarize_tile_counts",
+    "runtime": true,
+    "artifact": "summarize_tile_counts.native.json"
+  },
+  {
+    "entry": "sort_tile_candidates",
+    "runtime": true,
+    "artifact": "sort_tile_candidates.native.json"
+  },
+  {
+    "entry": "decode_float_image",
+    "runtime": true,
+    "artifact": "decode_float_image.native.json"
+  },
+  {
+    "entry": "project_particles",
+    "runtime": true,
+    "artifact": "project_particles.native.json"
+  },
+  {
+    "entry": "resolve_scene",
+    "runtime": true,
+    "artifact": "resolve_scene.native.json"
+  },
+  {
+    "entry": "skin_vertices",
+    "runtime": true,
+    "artifact": "skin_vertices.native.json"
+  },
+  {
+    "entry": "morph_vertices",
+    "runtime": true,
+    "artifact": "morph_vertices.native.json"
+  },
+  {
+    "entry": "clear_depth",
+    "runtime": true,
+    "artifact": "clear_depth.native.json"
+  },
+  {
+    "entry": "ripple_blob",
+    "runtime": true,
+    "artifact": "ripple_blob.native.json"
+  },
+  {
+    "entry": "ripple_simulate",
+    "runtime": true,
+    "artifact": "ripple_simulate.native.json"
+  },
+  {
+    "entry": "generate_float_mip",
+    "runtime": true,
+    "artifact": "generate_float_mip.native.json"
+  },
+  {
+    "entry": "float_target_to_texture",
+    "runtime": true,
+    "artifact": "float_target_to_texture.native.json"
+  },
+  {
+    "entry": "expand_particles",
+    "runtime": true,
+    "artifact": "expand_particles.native.json"
+  },
+  {
+    "entry": "resolve_camera",
+    "runtime": true,
+    "artifact": "resolve_camera.native.json"
+  },
+  {
+    "entry": "transform_vertices",
+    "runtime": false,
+    "artifact": "transform_vertices.native.json"
+  },
+  {
+    "entry": "raster_reference",
+    "runtime": false,
+    "artifact": "raster_reference.native.json"
+  },
+  {
+    "entry": "clip_triangles",
+    "runtime": true,
+    "artifact": "clip_triangles.native.json"
+  },
+  {
+    "entry": "pack_present",
+    "runtime": false,
+    "artifact": "pack_present.native.json"
+  },
+  {
+    "entry": "bin_triangles",
+    "runtime": true,
+    "artifact": "bin_triangles.native.json"
+  },
+  {
+    "entry": "raster_tiled",
+    "runtime": false,
+    "artifact": "raster_tiled.native.json"
+  },
+  {
+    "entry": "clear_target",
+    "runtime": true,
+    "artifact": "clear_target.native.json"
+  },
+  {
+    "entry": "clear_attachment",
+    "runtime": true,
+    "artifact": "clear_attachment.native.json"
+  },
+  {
+    "entry": "generate_mip",
+    "runtime": true,
+    "artifact": "generate_mip.native.json"
+  },
+  {
+    "entry": "raster_material",
+    "runtime": true,
+    "artifact": "raster_material.native.json"
+  },
+  {
+    "entry": "pack_target",
+    "runtime": true,
+    "artifact": "pack_target.native.json"
+  },
+  {
+    "entry": "target_to_texture",
+    "runtime": true,
+    "artifact": "target_to_texture.native.json"
+  },
+  {
+    "entry": "depth_to_texture",
+    "runtime": true,
+    "artifact": "depth_to_texture.native.json"
+  },
+  {
+    "entry": "copy_depth",
+    "runtime": true,
+    "artifact": "copy_depth.native.json"
+  },
+  {
+    "entry": "copy_normals",
+    "runtime": true,
+    "artifact": "copy_normals.native.json"
+  },
+  {
+    "entry": "normals_to_texture",
+    "runtime": true,
+    "artifact": "normals_to_texture.native.json"
+  },
+  {
+    "entry": "transform_attributes",
+    "runtime": true,
+    "artifact": "transform_attributes.native.json"
+  },
+  {
+    "entry": "assemble_attributes",
+    "runtime": true,
+    "artifact": "assemble_attributes.native.json"
+  },
+  {
+    "entry": "transform_material",
+    "runtime": true,
+    "artifact": "transform_material.native.json"
+  },
+  {
+    "entry": "transform_uv",
+    "runtime": true,
+    "artifact": "transform_uv.native.json"
+  },
+  {
+    "entry": "assemble_material",
+    "runtime": true,
+    "artifact": "assemble_material.native.json"
+  },
+  {
+    "entry": "decode_dxt",
+    "runtime": true,
+    "artifact": "decode_dxt.native.json"
+  }
+]

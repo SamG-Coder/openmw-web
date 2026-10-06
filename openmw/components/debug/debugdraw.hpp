@@ -2,6 +2,7 @@
 #define OPENMW_COMPONENTS_DEBUG_DEBUGDRAW_H
 
 #include <osg/Drawable>
+#include <components/webcuda/submission.hpp>
 #include <osg/Vec3>
 #include <osg/ref_ptr>
 
@@ -71,7 +72,7 @@ namespace Debug
         }
     };
 
-    class DebugCustomDraw : public osg::Drawable
+    class DebugCustomDraw : public osg::Drawable, public WebCuda::CustomDrawable
     {
     public:
         DebugCustomDraw();
@@ -88,6 +89,7 @@ namespace Debug
         osg::ref_ptr<osg::Geometry> mWireCubeGeometry;
 
         virtual void drawImplementation(osg::RenderInfo&) const override;
+        void submitWebCuda(WebCuda::SubmissionSink&, const WebCuda::DrawContext&) const override;
     };
 
     struct DebugDrawer : public osg::Node

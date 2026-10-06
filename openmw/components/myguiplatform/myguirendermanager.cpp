@@ -1,6 +1,7 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "myguirendermanager.hpp"
+#include <components/webcuda/submission.hpp>
 
 #include <MyGUI_Timer.h>
 
@@ -46,7 +47,7 @@
 namespace MyGUIPlatform
 {
 
-    class Drawable : public osg::Drawable
+    class Drawable : public osg::Drawable, public WebCuda::CustomDrawable
     {
         MyGUIPlatform::RenderManager* mParent;
         osg::ref_ptr<osg::StateSet> mStateSet;
@@ -262,6 +263,21 @@ namespace MyGUIPlatform
 
             size_t mVertexCount;
         };
+
+        void submitWebCuda(WebCuda::SubmissionSink& sink, const WebCuda::DrawContext& parent) const override
+        {
+            WebCuda::DrawContext context = parent;
+            context.states.push_back(mStateSet.get());
+            // Cull has just populated mWriteTo. WebCuda consumes that data
+            // synchronously and does not advance the OpenGL draw-ring cursor.
+            for (const Batch& batch : mBatchVector[mWriteTo])
+            {
+                if (!batch.mArray || !batch.mVertexCount) continue;
+                if (batch.mStateSet) context.states.push_back(batch.mStateSet.get());
+                sink.gui(*batch.mArray, batch.mVertexCount, batch.mTexture.get(), context);
+                if (batch.mStateSet) context.states.pop_back();
+            }
+        }
 
         void addBatch(const Batch& batch) { mBatchVector[mWriteTo].push_back(batch); }
 

@@ -41,6 +41,7 @@ namespace MWBase
         virtual void requestQuit() = 0;
 
         virtual bool hasQuitRequest() const = 0;
+        virtual bool isRenderCapturePending() const { return false; }
 
         virtual void askLoadRecent() = 0;
 

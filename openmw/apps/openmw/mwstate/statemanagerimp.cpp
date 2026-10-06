@@ -1,6 +1,7 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "statemanagerimp.hpp"
+#include <components/webcuda/viewer.hpp>
 
 #include "../mwmp/netmanager.hpp"
 
@@ -60,6 +61,7 @@
 
 void MWState::StateManager::cleanup(bool force)
 {
+    mPendingSave.reset();
     if (mState != State_NoGame || force)
     {
         MWBase::Environment::get().getSoundManager()->clear();
@@ -122,7 +124,8 @@ void MWState::StateManager::requestQuit()
 
 bool MWState::StateManager::hasQuitRequest() const
 {
-    return mQuitRequest;
+    // A queued save must finish (or report failure) before a subsequent quit.
+    return mQuitRequest&&!mPendingSave;
 }
 
 void MWState::StateManager::askLoadRecent()
@@ -224,6 +227,30 @@ void MWState::StateManager::resumeGame()
 
 void MWState::StateManager::saveGame(std::string_view description, const Slot* slot)
 {
+    if(!WebCuda::Viewer::requested()||MWMP::NetManager::instance().state()==MWMP::NetManager::State::Joined) {
+        saveGameWithScreenshot(description,slot,nullptr);return;
+    }
+    if(mPendingSave) {
+        MWBase::Environment::get().getWindowManager()->messageBox("A save is already waiting for its thumbnail.");return;
+    }
+    auto pending=std::make_shared<PendingSave>();pending->description=description;
+    if(const auto* character=getCurrentCharacter())pending->characterPath=character->getPath();
+    if(slot)pending->slotPath=slot->mPath;
+    mPendingSave=pending;
+    try {
+        MWBase::Environment::get().getWorld()->screenshotAsync(518,266,
+            [weak=std::weak_ptr<PendingSave>(pending)](osg::ref_ptr<osg::Image> image,std::string error) {
+                if(auto request=weak.lock()) {request->image=std::move(image);request->error=std::move(error);request->ready=true;}
+            });
+    } catch(const std::exception& e) {
+        mPendingSave.reset();
+        Log(Debug::Error)<<"Save thumbnail request failed: "<<e.what();
+        MWBase::Environment::get().getWindowManager()->messageBox("Unable to capture the save thumbnail.");
+    }
+}
+
+void MWState::StateManager::saveGameWithScreenshot(std::string_view description,const Slot* slot,const osg::Image* captured)
+{
     // MP (Phase 5): THE SERVER KEEPS THE SAVE. A client-side savegame of a server-owned
     // world is a fork the server will never honour — loading it would rewind quests,
     // inventory and position that live authoritatively in the world's PlayerDoc. One guard
@@ -284,7 +311,7 @@ void MWState::StateManager::saveGame(std::string_view description, const Slot* s
         profile.mMaximumHealth = stats.getHealth().getModified();
 
         Log(Debug::Info) << "Making a screenshot for saved game '" << description << "'";
-        writeScreenshot(profile.mScreenshot);
+        writeScreenshot(profile.mScreenshot,captured);
 
         if (!slot)
             slot = character->createSlot(profile);
@@ -866,6 +893,26 @@ void MWState::StateManager::update(float duration)
         loadGame(character, mLoadRequest->second);
         mLoadRequest = std::nullopt;
     }
+    if(mPendingSave
+        &&std::chrono::steady_clock::now()-mPendingSave->started>std::chrono::seconds(30)) {
+        mPendingSave->error="Save render capture timed out";mPendingSave->image=nullptr;mPendingSave->ready=true;
+    }
+    if(mPendingSave&&mPendingSave->ready
+        &&(!mPendingSave->error.empty()||MWBase::Environment::get().getWindowManager()->isMapSaveReady())) {
+        auto request=std::move(mPendingSave);
+        const auto* character=getCurrentCharacter();
+        const auto currentPath=character?character->getPath():std::filesystem::path();
+        const Slot* slot=nullptr;
+        if(character&&!request->slotPath.empty())
+            for(auto it=character->begin();it!=character->end();++it)if(it->mPath==request->slotPath){slot=&*it;break;}
+        if(!request->error.empty()||!request->image||currentPath!=request->characterPath||(!request->slotPath.empty()&&!slot)) {
+            Log(Debug::Error)<<"Deferred save canceled: "<<(request->error.empty()?"thumbnail or destination unavailable":request->error);
+            MWBase::Environment::get().getWindowManager()->messageBox("Save canceled because its render captures or destination are unavailable.");
+        } else {
+            // Resume on the update path, never inside a renderer callback.
+            saveGameWithScreenshot(request->description,slot,request->image.get());
+        }
+    }
 }
 
 bool MWState::StateManager::confirmLoading(const std::vector<std::string_view>& missingFiles) const
@@ -931,13 +978,13 @@ bool MWState::StateManager::confirmLoading(const std::vector<std::string_view>& 
     return true;
 }
 
-void MWState::StateManager::writeScreenshot(std::vector<char>& imageData) const
+void MWState::StateManager::writeScreenshot(std::vector<char>& imageData,const osg::Image* captured) const
 {
     int screenshotW = 259 * 2, screenshotH = 133 * 2; // *2 to get some nice antialiasing
 
     osg::ref_ptr<osg::Image> screenshot(new osg::Image);
 
-    MWBase::Environment::get().getWorld()->screenshot(screenshot.get(), screenshotW, screenshotH);
+    if(!captured)MWBase::Environment::get().getWorld()->screenshot(screenshot.get(), screenshotW, screenshotH);
 
     osgDB::ReaderWriter* readerwriter = osgDB::Registry::instance()->getReaderWriterForExtension("jpg");
     if (!readerwriter)
@@ -947,7 +994,7 @@ void MWState::StateManager::writeScreenshot(std::vector<char>& imageData) const
     }
 
     std::ostringstream ostream;
-    osgDB::ReaderWriter::WriteResult result = readerwriter->writeImage(*screenshot, ostream);
+    osgDB::ReaderWriter::WriteResult result = readerwriter->writeImage(captured?*captured:*screenshot, ostream);
     if (!result.success())
     {
         Log(Debug::Error) << "Error: Unable to write screenshot: " << result.message() << " code " << result.status();

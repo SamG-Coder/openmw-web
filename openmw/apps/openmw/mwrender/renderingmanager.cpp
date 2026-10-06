@@ -858,6 +858,11 @@ namespace MWRender
         mPostProcessor->getStateUpdater()->setWaterHeight(height);
     }
 
+    void RenderingManager::screenshotAsync(int w,int h,std::function<void(osg::ref_ptr<osg::Image>,std::string)> completion)
+    {
+        mScreenshotManager->screenshotAsync(w,h,std::move(completion));
+    }
+
     void RenderingManager::screenshot(osg::Image* image, int w, int h)
     {
         mScreenshotManager->screenshot(image, w, h);

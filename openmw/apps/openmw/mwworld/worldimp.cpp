@@ -2396,6 +2396,11 @@ namespace MWWorld
         return mRendering->getAnimation(ptr);
     }
 
+    void World::screenshotAsync(int w,int h,std::function<void(osg::ref_ptr<osg::Image>,std::string)> completion)
+    {
+        mRendering->screenshotAsync(w,h,std::move(completion));
+    }
+
     void World::screenshot(osg::Image* image, int w, int h)
     {
         mRendering->screenshot(image, w, h);

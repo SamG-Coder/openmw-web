@@ -1,0 +1,105 @@
+{
+  "name": "seed_multisample",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "source",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "samples",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "pixel_count",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "sample_count",
+        "type": "u32",
+        "offset": 4
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 7740,
+      "beforeBytes": 7740,
+      "afterBytes": 1381,
+      "functionsBefore": 10,
+      "functionsAfter": 1,
+      "removedFunctions": [
+        "cw_divide_f32",
+        "f_render_power",
+        "f_expand_half",
+        "f_contract_half",
+        "f_round_half",
+        "f_srgb_to_linear",
+        "f_linear_to_srgb",
+        "f_store_color_value",
+        "f_store_depth_value"
+      ],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 958,
+          "transitiveBytes": 958,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Storage-format conversion, authored once for native CUDA and WebCuda.\r\n// Rendering power bases and exponents are nonnegative. Spell out the float operation so\r\n// WebCuda does not pull software f64 integer-power emulation into every shader.\r\n// Zero is handled before log2, including the material convention pow(0,0)=1.\r\n// Like GPU shader pow, this is approximate; it is not a general libm replacement.\r\n__device__ float render_power(float base,float exponent) {\n\n\r\n    if(exponent==0.0f||base==1.0f)return 1.0f;\r\n    if(base==0.0f)return 0.0f;\r\n    return exp2f(exponent*log2f(base));\r\n}\r\n\r\n__device__ unsigned int expand_half(unsigned int value) {\n\n\r\n    unsigned int sign=(value&32768u)<<16,exponent=(value>>10)&31u,mantissa=value&1023u;\r\n    if(exponent==31u)return sign|2139095040u|(mantissa<<13);\r\n    if(exponent==0u) {\r\n        if(mantissa==0u)return sign;\r\n        unsigned int shift=0u;\r\n        while((mantissa&1024u)==0u){mantissa=mantissa<<1;shift++;}\r\n        return sign|((113u-shift)<<23)|((mantissa&1023u)<<13);\r\n    }\r\n    return sign|((exponent+112u)<<23)|(mantissa<<13);\r\n}\r\n\r\n__device__ unsigned int contract_half(float value) {\n\n\r\n    unsigned int bits=__float_as_uint(value),sign=(bits>>16)&32768u;\r\n    unsigned int exponent=(bits>>23)&255u,mantissa=bits&8388607u;\r\n    if(exponent==255u)return sign|31744u|(mantissa!=0u?512u|(mantissa>>13):0u);\r\n    int adjusted=(int)exponent-112;\r\n    if(adjusted>=31)return sign|31744u;\r\n    if(adjusted<=0) {\r\n        if(adjusted< -10)return sign;\r\n        mantissa|=8388608u;\r\n        unsigned int shift=(unsigned int)(14-adjusted),rounded=mantissa>>shift;\r\n        unsigned int remainder=mantissa&((1u<<shift)-1u),halfway=1u<<(shift-1u);\r\n        if(remainder>halfway||(remainder==halfway&&(rounded&1u)!=0u))rounded++;\r\n        return sign|rounded;\r\n    }\r\n    unsigned int rounded=mantissa+4095u+((mantissa>>13)&1u);\r\n    if((rounded&8388608u)!=0u){rounded=0u;adjusted++;}\r\n    if(adjusted>=31)return sign|31744u;\r\n    return sign|((unsigned int)adjusted<<10)|(rounded>>13);\r\n}\r\n__device__ float round_half(float value) {\n\n\r\n    return __uint_as_float(expand_half(contract_half(value)));\r\n}\r\n\r\n// sRGB atlas values are stored decoded, so filtering operates in linear space.\r\n__device__ float srgb_to_linear(float value) {\n\n\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.04045f?value/12.92f:render_power((value+0.055f)/1.055f,2.4f);\r\n}\r\n__device__ float linear_to_srgb(float value) {\n\n\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.0031308f?value*12.92f:1.055f*render_power(value,1.0f/2.4f)-0.055f;\r\n}\r\n\r\n__device__ float store_color_value(float value,unsigned int channel,unsigned int channels,unsigned int storage) {\n\n\r\n    if(channel>=channels)return channel==3u?1.0f:0.0f;\r\n    if(storage==0u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*255.0f+0.5f)/255.0f;\r\n    if(storage==1u)return round_half(value);\r\n    if(storage==4u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*65535.0f+0.5f)/65535.0f;\r\n    if(storage==5u||storage==6u) {\r\n        float maximum=storage==5u?127.0f:32767.0f;\r\n        return floorf(fminf(1.0f,fmaxf(-1.0f,value))*maximum+0.5f)/maximum;\r\n    }\r\n    if(storage==3u) {\r\n        float encoded=channel<3u?linear_to_srgb(value):fminf(1.0f,fmaxf(0.0f,value));\r\n        encoded=floorf(encoded*255.0f+0.5f)/255.0f;\r\n        return channel<3u?srgb_to_linear(encoded):encoded;\r\n    }\r\n    return value;\r\n}\r\n\r\n__device__ float store_depth_value(float value,unsigned int bits) {\n\n\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    if(bits==0u)return value;\r\n    float maximum=bits==16u?65535.0f:16777215.0f;\r\n    return fminf(1.0f,floorf(value*maximum+0.5f)/maximum);\r\n}\r\n\r\n// Each sample plane uses the existing attachment ABI: pixels*9 float color,\r\n// depth and normals, followed by pixels float stencil. Planes are contiguous.\r\n__global__ void seed_multisample(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_samples,unsigned int pixel_count,unsigned int sample_count) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<float> samples(omw_pages_samples);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=pixel_count*sample_count)return;\r\n    unsigned int pixel=i%pixel_count,sample=i/pixel_count,base=sample*pixel_count*10;\r\n    for(unsigned int channel=0;channel<9;channel++)samples[base+pixel*9+channel]=source[pixel*9+channel];\r\n    samples[base+pixel_count*9+pixel]=source[pixel_count*9+pixel];\r\n}\r\n// Color/normal samples average in the linear representation used by the target\r\n// ABI, then quantize to destination storage. Depth/stencil select one sample;\r\n// they are never numerically averaged. The caller supplies that sample index.\r\n__global__ void resolve_multisample(const unsigned long long* omw_pages_samples,const unsigned long long* omw_pages_target,unsigned int pixel_count,unsigned int sample_count,\r\n    unsigned int mask,unsigned int depth_sample,unsigned int normal_enabled,unsigned int normal_channels,unsigned int normal_storage,unsigned int color_channels,\r\n    unsigned int color_storage,unsigned int depth_bits,unsigned int stencil_enabled) {\nOmwPaged<const float> samples(omw_pages_samples);\nOmwPaged<float> target(omw_pages_target);\n\r\n    unsigned int pixel=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(pixel>=pixel_count)return;\r\n    if((mask&16384)!=0) {\r\n        for(unsigned int channel=0;channel<4;channel++) {\r\n            float color=0.0f,normal=0.0f;\r\n            for(unsigned int sample=0;sample<sample_count;sample++) {\r\n                unsigned int base=sample*pixel_count*10+pixel*9;\r\n                color+=samples[base+channel];\r\n                if(normal_enabled!=0)normal+=samples[base+5+channel];\r\n            }\r\n            target[pixel*9+channel]=store_color_value(color/(float)sample_count,channel,color_channels,color_storage);\r\n            if(normal_enabled!=0)target[pixel*9+5+channel]=store_color_value(normal/(float)sample_count,channel,normal_channels,normal_storage);\r\n        }\r\n    }\r\n    unsigned int selected=depth_sample*pixel_count*10;\r\n    if((mask&256)!=0)target[pixel*9+4]=store_depth_value(samples[selected+pixel*9+4],depth_bits);\r\n    if(stencil_enabled!=0&&(mask&1024)!=0)target[pixel_count*9+pixel]=samples[selected+pixel_count*9+pixel];\r\n}\r\n\r\n// plane0 depth, plane1 normal RGBA, plane2 stencil. Preserve all other planes.\r\n__global__ void copy_multisample_plane(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_target,unsigned int pixel_count,unsigned int sample_count,unsigned int plane) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<float> target(omw_pages_target);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=pixel_count*sample_count)return;\r\n    unsigned int pixel=i%pixel_count,base=(i/pixel_count)*pixel_count*10;\r\n    if(plane==0u)target[base+pixel*9+4]=source[base+pixel*9+4];\r\n    if(plane==1u)for(unsigned int channel=0;channel<4;channel++)target[base+pixel*9+5+channel]=source[base+pixel*9+5+channel];\r\n    if(plane==2u)target[base+pixel_count*9+pixel]=source[base+pixel_count*9+pixel];\r\n}\r\n__global__ void clear_multisample_depth(const unsigned long long* omw_pages_target,unsigned int pixel_count,unsigned int sample_count,float depth) {\nOmwPaged<float> target(omw_pages_target);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=pixel_count*sample_count)return;\r\n    unsigned int pixel=i%pixel_count,base=(i/pixel_count)*pixel_count*10;\r\n    target[base+pixel*9+4]=depth;\r\n}\r\n\r\n// Fullscreen postprocess writes are pixel shaded and broadcast to covered\r\n// samples. Preserve depth/stencil/normals and pixels outside the viewport.\r\n__global__ void broadcast_multisample_color(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_target,unsigned int width,unsigned int height,unsigned int sample_count,\r\n    int viewport_x,int viewport_y,unsigned int viewport_width,unsigned int viewport_height) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<float> target(omw_pages_target);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x,pixels=width*height;\r\n    if(i>=pixels*sample_count)return;\r\n    unsigned int pixel=i%pixels,base=(i/pixels)*pixels*10;\r\n    float x=(float)(pixel%width)+0.5f,y=(float)height-(float)(pixel/width)-0.5f;\r\n    if(x<(float)viewport_x||y<(float)viewport_y||x>=(float)viewport_x+(float)viewport_width||y>=(float)viewport_y+(float)viewport_height)return;\r\n    for(unsigned int channel=0;channel<4;channel++)target[base+pixel*9+channel]=source[pixel*9+channel];\r\n}\r\n\r\n// Copy resolved attachments to the explicit resolve FBO's texture identities.\r\n__global__ void copy_resolved_attachment(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_target,unsigned int width,unsigned int height,unsigned int plane,\r\n    unsigned int color_channels,unsigned int color_storage,unsigned int depth_bits,int viewport_x,int viewport_y,unsigned int viewport_width,unsigned int viewport_height,unsigned int source_compact,unsigned int target_compact) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<float> target(omw_pages_target);\n\r\n    unsigned int pixel=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(pixel>=width*height)return;\r\n    float x=(float)(pixel%width)+0.5f,y=(float)height-(float)(pixel/width)-0.5f;\r\n    if(x<(float)viewport_x||y<(float)viewport_y||x>=(float)viewport_x+(float)viewport_width||y>=(float)viewport_y+(float)viewport_height)return;\r\n    if(plane==0u)for(unsigned int channel=0;channel<4;channel++)target[pixel*9+channel]=store_color_value(source[pixel*9+channel],channel,color_channels,color_storage);\r\n    if(plane==1u||plane==4u)target[target_compact!=0u?pixel:pixel*9+4]=store_depth_value(source[source_compact!=0u?pixel:pixel*9+4],depth_bits);\r\n    if(plane==2u)for(unsigned int channel=0;channel<4;channel++)target[pixel*9+5+channel]=store_color_value(source[pixel*9+5+channel],channel,color_channels,color_storage);\r\n    if(plane==3u||plane==4u)target[width*height*9+pixel]=source[width*height*9+pixel];\r\n}\r\n",
+    "entry": "seed_multisample",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "source",
+        "type": "buffer"
+      },
+      {
+        "name": "samples",
+        "type": "buffer"
+      },
+      {
+        "name": "pixel_count",
+        "type": "u32"
+      },
+      {
+        "name": "sample_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

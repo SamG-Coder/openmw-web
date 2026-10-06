@@ -1,4 +1,8 @@
 #include "actionmanager.hpp"
+#include <components/webcuda/viewer.hpp>
+#include <components/debug/debuglog.hpp>
+#include <osgViewer/ViewerEventHandlers>
+#include <osg/GraphicsContext>
 
 #include <cstdlib> // getenv: multiplayer console gate below
 
@@ -170,6 +174,25 @@ namespace MWInput
 
     void ActionManager::screenshot()
     {
+        if(auto* viewer=dynamic_cast<WebCuda::Viewer*>(mViewer.get())) {
+            const auto* camera=viewer->getCamera();
+            const auto* graphics=camera->getGraphicsContext();
+            const auto* traits=graphics?graphics->getTraits():nullptr;
+            const auto* viewport=camera->getViewport();
+            const int width=traits?traits->width:(viewport?static_cast<int>(viewport->width()):0);
+            const int height=traits?traits->height:(viewport?static_cast<int>(viewport->height()):0);
+            osg::ref_ptr<osgViewer::ScreenCaptureHandler::CaptureOperation> operation=mScreenCaptureHandler->getCaptureOperation();
+            if(width<=0||height<=0||!operation) {
+                Log(Debug::Error)<<"Unable to capture WebCuda screen: missing size or writer";return;
+            }
+            const unsigned int contextId=graphics&&graphics->getState()?graphics->getState()->getContextID():0;
+            viewer->captureImage(nullptr,width,height,[operation,contextId](osg::ref_ptr<osg::Image> image,std::string error) {
+                if(!image){Log(Debug::Error)<<"WebCuda screenshot failed: "<<error;return;}
+                try {(*operation)(*image,contextId);}
+                catch(const std::exception& e){Log(Debug::Error)<<"WebCuda screenshot writer failed: "<<e.what();}
+            });
+            return;
+        }
         mScreenCaptureHandler->setFramesToCapture(1);
         mScreenCaptureHandler->captureNextFrame(*mViewer);
     }

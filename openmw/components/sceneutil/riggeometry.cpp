@@ -1,4 +1,8 @@
 #include "riggeometry.hpp"
+#include <components/webcuda/deformation.hpp>
+#include <components/webcuda/viewer.hpp>
+#include <osg/UserDataContainer>
+#include <stdexcept>
 
 #include <osg/MatrixTransform>
 
@@ -159,6 +163,23 @@ namespace SceneUtil
         osg::Geometry& geom = *getGeometry(mLastFrameNumber);
 
         mSkeleton->updateBoneMatrices(traversalNumber);
+
+        if(WebCuda::Viewer::requested())
+        {
+            osg::ref_ptr<WebCuda::SkinInputs> inputs=new WebCuda::SkinInputs;
+            inputs->source=mSourceGeometry;inputs->transform=mData->mTransform;
+            if(mSkinToSkelMatrix)inputs->skinToSkeleton=*mSkinToSkelMatrix;
+            for(std::size_t i=0;i<mNodes.size();++i)
+                inputs->bones.push_back({mData->mBones[i].mInvBindMatrix,mNodes[i]?mNodes[i]->mMatrixInSkeletonSpace:osg::Matrixf(),mNodes[i]!=nullptr});
+            for(const auto& entry:mData->mInfluences)inputs->groups.push_back({entry.first,entry.second});
+            osg::ref_ptr<osg::UserDataContainer> metadata=geom.getUserDataContainer()
+                ?static_cast<osg::UserDataContainer*>(geom.getUserDataContainer()->clone(osg::CopyOp::SHALLOW_COPY)):new osg::DefaultUserDataContainer;
+            const auto old=metadata->getUserObjectIndex("webcuda.skin");
+            if(old<metadata->getNumUserObjects())metadata->removeUserObject(old);
+            metadata->addUserObject(inputs);geom.setUserDataContainer(metadata);
+            nv->pushOntoNodePath(&geom);nv->apply(geom);nv->popFromNodePath();
+            return;
+        }
 
         // skinning
         const osg::Vec3Array* positionSrc = static_cast<osg::Vec3Array*>(mSourceGeometry->getVertexArray());
@@ -399,6 +420,37 @@ namespace SceneUtil
 
     void RigGeometry::accept(osg::PrimitiveFunctor& func) const
     {
+        if(WebCuda::Viewer::requested())
+        {
+            const auto* metadata=getGeometry(mLastFrameNumber)->getUserDataContainer();
+            const auto* inputs=metadata?dynamic_cast<const WebCuda::SkinInputs*>(metadata->getUserObject("webcuda.skin")):nullptr;
+            if(inputs)
+            {
+                const auto* source=dynamic_cast<const osg::Vec3Array*>(inputs->source->getVertexArray());
+                if(!source)throw std::runtime_error("Skin query requires Vec3 source positions");
+                osg::ref_ptr<osg::Vec3Array> positions=new osg::Vec3Array(*source,osg::CopyOp::DEEP_COPY_ALL);
+                const osg::Matrixf transform=inputs->skinToSkeleton*inputs->transform;
+                for(const auto& group:inputs->groups)
+                {
+                    osg::Matrixf result(0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1);
+                    for(const auto& [index,weight]:group.weights)
+                    {
+                        if(index>=inputs->bones.size())throw std::runtime_error("Skin query bone index out of range");
+                        const auto& bone=inputs->bones[index];if(!bone.valid)continue;
+                        const osg::Matrixf matrix=bone.bind*bone.pose;
+                        for(unsigned int row=0;row<4;++row)for(unsigned int col=0;col<3;++col)result(row,col)+=matrix(row,col)*weight;
+                    }
+                    result*=transform;
+                    for(auto vertex:group.vertices)
+                    {
+                        if(vertex>=source->size())throw std::runtime_error("Skin query vertex out of range");
+                        (*positions)[vertex]=result.preMult((*source)[vertex]);
+                    }
+                }
+                osg::ref_ptr<osg::Geometry> query=new osg::Geometry(*inputs->source,osg::CopyOp::SHALLOW_COPY);
+                query->setVertexArray(positions);query->accept(func);return;
+            }
+        }
         getGeometry(mLastFrameNumber)->accept(func);
     }
 

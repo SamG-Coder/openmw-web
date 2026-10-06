@@ -2,6 +2,9 @@
 #define GAME_STATE_STATEMANAGER_H
 
 #include <filesystem>
+#include <memory>
+#include <chrono>
+#include <osg/Image>
 #include <map>
 #include <utility>
 
@@ -29,7 +32,16 @@ namespace MWState
 
         bool confirmLoading(const std::vector<std::string_view>& missingFiles) const;
 
-        void writeScreenshot(std::vector<char>& imageData) const;
+        struct PendingSave {
+            std::string description,error;
+            std::filesystem::path characterPath,slotPath;
+            osg::ref_ptr<osg::Image> image;
+            bool ready=false;
+            std::chrono::steady_clock::time_point started=std::chrono::steady_clock::now();
+        };
+        std::shared_ptr<PendingSave> mPendingSave;
+        void saveGameWithScreenshot(std::string_view,const Slot*,const osg::Image*);
+        void writeScreenshot(std::vector<char>& imageData,const osg::Image* captured=nullptr) const;
 
         std::map<int, int> buildContentFileIndexMap(const ESM::ESMReader& reader) const;
 
@@ -39,6 +51,7 @@ namespace MWState
         void requestQuit() override;
 
         bool hasQuitRequest() const override;
+        bool isRenderCapturePending() const override { return static_cast<bool>(mPendingSave); }
 
         void askLoadRecent() override;
 

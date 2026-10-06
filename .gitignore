@@ -178,3 +178,10 @@ dist/
 
 # harness logs written by ci/jenkins/run-harness.sh
 wasm-build/harness-out/
+
+# Local WebCuda engine staging, game-data junctions and generation logs.
+/.local-runtime/
+/render/webcuda/generation.log
+/Start-OpenMW.ps1
+/Stop-OpenMW.ps1
+/Start OpenMW.bat

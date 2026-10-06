@@ -1,0 +1,45 @@
+{
+  "name": "decode_dxt",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Storage-format conversion, authored once for native CUDA and WebCuda.\r\n// Rendering power bases and exponents are nonnegative. Spell out the float operation so\r\n// WebCuda does not pull software f64 integer-power emulation into every shader.\r\n// Zero is handled before log2, including the material convention pow(0,0)=1.\r\n// Like GPU shader pow, this is approximate; it is not a general libm replacement.\r\n__device__ float render_power(float base,float exponent) {\r\n    if(exponent==0.0f||base==1.0f)return 1.0f;\r\n    if(base==0.0f)return 0.0f;\r\n    return exp2f(exponent*log2f(base));\r\n}\r\n\r\n__device__ unsigned int expand_half(unsigned int value) {\r\n    unsigned int sign=(value&32768u)<<16,exponent=(value>>10)&31u,mantissa=value&1023u;\r\n    if(exponent==31u)return sign|2139095040u|(mantissa<<13);\r\n    if(exponent==0u) {\r\n        if(mantissa==0u)return sign;\r\n        unsigned int shift=0u;\r\n        while((mantissa&1024u)==0u){mantissa=mantissa<<1;shift++;}\r\n        return sign|((113u-shift)<<23)|((mantissa&1023u)<<13);\r\n    }\r\n    return sign|((exponent+112u)<<23)|(mantissa<<13);\r\n}\r\n\r\n__device__ unsigned int contract_half(float value) {\r\n    unsigned int bits=__float_as_uint(value),sign=(bits>>16)&32768u;\r\n    unsigned int exponent=(bits>>23)&255u,mantissa=bits&8388607u;\r\n    if(exponent==255u)return sign|31744u|(mantissa!=0u?512u|(mantissa>>13):0u);\r\n    int adjusted=(int)exponent-112;\r\n    if(adjusted>=31)return sign|31744u;\r\n    if(adjusted<=0) {\r\n        if(adjusted< -10)return sign;\r\n        mantissa|=8388608u;\r\n        unsigned int shift=(unsigned int)(14-adjusted),rounded=mantissa>>shift;\r\n        unsigned int remainder=mantissa&((1u<<shift)-1u),halfway=1u<<(shift-1u);\r\n        if(remainder>halfway||(remainder==halfway&&(rounded&1u)!=0u))rounded++;\r\n        return sign|rounded;\r\n    }\r\n    unsigned int rounded=mantissa+4095u+((mantissa>>13)&1u);\r\n    if((rounded&8388608u)!=0u){rounded=0u;adjusted++;}\r\n    if(adjusted>=31)return sign|31744u;\r\n    return sign|((unsigned int)adjusted<<10)|(rounded>>13);\r\n}\r\n__device__ float round_half(float value) {\r\n    return __uint_as_float(expand_half(contract_half(value)));\r\n}\r\n\r\n// sRGB atlas values are stored decoded, so filtering operates in linear space.\r\n__device__ float srgb_to_linear(float value) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.04045f?value/12.92f:render_power((value+0.055f)/1.055f,2.4f);\r\n}\r\n__device__ float linear_to_srgb(float value) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.0031308f?value*12.92f:1.055f*render_power(value,1.0f/2.4f)-0.055f;\r\n}\r\n\r\n__device__ float store_color_value(float value,unsigned int channel,unsigned int channels,unsigned int storage) {\r\n    if(channel>=channels)return channel==3u?1.0f:0.0f;\r\n    if(storage==0u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*255.0f+0.5f)/255.0f;\r\n    if(storage==1u)return round_half(value);\r\n    if(storage==4u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*65535.0f+0.5f)/65535.0f;\r\n    if(storage==5u||storage==6u) {\r\n        float maximum=storage==5u?127.0f:32767.0f;\r\n        return floorf(fminf(1.0f,fmaxf(-1.0f,value))*maximum+0.5f)/maximum;\r\n    }\r\n    if(storage==3u) {\r\n        float encoded=channel<3u?linear_to_srgb(value):fminf(1.0f,fmaxf(0.0f,value));\r\n        encoded=floorf(encoded*255.0f+0.5f)/255.0f;\r\n        return channel<3u?srgb_to_linear(encoded):encoded;\r\n    }\r\n    return value;\r\n}\r\n\r\n__device__ float store_depth_value(float value,unsigned int bits) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    if(bits==0u)return value;\r\n    float maximum=bits==16u?65535.0f:16777215.0f;\r\n    return fminf(1.0f,floorf(value*maximum+0.5f)/maximum);\r\n}\r\n\r\n// Decode little-endian S3TC blocks to packed RGBA8 without OpenGL. Formats:\r\n// 1 = DXT1 RGBA, 2 = DXT1 RGB, 3 = DXT3, 5 = DXT5. One thread per 4x4 block.\r\n__global__ void decode_dxt(const unsigned int* blocks, unsigned int* pixels,\r\n                          unsigned int width, unsigned int height, unsigned int format,\r\n                          unsigned int block_offset, unsigned int pixel_offset) {\r\n    unsigned int linear_output=format&65536u;\r\n    unsigned int channels=(format>>8u)&7u;\r\n    unsigned int encoding=format&255u;\r\n    unsigned int block = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\r\n    unsigned int columns=(width+3)/4;\r\n    if (block >= columns*((height+3)/4)) return;\r\n    unsigned int base=block_offset+block*((encoding==1 || encoding==2)?2:4);\r\n    unsigned int colorbase=base+((encoding==1 || encoding==2)?0:2);\r\n    unsigned int endpoints=blocks[colorbase];\r\n    unsigned int c0=endpoints&65535; unsigned int c1=endpoints>>16;\r\n    unsigned int r0=(c0>>11)&31; r0=(r0<<3)|(r0>>2);\r\n    unsigned int g0=(c0>>5)&63; g0=(g0<<2)|(g0>>4);\r\n    unsigned int b0=c0&31; b0=(b0<<3)|(b0>>2);\r\n    unsigned int r1=(c1>>11)&31; r1=(r1<<3)|(r1>>2);\r\n    unsigned int g1=(c1>>5)&63; g1=(g1<<2)|(g1>>4);\r\n    unsigned int b1=c1&31; b1=(b1<<3)|(b1>>2);\r\n    for (unsigned int p=0;p<16;p++) {\r\n        unsigned int x=(block%columns)*4+p%4, y=(block/columns)*4+p/4;\r\n        if(x>=width || y>=height) continue;\r\n        unsigned int index=(blocks[colorbase+1]>>(p*2))&3;\r\n        unsigned int r=r0,g=g0,b=b0,a=255;\r\n        if(index==1) {r=r1;g=g1;b=b1;}\r\n        if(index>=2) {\r\n            if(c0>c1 || encoding==3 || encoding==5) {\r\n                unsigned int weight=index==2?2:1;\r\n                r=(weight*r0+(3-weight)*r1)/3;g=(weight*g0+(3-weight)*g1)/3;b=(weight*b0+(3-weight)*b1)/3;\r\n            } else if(index==2) {r=(r0+r1)/2;g=(g0+g1)/2;b=(b0+b1)/2;}\r\n            else {r=0;g=0;b=0;if(encoding==1)a=0;}\r\n        }\r\n        if(encoding==3) a=((blocks[base+p/8]>>((p%8)*4))&15)*17;\r\n        if(encoding==5) {\r\n            unsigned int a0=blocks[base]&255,a1=(blocks[base]>>8)&255;\r\n            unsigned int lo=(blocks[base]>>16)|(blocks[base+1]<<16),hi=blocks[base+1]>>16;\r\n            unsigned int bit=p*3, ai=0;\r\n            if(bit<32) {ai=lo>>bit;if(bit>29)ai|=hi<<(32-bit);}\r\n            else ai=hi>>(bit-32);\r\n            ai&=7;\r\n            if(ai==0)a=a0;else if(ai==1)a=a1;\r\n            else if(a0>a1)a=((8-ai)*a0+(ai-1)*a1)/7;\r\n            else if(ai<6)a=((6-ai)*a0+(ai-1)*a1)/5;\r\n            else a=ai==6?0:255;\r\n        }\r\n        if(linear_output!=0u) {\r\n            unsigned int out=pixel_offset+(y*width+x)*4u;\r\n            pixels[out]=__float_as_uint(srgb_to_linear((float)r/255.0f));\r\n            pixels[out+1u]=__float_as_uint(srgb_to_linear((float)g/255.0f));\r\n            pixels[out+2u]=__float_as_uint(srgb_to_linear((float)b/255.0f));\r\n            pixels[out+3u]=__float_as_uint(channels==3u?1.0f:(float)a/255.0f);\r\n        } else pixels[pixel_offset+y*width+x]=r|(g<<8)|(b<<16)|(a<<24);\r\n    }\r\n}\r\n",
+    "entry": "decode_dxt",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "format",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

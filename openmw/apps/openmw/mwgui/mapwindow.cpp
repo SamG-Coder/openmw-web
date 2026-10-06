@@ -1384,6 +1384,10 @@ namespace MWGui
         mGlobalMapMarkersByName.clear();
     }
 
+    void MapWindow::restoreRenderTargets() { mGlobalMapRender->restoreRenderTargets(); }
+
+    bool MapWindow::isMapSaveReady() const { return mGlobalMapRender->isSaveReady(); }
+
     void MapWindow::write(ESM::ESMWriter& writer, Loading::Listener& progress)
     {
         ESM::GlobalMap map;

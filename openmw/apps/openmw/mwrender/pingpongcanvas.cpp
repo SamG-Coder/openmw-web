@@ -1,8 +1,11 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "pingpongcanvas.hpp"
+#include <components/webcuda/materialstate.hpp>
+#include <components/sceneutil/depth.hpp>
 
 #include <cassert>
+#include <stdexcept>
 
 #include <components/shader/shadermanager.hpp>
 #include <components/stereo/multiview.hpp>
@@ -70,6 +73,116 @@ namespace MWRender
     {
         osg::ref_ptr<osg::Texture> clone = static_cast<osg::Texture*>(tex->clone(osg::CopyOp::SHALLOW_COPY));
         fbo->setAttachment(component, Stereo::createMultiviewCompatibleAttachment(clone));
+    }
+
+    void PingPongCanvas::submitWebCuda(WebCuda::SubmissionSink& sink,const WebCuda::DrawContext& context) const
+    {
+        if(Stereo::getMultiview())throw std::runtime_error("WebCuda multiview resolve is not implemented");
+        const osg::Texture2D* destination=nullptr;
+        if(mDestinationFBO) {
+            const auto& attachments=mDestinationFBO->getAttachmentMap();
+            if(attachments.size()!=1)throw std::runtime_error("Postprocess destination requires a single colour attachment");
+            const auto& [component,attachment]=*attachments.begin();
+            if((component!=osg::Camera::COLOR_BUFFER0&&component!=osg::Camera::COLOR_BUFFER)
+                ||attachment.getTextureLevel()!=0||attachment.isMultisample())
+                throw std::runtime_error("Postprocess destination requires a base-level single-sample colour attachment");
+            destination=dynamic_cast<const osg::Texture2D*>(attachment.getTexture());
+            if(!destination)throw std::runtime_error("Postprocess destination requires a 2D texture");
+        }
+        osg::Vec2f scaling(1,1);mFallbackStateSet->getUniform("scaling")->get(scaling);
+        bool distortion=false;
+        struct Effect { bool distortion=false;float gamma=1.f,contrast=1.f;bool bloom=false;WebCuda::BloomSettings settings;bool debug=false;WebCuda::DebugSettings debugSettings; };
+        std::vector<Effect> effects;
+        if(mPostprocessing)for(const auto& node:mPasses)
+        {
+            if(mMask&node.mFlags)continue;
+            if(!node.mHandle)
+                throw std::runtime_error("Selected postprocess technique requires a WebCuda implementation");
+            const auto name=node.mHandle->getName();
+            if(name!="bloomlinear"&&(node.mPasses.size()!=1||node.mPasses.front().mRenderTarget))
+                throw std::runtime_error("Unsupported postprocess pass layout");
+            if(name=="bloomlinear") {
+                if(node.mPasses.size()!=4)throw std::runtime_error("Unexpected bloom pass layout");
+                Effect effect;effect.bloom=true;
+                auto& settings=effect.settings;
+                for(const auto& uniform:node.mHandle->getUniformMap()) {
+                    if(uniform->mName=="uGamma")settings.gamma=uniform->getValue<float>();
+                    if(uniform->mName=="uThreshold")settings.threshold=uniform->getValue<float>();
+                    if(uniform->mName=="uClamp")settings.clamp=uniform->getValue<float>();
+                    if(uniform->mName=="uSkyFactor")settings.skyFactor=uniform->getValue<float>();
+                    if(uniform->mName=="uRadius")settings.radius=uniform->getValue<float>();
+                    if(uniform->mName=="uStrength")settings.strength=uniform->getValue<float>();
+                }
+                const auto state=WebCuda::resolveState(context);
+                auto uniform=[&](const char* flat,const char* member)->const osg::Uniform* {
+                    const auto* value=state->getUniform(flat);if(!value)value=state->getUniform(member);
+                    if(!value)throw std::runtime_error("Missing bloom camera uniform");return value;
+                };
+                osg::Vec2 resolution;
+                if(!uniform("omw_near","omw.near")->get(settings.nearPlane)
+                    ||!uniform("omw_far","omw.far")->get(settings.farPlane)
+                    ||!uniform("omw_resolution","omw.resolution")->get(resolution)
+                    ||!uniform("omw_simulationTime","omw.simulationTime")->get(settings.time))
+                    throw std::runtime_error("Invalid bloom camera uniform");
+                settings.resolutionWidth=resolution.x();settings.resolutionHeight=resolution.y();
+                settings.reverseZ=SceneUtil::AutoDepth::isReversed();effects.push_back(effect);
+            } else if(name=="debug") {
+                Effect effect;effect.debug=true;auto& settings=effect.debugSettings;
+                for(const auto& value:node.mHandle->getUniformMap()) {
+                    if(value->mName=="uDisplayDepth")settings.displayDepth=value->getValue<bool>();
+                    if(value->mName=="uDepthFactor")settings.depthFactor=value->getValue<float>();
+                    if(value->mName=="uDisplayNormals")settings.displayNormals=value->getValue<bool>();
+                    if(value->mName=="uNormalsInWorldSpace")settings.worldNormals=value->getValue<bool>();
+                }
+                const auto state=WebCuda::resolveState(context);
+                const auto uniform=[&](const char* flat,const char* member) {
+                    const auto* value=state->getUniform(flat);if(!value)value=state->getUniform(member);
+                    if(!value)throw std::runtime_error("Missing debug camera uniform");return value;
+                };
+                if(settings.displayDepth&&(!uniform("omw_near","omw.near")->get(settings.nearPlane)
+                    ||!uniform("omw_far","omw.far")->get(settings.farPlane)))
+                    throw std::runtime_error("Invalid debug depth uniform");
+                if(settings.displayNormals&&settings.worldNormals&&mTextureNormals) {
+                    osg::Matrixf view;
+                    if(!uniform("omw_viewMatrix","omw.viewMatrix")->get(view))throw std::runtime_error("Invalid debug view matrix");
+                    for(unsigned int i=0;i<16;i++)settings.view[i]=view.ptr()[i];
+                }
+                settings.reverseZ=SceneUtil::AutoDepth::isReversed();effects.push_back(effect);
+            } else if(name=="internal_distortion") {
+                distortion=true;effects.push_back({true,1.f,1.f});
+            } else if(node.mHandle->getName()=="adjustments") {
+                float gamma=1.f,contrast=1.f;
+                for(const auto& uniform:node.mHandle->getUniformMap()) {
+                    if(uniform->mName=="uGamma")gamma=uniform->getValue<float>();
+                    if(uniform->mName=="uContrast")contrast=uniform->getValue<float>();
+                }
+                effects.push_back({false,gamma,contrast});
+            } else throw std::runtime_error("Selected postprocess technique requires a WebCuda implementation");
+        }
+        const auto* scene=dynamic_cast<const osg::Texture2D*>(mTextureScene.get());
+        const auto* effect=distortion?dynamic_cast<const osg::Texture2D*>(mTextureDistortion.get()):nullptr;
+        if(!scene||(distortion&&!effect))throw std::runtime_error("Scene resolve requires 2D attachments");
+        if(mPostprocessing&&mAvgLum&&!effects.empty())mLuminanceCalculator->submitWebCuda(sink,*scene);
+        if(destination) {
+            if(destination==scene||destination==effect||destination==mTextureDepth.get())
+                throw std::runtime_error("Postprocess destination aliases an input attachment");
+            sink.beginColorTarget(*destination);
+        }
+        const bool firstDistortion=!effects.empty()&&effects.front().distortion;
+        // The fallback fullscreen shader alone uses this scaling uniform.
+        sink.resolveScene(*scene,firstDistortion?effect:nullptr,effects.empty()?scaling.x():1.f,effects.empty()?scaling.y():1.f);
+        for(std::size_t i=firstDistortion?1:0;i<effects.size();i++) {
+            if(effects[i].distortion)sink.distortScene(*effect);
+            else if(effects[i].debug) {
+                sink.debugScene(dynamic_cast<const osg::Texture2D*>(mTextureDepth.get()),
+                    dynamic_cast<const osg::Texture2D*>(mTextureNormals.get()),effects[i].debugSettings);
+            } else if(effects[i].bloom) {
+                const auto* depth=dynamic_cast<const osg::Texture2D*>(mTextureDepth.get());
+                if(!depth)throw std::runtime_error("Bloom requires a 2D depth attachment");
+                sink.bloomScene(*depth,effects[i].settings);
+            } else sink.adjustScene(effects[i].gamma,effects[i].contrast);
+        }
+        if(destination)sink.endColorTarget();
     }
 
     void PingPongCanvas::drawImplementation(osg::RenderInfo& renderInfo) const

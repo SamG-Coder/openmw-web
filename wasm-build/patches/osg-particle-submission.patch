@@ -1,0 +1,18 @@
+diff --git a/include/osgParticle/ParticleSystem b/include/osgParticle/ParticleSystem
+--- a/include/osgParticle/ParticleSystem
++++ b/include/osgParticle/ParticleSystem
+@@ -177,6 +177,14 @@
+         /// Get the last frame number.
+         inline unsigned int getLastFrameNumber() const;
+ 
++        // External renderers call this while holding getReadWriteMutex().
++        // Preserve draw bookkeeping without executing a GL draw operation.
++        void notifyExternalDraw(unsigned int frame) const
++        {
++            _last_frame = frame;
++            if (!_particles.empty()) _dirty_dt = true;
++        }
++
+         /// Get the unique delta time for emitters and updaters to use
+         inline double& getDeltaTime( double currentTime );
+ 

@@ -1,0 +1,178 @@
+{
+  "version": "0.1.1",
+  "name": "decode_float_image",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel decode_float_image.\n@group(0) @binding(0) var<storage, read> b_blocks: array<u32>;\n@group(0) @binding(1) var<storage, read_write> b_pixels: array<u32>;\nstruct CWParams {\n  p_width: u32,\n  p_height: u32,\n  p_format: u32,\n  p_block_offset: u32,\n  p_pixel_offset: u32,\n  cw_pad_20: u32,\n  cw_pad_24: u32,\n  cw_pad_28: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }\nfn f_render_power(cw_arg_base: f32, cw_arg_exponent: f32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {\n  var v_base: f32 = cw_arg_base;\n  var v_exponent: f32 = cw_arg_exponent;\n  if (((v_exponent == 0.0f) || (v_base == 1.0f))) {\n    return 1.0f;\n  }\n  if ((v_base == 0.0f)) {\n    return 0.0f;\n  }\n  return exp2((v_exponent * log2(v_base)));\n}\nfn f_expand_half(cw_arg_value: u32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> u32 {\n  var v_value: u32 = cw_arg_value;\n  var v_sign: u32 = ((v_value & 32768u) << u32(16i));\n  var v_exponent: u32 = ((v_value >> u32(10i)) & 31u);\n  var v_mantissa: u32 = (v_value & 1023u);\n  if ((v_exponent == 31u)) {\n    return ((v_sign | 2139095040u) | (v_mantissa << u32(13i)));\n  }\n  if ((v_exponent == 0u)) {\n    if ((v_mantissa == 0u)) {\n      return v_sign;\n    }\n    var v_shift: u32 = 0u;\n    {\n      loop {\n        if (!((v_mantissa & 1024u) == 0u)) { break; }\n        v_mantissa = (v_mantissa << u32(1i));\n        v_shift += u32(1);\n      }\n    }\n    return ((v_sign | ((113u - v_shift) << u32(23i))) | ((v_mantissa & 1023u) << u32(13i)));\n  }\n  return ((v_sign | ((v_exponent + 112u) << u32(23i))) | (v_mantissa << u32(13i)));\n}\nfn f_contract_half(cw_arg_value: f32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> u32 {\n  var v_value: f32 = cw_arg_value;\n  var v_bits: u32 = bitcast<u32>(v_value);\n  var v_sign: u32 = ((v_bits >> u32(16i)) & 32768u);\n  var v_exponent: u32 = ((v_bits >> u32(23i)) & 255u);\n  var v_mantissa: u32 = (v_bits & 8388607u);\n  if ((v_exponent == 255u)) {\n    var cw_tmp_0: u32;\n    if ((v_mantissa != 0u)) {\n      cw_tmp_0 = (512u | (v_mantissa >> u32(13i)));\n    } else {\n      cw_tmp_0 = 0u;\n    }\n    return ((v_sign | 31744u) | cw_tmp_0);\n  }\n  var v_adjusted: i32 = (i32(v_exponent) - 112i);\n  if ((v_adjusted >= 31i)) {\n    return (v_sign | 31744u);\n  }\n  if ((v_adjusted <= 0i)) {\n    if ((v_adjusted < (-10i))) {\n      return v_sign;\n    }\n    v_mantissa = (v_mantissa | 8388608u);\n    var v_shift: u32 = u32((14i - v_adjusted));\n    var v_rounded: u32 = (v_mantissa >> v_shift);\n    var v_remainder: u32 = (v_mantissa & ((1u << v_shift) - 1u));\n    var v_halfway: u32 = (1u << (v_shift - 1u));\n    if (((v_remainder > v_halfway) || ((v_remainder == v_halfway) && ((v_rounded & 1u) != 0u)))) {\n      v_rounded += u32(1);\n    }\n    return (v_sign | v_rounded);\n  }\n  var v_rounded: u32 = ((v_mantissa + 4095u) + ((v_mantissa >> u32(13i)) & 1u));\n  if (((v_rounded & 8388608u) != 0u)) {\n    v_rounded = 0u;\n    v_adjusted += i32(1);\n  }\n  if ((v_adjusted >= 31i)) {\n    return (v_sign | 31744u);\n  }\n  return ((v_sign | (u32(v_adjusted) << u32(10i))) | (v_rounded >> u32(13i)));\n}\nfn f_round_half(cw_arg_value: f32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {\n  var v_value: f32 = cw_arg_value;\n  return bitcast<f32>(f_expand_half(f_contract_half(v_value, cw_thread, cw_block, cw_grid), cw_thread, cw_block, cw_grid));\n}\nfn f_srgb_to_linear(cw_arg_value: f32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {\n  var v_value: f32 = cw_arg_value;\n  v_value = min(1.0f, max(0.0f, v_value));\n  var cw_tmp_1: f32;\n  if ((v_value <= 0.04045f)) {\n    cw_tmp_1 = cw_divide_f32(v_value, 12.92f);\n  } else {\n    cw_tmp_1 = f_render_power(cw_divide_f32((v_value + 0.055f), 1.055f), 2.4f, cw_thread, cw_block, cw_grid);\n  }\n  return cw_tmp_1;\n}\nfn f_linear_to_srgb(cw_arg_value: f32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {\n  var v_value: f32 = cw_arg_value;\n  v_value = min(1.0f, max(0.0f, v_value));\n  var cw_tmp_2: f32;\n  if ((v_value <= 0.0031308f)) {\n    cw_tmp_2 = (v_value * 12.92f);\n  } else {\n    cw_tmp_2 = ((1.055f * f_render_power(v_value, cw_divide_f32(1.0f, 2.4f), cw_thread, cw_block, cw_grid)) - 0.055f);\n  }\n  return cw_tmp_2;\n}\nfn f_store_color_value(cw_arg_value: f32, cw_arg_channel: u32, cw_arg_channels: u32, cw_arg_storage: u32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {\n  var v_value: f32 = cw_arg_value;\n  var v_channel: u32 = cw_arg_channel;\n  var v_channels: u32 = cw_arg_channels;\n  var v_storage: u32 = cw_arg_storage;\n  if ((v_channel >= v_channels)) {\n    var cw_tmp_3: f32;\n    if ((v_channel == 3u)) {\n      cw_tmp_3 = 1.0f;\n    } else {\n      cw_tmp_3 = 0.0f;\n    }\n    return cw_tmp_3;\n  }\n  if ((v_storage == 0u)) {\n    return cw_divide_f32(floor(((min(1.0f, max(0.0f, v_value)) * 255.0f) + 0.5f)), 255.0f);\n  }\n  if ((v_storage == 1u)) {\n    return f_round_half(v_value, cw_thread, cw_block, cw_grid);\n  }\n  if ((v_storage == 4u)) {\n    return cw_divide_f32(floor(((min(1.0f, max(0.0f, v_value)) * 65535.0f) + 0.5f)), 65535.0f);\n  }\n  if (((v_storage == 5u) || (v_storage == 6u))) {\n    var cw_tmp_4: f32;\n    if ((v_storage == 5u)) {\n      cw_tmp_4 = 127.0f;\n    } else {\n      cw_tmp_4 = 32767.0f;\n    }\n    var v_maximum: f32 = cw_tmp_4;\n    return cw_divide_f32(floor(((min(1.0f, max((-1.0f), v_value)) * v_maximum) + 0.5f)), v_maximum);\n  }\n  if ((v_storage == 3u)) {\n    var cw_tmp_5: f32;\n    if ((v_channel < 3u)) {\n      cw_tmp_5 = f_linear_to_srgb(v_value, cw_thread, cw_block, cw_grid);\n    } else {\n      cw_tmp_5 = min(1.0f, max(0.0f, v_value));\n    }\n    var v_encoded: f32 = cw_tmp_5;\n    v_encoded = cw_divide_f32(floor(((v_encoded * 255.0f) + 0.5f)), 255.0f);\n    var cw_tmp_6: f32;\n    if ((v_channel < 3u)) {\n      cw_tmp_6 = f_srgb_to_linear(v_encoded, cw_thread, cw_block, cw_grid);\n    } else {\n      cw_tmp_6 = v_encoded;\n    }\n    return cw_tmp_6;\n  }\n  return v_value;\n}\nfn f_store_depth_value(cw_arg_value: f32, cw_arg_bits: u32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {\n  var v_value: f32 = cw_arg_value;\n  var v_bits: u32 = cw_arg_bits;\n  v_value = min(1.0f, max(0.0f, v_value));\n  if ((v_bits == 0u)) {\n    return v_value;\n  }\n  var cw_tmp_7: f32;\n  if ((v_bits == 16u)) {\n    cw_tmp_7 = 65535.0f;\n  } else {\n    cw_tmp_7 = 16777215.0f;\n  }\n  var v_maximum: f32 = cw_tmp_7;\n  return min(1.0f, cw_divide_f32(floor(((v_value * v_maximum) + 0.5f)), v_maximum));\n}\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= (cw_params.p_width * cw_params.p_height))) {\n    return;\n  }\n  var v_destination_kind: u32 = ((cw_params.p_format >> 8u) & 15u);\n  var v_storage: u32 = ((cw_params.p_format >> 12u) & 7u);\n  var v_convert: u32 = (cw_params.p_format & 65536u);\n  var v_encoding: u32 = (cw_params.p_format & 255u);\n  var v_family: u32 = (v_encoding / 16u);\n  var v_kind: u32 = (v_encoding % 16u);\n  var cw_tmp_10: u32;\n  if (((v_kind == 6u) || (v_kind == 13u))) {\n    cw_tmp_10 = 4u;\n  } else {\n    var cw_tmp_9: u32;\n    if (((v_kind == 7u) || (v_kind == 14u))) {\n      cw_tmp_9 = 3u;\n    } else {\n      var cw_tmp_8: u32;\n      if (((v_kind == 8u) || (v_kind == 11u))) {\n        cw_tmp_8 = 2u;\n      } else {\n        cw_tmp_8 = 1u;\n      }\n      cw_tmp_9 = cw_tmp_8;\n    }\n    cw_tmp_10 = cw_tmp_9;\n  }\n  var v_channels: u32 = cw_tmp_10;\n  var v_input: array<u32, 4>;\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(4i))) { break; }\n      var cw_tmp_11: u32;\n      if ((v_k == u32(3i))) {\n        cw_tmp_11 = 1065353216u;\n      } else {\n        cw_tmp_11 = 0u;\n      }\n      v_input[v_k] = cw_tmp_11;\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < v_channels)) { break; }\n      var v_index: u32 = ((v_i * v_channels) + v_k);\n      if ((v_family >= 8u)) {\n        var cw_tmp_12: u32;\n        if ((v_family < 14u)) {\n          cw_tmp_12 = ((b_blocks[(cw_params.p_block_offset + (v_i / 2u))] >> ((v_i % 2u) * 16u)) & 65535u);\n        } else {\n          cw_tmp_12 = b_blocks[(cw_params.p_block_offset + v_i)];\n        }\n        var v_packed: u32 = cw_tmp_12;\n        var v_shift: u32 = 0u;\n        var v_bits: u32 = 8u;\n        if (((v_family == 8u) || (v_family == 9u))) {\n          var cw_tmp_13: u32;\n          if ((v_k == 1u)) {\n            cw_tmp_13 = 6u;\n          } else {\n            cw_tmp_13 = 5u;\n          }\n          v_bits = cw_tmp_13;\n          var cw_tmp_18: u32;\n          if ((v_family == 8u)) {\n            var cw_tmp_15: u32;\n            if ((v_k == 0u)) {\n              cw_tmp_15 = 11u;\n            } else {\n              var cw_tmp_14: u32;\n              if ((v_k == 1u)) {\n                cw_tmp_14 = 5u;\n              } else {\n                cw_tmp_14 = 0u;\n              }\n              cw_tmp_15 = cw_tmp_14;\n            }\n            cw_tmp_18 = cw_tmp_15;\n          } else {\n            var cw_tmp_17: u32;\n            if ((v_k == 0u)) {\n              cw_tmp_17 = 0u;\n            } else {\n              var cw_tmp_16: u32;\n              if ((v_k == 1u)) {\n                cw_tmp_16 = 5u;\n              } else {\n                cw_tmp_16 = 11u;\n              }\n              cw_tmp_17 = cw_tmp_16;\n            }\n            cw_tmp_18 = cw_tmp_17;\n          }\n          v_shift = cw_tmp_18;\n        } else {\n          if (((v_family == 10u) || (v_family == 11u))) {\n            v_bits = 4u;\n            var cw_tmp_19: u32;\n            if ((v_family == 10u)) {\n              cw_tmp_19 = ((3u - v_k) * 4u);\n            } else {\n              cw_tmp_19 = (v_k * 4u);\n            }\n            v_shift = cw_tmp_19;\n          } else {\n            if (((v_family == 12u) || (v_family == 13u))) {\n              var cw_tmp_20: u32;\n              if ((v_k == 3u)) {\n                cw_tmp_20 = 1u;\n              } else {\n                cw_tmp_20 = 5u;\n              }\n              v_bits = cw_tmp_20;\n              var cw_tmp_23: u32;\n              if ((v_family == 12u)) {\n                var cw_tmp_21: u32;\n                if ((v_k == 3u)) {\n                  cw_tmp_21 = 0u;\n                } else {\n                  cw_tmp_21 = (11u - (v_k * 5u));\n                }\n                cw_tmp_23 = cw_tmp_21;\n              } else {\n                var cw_tmp_22: u32;\n                if ((v_k == 3u)) {\n                  cw_tmp_22 = 15u;\n                } else {\n                  cw_tmp_22 = (v_k * 5u);\n                }\n                cw_tmp_23 = cw_tmp_22;\n              }\n              v_shift = cw_tmp_23;\n            } else {\n              var cw_tmp_24: u32;\n              if ((v_family == 14u)) {\n                cw_tmp_24 = ((3u - v_k) * 8u);\n              } else {\n                cw_tmp_24 = (v_k * 8u);\n              }\n              v_shift = cw_tmp_24;\n            }\n          }\n        }\n        var v_mask: u32 = ((1u << v_bits) - 1u);\n        v_input[v_k] = bitcast<u32>(cw_divide_f32(f32(((v_packed >> v_shift) & v_mask)), f32(v_mask)));\n      } else {\n        if ((v_family == 0u)) {\n          v_input[v_k] = b_blocks[(cw_params.p_block_offset + v_index)];\n        } else {\n          if ((v_family == 1u)) {\n            v_input[v_k] = f_expand_half(((b_blocks[(cw_params.p_block_offset + (v_index / 2u))] >> ((v_index % 2u) * 16u)) & 65535u), cw_thread, cw_block, cw_grid);\n          } else {\n            var v_value: u32;\n            var v_decoded: f32;\n            if (((v_family == 2u) || (v_family == 4u))) {\n              v_value = ((b_blocks[(cw_params.p_block_offset + (v_index / 4u))] >> ((v_index % 4u) * 8u)) & 255u);\n              var cw_tmp_26: f32;\n              if ((v_family == 2u)) {\n                cw_tmp_26 = cw_divide_f32(f32(v_value), 255.0f);\n              } else {\n                var cw_tmp_25: i32;\n                if ((v_value >= 128u)) {\n                  cw_tmp_25 = 256i;\n                } else {\n                  cw_tmp_25 = 0i;\n                }\n                cw_tmp_26 = max((-1.0f), cw_divide_f32(f32((i32(v_value) - cw_tmp_25)), 127.0f));\n              }\n              v_decoded = cw_tmp_26;\n            } else {\n              if (((v_family == 3u) || (v_family == 5u))) {\n                v_value = ((b_blocks[(cw_params.p_block_offset + (v_index / 2u))] >> ((v_index % 2u) * 16u)) & 65535u);\n                var cw_tmp_28: f32;\n                if ((v_family == 3u)) {\n                  cw_tmp_28 = cw_divide_f32(f32(v_value), 65535.0f);\n                } else {\n                  var cw_tmp_27: i32;\n                  if ((v_value >= 32768u)) {\n                    cw_tmp_27 = 65536i;\n                  } else {\n                    cw_tmp_27 = 0i;\n                  }\n                  cw_tmp_28 = max((-1.0f), cw_divide_f32(f32((i32(v_value) - cw_tmp_27)), 32767.0f));\n                }\n                v_decoded = cw_tmp_28;\n              } else {\n                v_value = b_blocks[(cw_params.p_block_offset + v_index)];\n                var cw_tmp_29: f32;\n                if ((v_family == 6u)) {\n                  cw_tmp_29 = cw_divide_f32(f32(v_value), 4294967295.0f);\n                } else {\n                  cw_tmp_29 = max((-1.0f), cw_divide_f32(f32(i32(v_value)), 2147483647.0f));\n                }\n                v_decoded = cw_tmp_29;\n              }\n            }\n            v_input[v_k] = bitcast<u32>(v_decoded);\n          }\n        }\n      }\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  if (((v_convert != 0u) && (v_destination_kind == 9u))) {\n    var cw_tmp_32: u32;\n    if ((v_storage == 0u)) {\n      cw_tmp_32 = v_input[0i];\n    } else {\n      let cw_argument_index_30 = 0i;\n      var cw_tmp_31: u32;\n      if ((v_storage == 1u)) {\n        cw_tmp_31 = 16u;\n      } else {\n        cw_tmp_31 = 24u;\n      }\n      cw_tmp_32 = bitcast<u32>(f_store_depth_value(bitcast<f32>(v_input[cw_argument_index_30]), cw_tmp_31, cw_thread, cw_block, cw_grid));\n    }\n    b_pixels[(cw_params.p_pixel_offset + v_i)] = cw_tmp_32;\n    return;\n  }\n  var v_color: array<f32, 4>;\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(4i))) { break; }\n      var v_value: u32 = v_input[v_k];\n      if (((v_kind == 10u) || (v_kind == 11u))) {\n        var cw_tmp_34: u32;\n        if ((v_k == 3u)) {\n          var cw_tmp_33: u32;\n          if ((v_kind == 11u)) {\n            cw_tmp_33 = v_input[1i];\n          } else {\n            cw_tmp_33 = 1065353216u;\n          }\n          cw_tmp_34 = cw_tmp_33;\n        } else {\n          cw_tmp_34 = v_input[0i];\n        }\n        v_value = cw_tmp_34;\n      }\n      if ((v_kind == 12u)) {\n        var cw_tmp_35: u32;\n        if ((v_k == 3u)) {\n          cw_tmp_35 = v_input[0i];\n        } else {\n          cw_tmp_35 = 0u;\n        }\n        v_value = cw_tmp_35;\n      }\n      if ((((v_kind == 13u) || (v_kind == 14u)) && (v_k < 3u))) {\n        v_value = v_input[(2u - v_k)];\n      }\n      v_color[v_k] = bitcast<f32>(v_value);\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n  {\n    var v_k: u32 = u32(0i);\n    loop {\n      if (!(v_k < u32(4i))) { break; }\n      var v_value: f32 = v_color[v_k];\n      if ((v_convert != 0u)) {\n        if (((v_destination_kind == 5u) || (v_destination_kind == 6u))) {\n          var cw_tmp_37: f32;\n          if ((v_k == 3u)) {\n            var cw_tmp_36: f32;\n            if ((v_destination_kind == 6u)) {\n              cw_tmp_36 = v_color[3i];\n            } else {\n              cw_tmp_36 = 1.0f;\n            }\n            cw_tmp_37 = cw_tmp_36;\n          } else {\n            cw_tmp_37 = v_color[0i];\n          }\n          v_value = cw_tmp_37;\n        }\n        if ((v_destination_kind == 7u)) {\n          var cw_tmp_38: f32;\n          if ((v_k == 3u)) {\n            cw_tmp_38 = v_color[3i];\n          } else {\n            cw_tmp_38 = 0.0f;\n          }\n          v_value = cw_tmp_38;\n        }\n        if ((v_destination_kind == 8u)) {\n          v_value = v_color[0i];\n        }\n        if ((v_storage == 3u)) {\n          v_value = f_store_color_value(v_value, v_k, v_destination_kind, 0u, cw_thread, cw_block, cw_grid);\n          if ((v_k < 3u)) {\n            v_value = f_srgb_to_linear(v_value, cw_thread, cw_block, cw_grid);\n          }\n        } else {\n          var cw_tmp_39: u32;\n          if ((v_destination_kind > 4u)) {\n            cw_tmp_39 = 4u;\n          } else {\n            cw_tmp_39 = v_destination_kind;\n          }\n          v_value = f_store_color_value(v_value, v_k, cw_tmp_39, v_storage, cw_thread, cw_block, cw_grid);\n        }\n      }\n      b_pixels[((cw_params.p_pixel_offset + (v_i * 4u)) + v_k)] = bitcast<u32>(v_value);\n      continuing {\n        v_k += u32(1);\n      }\n    }\n  }\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "blocks",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "pixels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "format",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "block_offset",
+        "type": "u32",
+        "offset": 12
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32",
+        "offset": 16
+      }
+    ],
+    "uniformSize": 32,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 17218,
+      "beforeBytes": 17218,
+      "afterBytes": 17218,
+      "functionsBefore": 10,
+      "functionsAfter": 10,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 10365,
+          "transitiveBytes": 16724,
+          "reachableFunctions": 10
+        },
+        {
+          "name": "f_store_color_value",
+          "ownBytes": 1716,
+          "transitiveBytes": 5835,
+          "reachableFunctions": 8
+        },
+        {
+          "name": "f_round_half",
+          "ownBytes": 267,
+          "transitiveBytes": 2615,
+          "reachableFunctions": 3
+        },
+        {
+          "name": "f_contract_half",
+          "ownBytes": 1502,
+          "transitiveBytes": 1502,
+          "reachableFunctions": 1
+        },
+        {
+          "name": "f_srgb_to_linear",
+          "ownBytes": 433,
+          "transitiveBytes": 1072,
+          "reachableFunctions": 3
+        },
+        {
+          "name": "f_linear_to_srgb",
+          "ownBytes": 432,
+          "transitiveBytes": 1071,
+          "reachableFunctions": 3
+        },
+        {
+          "name": "f_expand_half",
+          "ownBytes": 846,
+          "transitiveBytes": 846,
+          "reachableFunctions": 1
+        },
+        {
+          "name": "f_store_depth_value",
+          "ownBytes": 524,
+          "transitiveBytes": 794,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "f_render_power",
+          "ownBytes": 369,
+          "transitiveBytes": 369,
+          "reachableFunctions": 1
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Source words retain the file's byte/float/half bits. GPU conversion and swizzle\r\n// produce four float-bit atlas words per texel with requested storage precision.\r\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Storage-format conversion, authored once for native CUDA and WebCuda.\r\n// Rendering power bases and exponents are nonnegative. Spell out the float operation so\r\n// WebCuda does not pull software f64 integer-power emulation into every shader.\r\n// Zero is handled before log2, including the material convention pow(0,0)=1.\r\n// Like GPU shader pow, this is approximate; it is not a general libm replacement.\r\n__device__ float render_power(float base,float exponent) {\r\n    if(exponent==0.0f||base==1.0f)return 1.0f;\r\n    if(base==0.0f)return 0.0f;\r\n    return exp2f(exponent*log2f(base));\r\n}\r\n\r\n__device__ unsigned int expand_half(unsigned int value) {\r\n    unsigned int sign=(value&32768u)<<16,exponent=(value>>10)&31u,mantissa=value&1023u;\r\n    if(exponent==31u)return sign|2139095040u|(mantissa<<13);\r\n    if(exponent==0u) {\r\n        if(mantissa==0u)return sign;\r\n        unsigned int shift=0u;\r\n        while((mantissa&1024u)==0u){mantissa=mantissa<<1;shift++;}\r\n        return sign|((113u-shift)<<23)|((mantissa&1023u)<<13);\r\n    }\r\n    return sign|((exponent+112u)<<23)|(mantissa<<13);\r\n}\r\n\r\n__device__ unsigned int contract_half(float value) {\r\n    unsigned int bits=__float_as_uint(value),sign=(bits>>16)&32768u;\r\n    unsigned int exponent=(bits>>23)&255u,mantissa=bits&8388607u;\r\n    if(exponent==255u)return sign|31744u|(mantissa!=0u?512u|(mantissa>>13):0u);\r\n    int adjusted=(int)exponent-112;\r\n    if(adjusted>=31)return sign|31744u;\r\n    if(adjusted<=0) {\r\n        if(adjusted< -10)return sign;\r\n        mantissa|=8388608u;\r\n        unsigned int shift=(unsigned int)(14-adjusted),rounded=mantissa>>shift;\r\n        unsigned int remainder=mantissa&((1u<<shift)-1u),halfway=1u<<(shift-1u);\r\n        if(remainder>halfway||(remainder==halfway&&(rounded&1u)!=0u))rounded++;\r\n        return sign|rounded;\r\n    }\r\n    unsigned int rounded=mantissa+4095u+((mantissa>>13)&1u);\r\n    if((rounded&8388608u)!=0u){rounded=0u;adjusted++;}\r\n    if(adjusted>=31)return sign|31744u;\r\n    return sign|((unsigned int)adjusted<<10)|(rounded>>13);\r\n}\r\n__device__ float round_half(float value) {\r\n    return __uint_as_float(expand_half(contract_half(value)));\r\n}\r\n\r\n// sRGB atlas values are stored decoded, so filtering operates in linear space.\r\n__device__ float srgb_to_linear(float value) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.04045f?value/12.92f:render_power((value+0.055f)/1.055f,2.4f);\r\n}\r\n__device__ float linear_to_srgb(float value) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.0031308f?value*12.92f:1.055f*render_power(value,1.0f/2.4f)-0.055f;\r\n}\r\n\r\n__device__ float store_color_value(float value,unsigned int channel,unsigned int channels,unsigned int storage) {\r\n    if(channel>=channels)return channel==3u?1.0f:0.0f;\r\n    if(storage==0u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*255.0f+0.5f)/255.0f;\r\n    if(storage==1u)return round_half(value);\r\n    if(storage==4u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*65535.0f+0.5f)/65535.0f;\r\n    if(storage==5u||storage==6u) {\r\n        float maximum=storage==5u?127.0f:32767.0f;\r\n        return floorf(fminf(1.0f,fmaxf(-1.0f,value))*maximum+0.5f)/maximum;\r\n    }\r\n    if(storage==3u) {\r\n        float encoded=channel<3u?linear_to_srgb(value):fminf(1.0f,fmaxf(0.0f,value));\r\n        encoded=floorf(encoded*255.0f+0.5f)/255.0f;\r\n        return channel<3u?srgb_to_linear(encoded):encoded;\r\n    }\r\n    return value;\r\n}\r\n\r\n__device__ float store_depth_value(float value,unsigned int bits) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    if(bits==0u)return value;\r\n    float maximum=bits==16u?65535.0f:16777215.0f;\r\n    return fminf(1.0f,floorf(value*maximum+0.5f)/maximum);\r\n}\r\n\r\n__global__ void decode_float_image(const unsigned int* blocks,unsigned int* pixels,\r\n    unsigned int width,unsigned int height,unsigned int format,unsigned int block_offset,unsigned int pixel_offset) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    unsigned int destination_kind=(format>>8u)&15u,storage=(format>>12u)&7u,convert=format&65536u;\r\n    unsigned int encoding=format&255u;\r\n    unsigned int family=encoding/16u,kind=encoding%16u;\r\n    unsigned int channels=(kind==6u||kind==13u)?4u:((kind==7u||kind==14u)?3u:((kind==8u||kind==11u)?2u:1u));\r\n    unsigned int input[4];for(unsigned int k=0;k<4;k++)input[k]=k==3?1065353216u:0u;\r\n    for(unsigned int k=0;k<channels;k++) {\r\n        unsigned int index=i*channels+k;\r\n        if(family>=8u) {\r\n            unsigned int packed=family<14u?(blocks[block_offset+i/2u]>>((i%2u)*16u))&65535u:blocks[block_offset+i];\r\n            unsigned int shift=0u,bits=8u;\r\n            if(family==8u||family==9u) {\r\n                bits=k==1u?6u:5u;\r\n                shift=family==8u?(k==0u?11u:(k==1u?5u:0u)):(k==0u?0u:(k==1u?5u:11u));\r\n            } else if(family==10u||family==11u) {\r\n                bits=4u;shift=family==10u?(3u-k)*4u:k*4u;\r\n            } else if(family==12u||family==13u) {\r\n                bits=k==3u?1u:5u;\r\n                shift=family==12u?(k==3u?0u:11u-k*5u):(k==3u?15u:k*5u);\r\n            } else shift=family==14u?(3u-k)*8u:k*8u;\r\n            unsigned int mask=(1u<<bits)-1u;\r\n            input[k]=__float_as_uint((float)((packed>>shift)&mask)/(float)mask);\r\n        }\r\n        else if(family==0u)input[k]=blocks[block_offset+index];\r\n        else if(family==1u)input[k]=expand_half((blocks[block_offset+index/2u]>>((index%2u)*16u))&65535u);\r\n        else {\r\n            unsigned int value;\r\n            float decoded;\r\n            if(family==2u||family==4u) {\r\n                value=(blocks[block_offset+index/4u]>>((index%4u)*8u))&255u;\r\n                decoded=family==2u?(float)value/255.0f:fmaxf(-1.0f,(float)((int)value-(value>=128u?256:0))/127.0f);\r\n            } else if(family==3u||family==5u) {\r\n                value=(blocks[block_offset+index/2u]>>((index%2u)*16u))&65535u;\r\n                decoded=family==3u?(float)value/65535.0f:fmaxf(-1.0f,(float)((int)value-(value>=32768u?65536:0))/32767.0f);\r\n            } else {\r\n                value=blocks[block_offset+index];\r\n                decoded=family==6u?(float)value/4294967295.0f:fmaxf(-1.0f,(float)((int)value)/2147483647.0f);\r\n            }\r\n            input[k]=__float_as_uint(decoded);\r\n        }\r\n    }\r\n    // Depth images share the scalar float atlas ABI used by rendered depth\r\n    // attachments. Floating depth retains its bits (including fallback +inf).\r\n    if(convert!=0u&&destination_kind==9u) {\r\n        pixels[pixel_offset+i]=storage==0u?input[0]:__float_as_uint(store_depth_value(__uint_as_float(input[0]),storage==1u?16u:24u));\r\n        return;\r\n    }\r\n    float color[4];\r\n    for(unsigned int k=0;k<4;k++) {\r\n        unsigned int value=input[k];\r\n        if(kind==10u||kind==11u)value=k==3u?(kind==11u?input[1]:1065353216u):input[0];\r\n        if(kind==12u)value=k==3u?input[0]:0u;\r\n        if((kind==13u||kind==14u)&&k<3u)value=input[2u-k];\r\n        color[k]=__uint_as_float(value);\r\n    }\r\n    for(unsigned int k=0;k<4;k++) {\r\n        float value=color[k];\r\n        if(convert!=0u) {\r\n            if(destination_kind==5u||destination_kind==6u)value=k==3u?(destination_kind==6u?color[3]:1.0f):color[0];\r\n            if(destination_kind==7u)value=k==3u?color[3]:0.0f;\r\n            if(destination_kind==8u)value=color[0];\r\n            // Upload components already contain encoded sRGB values. Quantize\r\n            // those values before decoding; mip generation starts in linear space.\r\n            if(storage==3u) {\r\n                value=store_color_value(value,k,destination_kind,0u);\r\n                if(k<3u)value=srgb_to_linear(value);\r\n            } else value=store_color_value(value,k,destination_kind>4u?4u:destination_kind,storage);\r\n        }\r\n        pixels[pixel_offset+i*4u+k]=__float_as_uint(value);\r\n    }\r\n}\r\n",
+    "entry": "decode_float_image",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "format",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

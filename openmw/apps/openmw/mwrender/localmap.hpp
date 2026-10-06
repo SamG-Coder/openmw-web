@@ -5,10 +5,14 @@
 #include <map>
 #include <set>
 #include <vector>
+#include <memory>
+#include <osg/observer_ptr>
+#include <osgViewer/Viewer>
 
 #include <MyGUI_Types.h>
 #include <osg/BoundingBox>
 #include <osg/Quat>
+#include <osg/Vec3d>
 #include <osg/ref_ptr>
 
 namespace MWWorld
@@ -19,6 +23,7 @@ namespace MWWorld
 namespace ESM
 {
     struct FogTexture;
+    struct PendingFogImage;
 }
 
 namespace osg
@@ -30,6 +35,8 @@ namespace osg
     class Node;
 }
 
+namespace WebCuda { class FogTexture; }
+
 namespace MWRender
 {
     class LocalMapRenderToTexture;
@@ -40,13 +47,16 @@ namespace MWRender
     class LocalMap
     {
     public:
-        LocalMap(osg::Group* root);
+        LocalMap(osg::Group* root,osgViewer::Viewer* viewer=nullptr);
+        bool isSaveReady() const;
         ~LocalMap();
 
         /**
          * Clear all savegame-specific data (i.e. fog of war textures)
          */
         void clear();
+        // Recreate map cameras after GPU loss, retaining texture identities and fog.
+        void restoreRenderTargets();
 
         /**
          * Request a map render for the given cell. Render textures will be immediately created and can be retrieved
@@ -103,6 +113,10 @@ namespace MWRender
 
     private:
         osg::ref_ptr<osg::Group> mRoot;
+        osg::observer_ptr<osgViewer::Viewer> mViewer;
+        mutable std::vector<std::weak_ptr<ESM::PendingFogImage>> mPendingFogImages;
+        std::shared_ptr<ESM::PendingFogImage> captureFog(const WebCuda::FogTexture&) const;
+        void submitFogSnapshot(const std::shared_ptr<ESM::PendingFogImage>&,osg::observer_ptr<WebCuda::FogTexture>) const;
         osg::ref_ptr<osg::Node> mSceneRoot;
 
         typedef std::vector<osg::ref_ptr<LocalMapRenderToTexture>> RTTVector;
@@ -124,9 +138,14 @@ namespace MWRender
         {
             void initFogOfWar();
             void loadFogOfWar(const ESM::FogTexture& fog);
-            void saveFogOfWar(ESM::FogTexture& fog) const;
+            void saveFogOfWar(ESM::FogTexture& fog,const LocalMap& owner) const;
             void createFogOfWarTexture();
 
+            struct RenderRecipe {
+                float x=0.f,y=0.f,zmin=0.f,zmax=0.f;
+                osg::Vec3d up;
+                bool valid=false;
+            } mRenderRecipe;
             std::uint8_t mLastRenderNeighbourFlags = 0;
             bool mHasFogState = false;
             osg::ref_ptr<osg::Texture2D> mMapTexture;

@@ -8,9 +8,12 @@
 # is exactly what happens to wasm-build/patches/osg-emscripten.patch — the whole wasm dependency
 # stack is then unbuildable, and the error ("patch does not apply") points at the patch rather
 # than at the checkout, which is the wrong place to go looking.
-*.patch text eol=lf
+*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 *.diff text eol=lf
 
 # Shell scripts likewise: a CRLF script fails with a bare `bad interpreter` or `\r: not found`,
 # which says nothing useful about the cause.
 *.sh text eol=lf
+
+# Generated browser artifacts are checked in for local serving; review .cu sources.
+render/webcuda/generated/** linguist-generated=true

@@ -1,6 +1,7 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "water.hpp"
+#include <components/webcuda/submission.hpp>
 
 #include <sstream>
 
@@ -437,9 +438,16 @@ namespace MWRender
     };
 
     /// DepthClampCallback enables GL_DEPTH_CLAMP for the current draw, if supported.
-    class DepthClampCallback : public osg::Drawable::DrawCallback
+    class DepthClampCallback : public osg::Drawable::DrawCallback, public WebCuda::CustomDrawCallback
     {
     public:
+        osg::ref_ptr<osg::StateSet> captureWebCudaState() const override
+        {
+            osg::ref_ptr<osg::StateSet> state=new osg::StateSet;
+            state->setMode(GL_DEPTH_CLAMP,osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
+            return state;
+        }
+
         void drawImplementation(osg::RenderInfo& renderInfo, const osg::Drawable* drawable) const override
         {
             static bool supported = osg::isGLExtensionOrVersionSupported(

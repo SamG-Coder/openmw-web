@@ -37,6 +37,7 @@ namespace MWRender
         ~GlobalMap();
 
         void render();
+        bool isSaveReady() const { return mPendingImageDest.empty(); }
 
         int getWidth() const { return mWidth; }
         int getHeight() const { return mHeight; }
@@ -47,6 +48,7 @@ namespace MWRender
 
         /// Clears the overlay
         void clear();
+        void restoreRenderTargets();
 
         /**
          * Removes cameras that have already been rendered. Should be called every frame to ensure that
@@ -84,7 +86,7 @@ namespace MWRender
          */
         void requestOverlayTextureUpdate(int x, int y, int width, int height, osg::ref_ptr<osg::Texture2D> texture,
             bool clear, bool cpuCopy, float srcLeft = 0.f, float srcTop = 0.f, float srcRight = 1.f,
-            float srcBottom = 1.f);
+            float srcBottom = 1.f, bool restoreBaseline = false);
 
         osg::ref_ptr<osg::Group> mRoot;
 
@@ -92,6 +94,14 @@ namespace MWRender
         CameraVector mActiveCameras;
 
         CameraVector mCamerasPendingRemoval;
+        struct OverlayRecipe {
+            int x,y,width,height;
+            osg::ref_ptr<osg::Texture2D> texture;
+            bool clear,cpuCopy;
+            float left,top,right,bottom;
+        };
+        std::map<const osg::Camera*,OverlayRecipe> mOverlayRecipes;
+
 
         struct ImageDest
         {

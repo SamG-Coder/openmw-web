@@ -1,0 +1,101 @@
+{
+  "name": "ripple_simulate",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "source",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "target",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 4761,
+      "beforeBytes": 4761,
+      "afterBytes": 4761,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 2100,
+          "transitiveBytes": 4360,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "f_cw_buffer_helper_0",
+          "ownBytes": 2260,
+          "transitiveBytes": 2260,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\n// OpenMW ripple spring equations. Attachments use top-first RGBA/depth/normal;\n// simulation coordinates and sampling retain the shader's bottom-left origin.\n__device__ float ripple_sample(OmwPaged<const float> source,unsigned int width,unsigned int height,float x,float y,unsigned int channel) {\n\n\n    x-=0.5f;y-=0.5f;\n    int ix=(int)floorf(x),iy=(int)floorf(y);\n    float fx=x-floorf(x),fy=y-floorf(y),sum=0.0f;\n    for(int dy=0;dy<2;dy++)for(int dx=0;dx<2;dx++) {\n        int sx=ix+dx,sy=iy+dy;\n        sx=sx<0?0:(sx>=(int)width?(int)width-1:sx);\n        sy=sy<0?0:(sy>=(int)height?(int)height-1:sy);\n        sum+=source[((height-1-(unsigned int)sy)*width+(unsigned int)sx)*9+channel]\n            *(dx==0?1.0f-fx:fx)*(dy==0?1.0f-fy:fy);\n    }\n    return sum;\n}\n__global__ void ripple_blob(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_target,const unsigned long long* omw_pages_positions,\n    unsigned int width,unsigned int height,unsigned int count,float offset_x,float offset_y,float time) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<float> target(omw_pages_target);\nOmwPaged<const float> positions(omw_pages_positions);\n\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=width*height)return;\n    float x=(float)(i%width)+0.5f,y=(float)(height-1-i/width)+0.5f;\n    float color[4];for(unsigned int c=0;c<4;c++)color[c]=ripple_sample(source,width,height,x+offset_x,y+offset_y,c);\n    float multiplier=1.0f+0.055f*sinf(16.0f*time)+0.065f*sinf(12.87645f*time);\n    for(unsigned int p=0;p<count;p++) {\n        float size=multiplier*positions[p*3+2];\n        if(size<=0.0f)continue;\n        float dx=positions[p*3]+offset_x-x,dy=positions[p*3+1]+offset_y-y;\n        float displace=fminf(1.0f,fmaxf(0.0f,0.2f*fabsf(sqrtf(dx*dx+dy*dy)/size-1.0f)+0.8f));\n        color[0]=-1.0f+(color[0]+1.0f)*displace;color[1]=-1.0f+(color[1]+1.0f)*displace;\n    }\n    for(unsigned int c=0;c<4;c++)target[i*9+c]=color[c];\n}\n__global__ void ripple_simulate(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_target,unsigned int width,unsigned int height) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<float> target(omw_pages_target);\n\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i>=width*height)return;\n    float x=(float)(i%width)+0.5f,y=(float)(height-1-i/width)+0.5f;\n    float n[4],n2[4];\n    for(unsigned int k=0;k<4;k++) {\n        float dx=k==0?1.0f:(k==1?-1.0f:0.0f),dy=k==2?1.0f:(k==3?-1.0f:0.0f);\n        n[k]=ripple_sample(source,width,height,x+dx,y+dy,0);\n        n2[k]=ripple_sample(source,width,height,x+dx*1.5f,y+dy*1.5f,0);\n    }\n    target[i*9]=0.28f*(n[0]+n[1]+n[2]+n[3])+0.8f*source[i*9]-0.96f*source[i*9+1];\n    target[i*9+1]=source[i*9];\n    target[i*9+2]=2.0f*(n[0]-n[1])+0.5f*(n2[0]-n2[1]);\n    target[i*9+3]=2.0f*(n[2]-n[3])+0.5f*(n2[2]-n2[3]);\n}\n",
+    "entry": "ripple_simulate",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "source",
+        "type": "buffer"
+      },
+      {
+        "name": "target",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

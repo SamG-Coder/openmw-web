@@ -14,6 +14,8 @@
 #include <osgUtil/IncrementalCompileOperation>
 
 #include <deque>
+#include <functional>
+#include <osg/Image>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -167,6 +169,7 @@ namespace MWRender
 
         /// Take a screenshot of w*h onto the given image, not including the GUI.
         void screenshot(osg::Image* image, int w, int h);
+        void screenshotAsync(int w,int h,std::function<void(osg::ref_ptr<osg::Image>,std::string)> completion);
 
         struct RayResult
         {

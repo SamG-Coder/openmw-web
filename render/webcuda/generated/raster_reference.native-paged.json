@@ -1,0 +1,146 @@
+{
+  "name": "raster_reference",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "clip",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "colors",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "indices",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "rgba",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "depth",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "triangle_count",
+        "type": "u32",
+        "offset": 8
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 5,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 4420,
+      "beforeBytes": 4420,
+      "afterBytes": 4420,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 3549,
+          "transitiveBytes": 3819,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\n// WebCuda renderer foundation. All geometry arithmetic executes in .cu kernels.\n// Matrix ABI: column-major, 16 floats per draw. Positions are packed xyz.\n__global__ void transform_vertices(const unsigned long long* omw_pages_positions,const unsigned long long* omw_pages_matrices,const unsigned long long* omw_pages_matrix_ids,const unsigned long long* omw_pages_clip,\n                                  unsigned int vertex_count) {\nOmwPaged<const float> positions(omw_pages_positions);\nOmwPaged<const float> matrices(omw_pages_matrices);\nOmwPaged<const unsigned int> matrix_ids(omw_pages_matrix_ids);\nOmwPaged<float> clip(omw_pages_clip);\n\n    unsigned int i = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\n    if (i >= vertex_count) return;\n    unsigned int p = i * 3;\n    unsigned int m = matrix_ids[i] * 16;\n    float x = positions[p];\n    float y = positions[p + 1];\n    float z = positions[p + 2];\n    clip[i * 4] = matrices[m] * x + matrices[m + 4] * y + matrices[m + 8] * z + matrices[m + 12];\n    clip[i * 4 + 1] = matrices[m + 1] * x + matrices[m + 5] * y + matrices[m + 9] * z + matrices[m + 13];\n    clip[i * 4 + 2] = matrices[m + 2] * x + matrices[m + 6] * y + matrices[m + 10] * z + matrices[m + 14];\n    clip[i * 4 + 3] = matrices[m + 3] * x + matrices[m + 7] * y + matrices[m + 11] * z + matrices[m + 15];\n}\n\n// One thread owns one pixel: no cross-workgroup depth/color race. Input triangles\n// must already be clipped. This reference path is intentionally not the tiled\n// production rasterizer; it is an oracle for that implementation.\n__global__ void raster_reference(const unsigned long long* omw_pages_clip,const unsigned long long* omw_pages_colors,const unsigned long long* omw_pages_indices,const unsigned long long* omw_pages_rgba,const unsigned long long* omw_pages_depth, unsigned int width,\n                                 unsigned int height, unsigned int triangle_count) {\nOmwPaged<const float> clip(omw_pages_clip);\nOmwPaged<const float> colors(omw_pages_colors);\nOmwPaged<const unsigned int> indices(omw_pages_indices);\nOmwPaged<float> rgba(omw_pages_rgba);\nOmwPaged<float> depth(omw_pages_depth);\n\n    unsigned int pixel = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\n    if (pixel >= width * height) return;\n    float px = (float)(pixel % width) + 0.5f;\n    float py = (float)(pixel / width) + 0.5f;\n    float best = 1.0f;\n    float red = 0.0f;\n    float green = 0.0f;\n    float blue = 0.0f;\n    for (unsigned int t = 0; t < triangle_count; t++) {\n        unsigned int ia = indices[t * 3] * 4;\n        unsigned int ib = indices[t * 3 + 1] * 4;\n        unsigned int ic = indices[t * 3 + 2] * 4;\n        float aw = clip[ia + 3];\n        float bw = clip[ib + 3];\n        float cw = clip[ic + 3];\n        if (aw <= 0.0f || bw <= 0.0f || cw <= 0.0f) continue;\n        float ax = (clip[ia] / aw * 0.5f + 0.5f) * (float)width;\n        float ay = (0.5f - clip[ia + 1] / aw * 0.5f) * (float)height;\n        float bx = (clip[ib] / bw * 0.5f + 0.5f) * (float)width;\n        float by = (0.5f - clip[ib + 1] / bw * 0.5f) * (float)height;\n        float cx = (clip[ic] / cw * 0.5f + 0.5f) * (float)width;\n        float cy = (0.5f - clip[ic + 1] / cw * 0.5f) * (float)height;\n        float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);\n        if (fabsf(area) < 0.000001f) continue;\n        float a = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area;\n        float b = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area;\n        float c = 1.0f - a - b;\n        if (a < 0.0f || b < 0.0f || c < 0.0f) continue;\n        float z = (a * clip[ia + 2] / aw + b * clip[ib + 2] / bw + c * clip[ic + 2] / cw) * 0.5f + 0.5f;\n        if (z < 0.0f || z >= best) continue;\n        best = z;\n        float recip = a / aw + b / bw + c / cw;\n        a = a / aw / recip;\n        b = b / bw / recip;\n        c = c / cw / recip;\n        red = a * colors[ia] + b * colors[ib] + c * colors[ic];\n        green = a * colors[ia + 1] + b * colors[ib + 1] + c * colors[ic + 1];\n        blue = a * colors[ia + 2] + b * colors[ib + 2] + c * colors[ic + 2];\n    }\n    depth[pixel] = best;\n    rgba[pixel * 4] = red;\n    rgba[pixel * 4 + 1] = green;\n    rgba[pixel * 4 + 2] = blue;\n    rgba[pixel * 4 + 3] = 1.0f;\n}\n",
+    "entry": "raster_reference",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "clip",
+        "type": "buffer"
+      },
+      {
+        "name": "colors",
+        "type": "buffer"
+      },
+      {
+        "name": "indices",
+        "type": "buffer"
+      },
+      {
+        "name": "rgba",
+        "type": "buffer"
+      },
+      {
+        "name": "depth",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "triangle_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

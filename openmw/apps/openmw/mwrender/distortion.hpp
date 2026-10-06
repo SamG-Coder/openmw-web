@@ -1,6 +1,7 @@
 #include <array>
 
 #include <osgUtil/RenderBin>
+#include <components/webcuda/submission.hpp>
 
 namespace osg
 {
@@ -9,9 +10,12 @@ namespace osg
 
 namespace MWRender
 {
-    class DistortionCallback : public osgUtil::RenderBin::DrawCallback
+    class DistortionCallback : public osgUtil::RenderBin::DrawCallback, public WebCuda::CustomRenderBin
     {
     public:
+        bool shouldSubmitWebCuda(const WebCuda::SubmissionSink&) const override;
+        const osg::StateSet* beginWebCuda(WebCuda::SubmissionSink&) override;
+        void endWebCuda(WebCuda::SubmissionSink&) override;
         void drawImplementation(
             osgUtil::RenderBin* bin, osg::RenderInfo& renderInfo, osgUtil::RenderLeaf*& previous) override;
 
@@ -22,6 +26,7 @@ namespace MWRender
         }
 
     private:
+        osg::ref_ptr<osg::StateSet> mWebCudaState;
         std::array<osg::observer_ptr<osg::FrameBufferObject>, 2> mFBO;
         std::array<osg::observer_ptr<osg::FrameBufferObject>, 2> mOriginalFBO;
     };

@@ -1,0 +1,83 @@
+{
+  "name": "clear_compact_depth",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "target",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "pixel_count",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "depth",
+        "type": "f32",
+        "offset": 4
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 1,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 719,
+      "beforeBytes": 719,
+      "afterBytes": 719,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 373,
+          "transitiveBytes": 373,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// Scalar depth planes keep full resolution without unused color/normal storage.\n__global__ void clear_compact_depth(const unsigned long long* omw_pages_target,unsigned int pixel_count,float depth) {\nOmwPaged<float> target(omw_pages_target);\n\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<pixel_count)target[i]=depth;\n}\n__global__ void copy_depth_layout(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_target,unsigned int pixel_count,unsigned int source_compact,unsigned int target_compact) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<float> target(omw_pages_target);\n\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<pixel_count)target[target_compact!=0u?i:i*9u+4u]=source[source_compact!=0u?i:i*9u+4u];\n}\n__global__ void compact_depth_to_texture(const unsigned long long* omw_pages_target,const unsigned long long* omw_pages_texels,unsigned int width,unsigned int height,unsigned int offset) {\nOmwPaged<const float> target(omw_pages_target);\nOmwPaged<unsigned int> texels(omw_pages_texels);\n\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<width*height)texels[offset+(height-1u-i/width)*width+i%width]=__float_as_uint(target[i]);\n}\n",
+    "entry": "clear_compact_depth",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "target",
+        "type": "buffer"
+      },
+      {
+        "name": "pixel_count",
+        "type": "u32"
+      },
+      {
+        "name": "depth",
+        "type": "f32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

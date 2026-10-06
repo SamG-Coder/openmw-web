@@ -1,0 +1,37 @@
+{
+  "name": "transform_vertices",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// WebCuda renderer foundation. All geometry arithmetic executes in .cu kernels.\n// Matrix ABI: column-major, 16 floats per draw. Positions are packed xyz.\n__global__ void transform_vertices(const float* positions, const float* matrices,\n                                  const unsigned int* matrix_ids, float* clip,\n                                  unsigned int vertex_count) {\n    unsigned int i = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\n    if (i >= vertex_count) return;\n    unsigned int p = i * 3;\n    unsigned int m = matrix_ids[i] * 16;\n    float x = positions[p];\n    float y = positions[p + 1];\n    float z = positions[p + 2];\n    clip[i * 4] = matrices[m] * x + matrices[m + 4] * y + matrices[m + 8] * z + matrices[m + 12];\n    clip[i * 4 + 1] = matrices[m + 1] * x + matrices[m + 5] * y + matrices[m + 9] * z + matrices[m + 13];\n    clip[i * 4 + 2] = matrices[m + 2] * x + matrices[m + 6] * y + matrices[m + 10] * z + matrices[m + 14];\n    clip[i * 4 + 3] = matrices[m + 3] * x + matrices[m + 7] * y + matrices[m + 11] * z + matrices[m + 15];\n}\n\n// One thread owns one pixel: no cross-workgroup depth/color race. Input triangles\n// must already be clipped. This reference path is intentionally not the tiled\n// production rasterizer; it is an oracle for that implementation.\n__global__ void raster_reference(const float* clip, const float* colors,\n                                 const unsigned int* indices, float* rgba,\n                                 float* depth, unsigned int width,\n                                 unsigned int height, unsigned int triangle_count) {\n    unsigned int pixel = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\n    if (pixel >= width * height) return;\n    float px = (float)(pixel % width) + 0.5f;\n    float py = (float)(pixel / width) + 0.5f;\n    float best = 1.0f;\n    float red = 0.0f;\n    float green = 0.0f;\n    float blue = 0.0f;\n    for (unsigned int t = 0; t < triangle_count; t++) {\n        unsigned int ia = indices[t * 3] * 4;\n        unsigned int ib = indices[t * 3 + 1] * 4;\n        unsigned int ic = indices[t * 3 + 2] * 4;\n        float aw = clip[ia + 3];\n        float bw = clip[ib + 3];\n        float cw = clip[ic + 3];\n        if (aw <= 0.0f || bw <= 0.0f || cw <= 0.0f) continue;\n        float ax = (clip[ia] / aw * 0.5f + 0.5f) * (float)width;\n        float ay = (0.5f - clip[ia + 1] / aw * 0.5f) * (float)height;\n        float bx = (clip[ib] / bw * 0.5f + 0.5f) * (float)width;\n        float by = (0.5f - clip[ib + 1] / bw * 0.5f) * (float)height;\n        float cx = (clip[ic] / cw * 0.5f + 0.5f) * (float)width;\n        float cy = (0.5f - clip[ic + 1] / cw * 0.5f) * (float)height;\n        float area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);\n        if (fabsf(area) < 0.000001f) continue;\n        float a = ((bx - px) * (cy - py) - (by - py) * (cx - px)) / area;\n        float b = ((cx - px) * (ay - py) - (cy - py) * (ax - px)) / area;\n        float c = 1.0f - a - b;\n        if (a < 0.0f || b < 0.0f || c < 0.0f) continue;\n        float z = (a * clip[ia + 2] / aw + b * clip[ib + 2] / bw + c * clip[ic + 2] / cw) * 0.5f + 0.5f;\n        if (z < 0.0f || z >= best) continue;\n        best = z;\n        float recip = a / aw + b / bw + c / cw;\n        a = a / aw / recip;\n        b = b / bw / recip;\n        c = c / cw / recip;\n        red = a * colors[ia] + b * colors[ib] + c * colors[ic];\n        green = a * colors[ia + 1] + b * colors[ib + 1] + c * colors[ic + 1];\n        blue = a * colors[ia + 2] + b * colors[ib + 2] + c * colors[ic + 2];\n    }\n    depth[pixel] = best;\n    rgba[pixel * 4] = red;\n    rgba[pixel * 4 + 1] = green;\n    rgba[pixel * 4 + 2] = blue;\n    rgba[pixel * 4 + 3] = 1.0f;\n}\n",
+    "entry": "transform_vertices",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "positions",
+        "type": "buffer"
+      },
+      {
+        "name": "matrices",
+        "type": "buffer"
+      },
+      {
+        "name": "matrix_ids",
+        "type": "buffer"
+      },
+      {
+        "name": "clip",
+        "type": "buffer"
+      },
+      {
+        "name": "vertex_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

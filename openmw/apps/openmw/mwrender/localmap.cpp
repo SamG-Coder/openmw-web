@@ -1,6 +1,9 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "localmap.hpp"
+#include <components/webcuda/viewer.hpp>
+#include <components/webcuda/fogtexture.hpp>
+#include <osg/observer_ptr>
 
 #include <algorithm>
 #include <cstdint>
@@ -66,10 +69,11 @@ namespace MWRender
     {
     public:
         LocalMapRenderToTexture(osg::Node* sceneRoot, int res, int mapWorldSize, float x, float y,
-            const osg::Vec3d& upVector, float zmin, float zmax);
+            const osg::Vec3d& upVector, float zmin, float zmax, osg::Texture2D* restoreTexture=nullptr);
 
         void setDefaults(osg::Camera* camera) override;
 
+        osg::ref_ptr<osg::Texture2D> mRestoreTexture;
         osg::Node* mSceneRoot;
         osg::Matrix mProjectionMatrix;
         osg::Matrix mViewMatrix;
@@ -84,6 +88,8 @@ namespace MWRender
         // A few frames instead of one. The cost is a handful of extra render-to-texture draws
         // per cell visited, once; the alternative is a map that never appears at all.
         int mFramesLeft;
+        bool mWebCuda;
+        std::vector<osg::observer_ptr<osg::Camera>> mCaptureCameras;
     };
 
     class CameraLocalUpdateCallback
@@ -138,8 +144,9 @@ namespace MWRender
         mutable unsigned int mDraws = 0;
     };
 
-    LocalMap::LocalMap(osg::Group* root)
+    LocalMap::LocalMap(osg::Group* root,osgViewer::Viewer* viewer)
         : mRoot(root)
+        , mViewer(viewer)
         , mMapResolution(static_cast<int>(
               Settings::map().mLocalMapResolution * MWBase::Environment::get().getWindowManager()->getScalingFactor()))
         , mMapWorldSize(Constants::CellSizeInUnits)
@@ -171,6 +178,60 @@ namespace MWRender
     {
         mExteriorSegments.clear();
         mInteriorSegments.clear();
+        mPendingFogImages.clear();
+    }
+
+    std::shared_ptr<ESM::PendingFogImage> LocalMap::captureFog(const WebCuda::FogTexture& texture) const
+    {
+        if(texture.saveSnapshot)return texture.saveSnapshot;
+        auto snapshot=std::make_shared<ESM::PendingFogImage>();
+        snapshot->mWidth=texture.getTextureWidth();snapshot->mHeight=texture.getTextureHeight();
+        snapshot->mInputs=texture.captureInputs();
+        texture.saveSnapshot=snapshot;texture.compactionRequest=snapshot;mPendingFogImages.emplace_back(snapshot);
+        submitFogSnapshot(snapshot,const_cast<WebCuda::FogTexture*>(&texture));
+        return snapshot;
+    }
+
+    void LocalMap::submitFogSnapshot(const std::shared_ptr<ESM::PendingFogImage>& snapshot,
+        osg::observer_ptr<WebCuda::FogTexture> observed) const
+    {
+        auto* viewer=dynamic_cast<WebCuda::Viewer*>(mViewer.get());
+        if(!viewer)throw std::runtime_error("CUDA fog save requires its rendering viewer");
+        snapshot->mReady=false;snapshot->mError.clear();snapshot->mPng.clear();
+        try {
+            viewer->captureFogImage(snapshot->mWidth,snapshot->mHeight,snapshot->mInputs,
+                [snapshot,observed](osg::ref_ptr<osg::Image> image,std::string error) {
+                    try {
+                        if(!image)throw std::runtime_error(error.empty()?"Fog GPU readback failed":error);
+                        auto* writer=osgDB::Registry::instance()->getReaderWriterForExtension("png");
+                        if(!writer)throw std::runtime_error("Missing fog PNG writer");
+                        osg::ref_ptr<osg::Image> output=new osg::Image(*image,osg::CopyOp::DEEP_COPY_ALL);
+                        output->flipVertical();
+                        std::ostringstream stream;const auto result=writer->writeImage(*output,stream);
+                        if(!result.success())throw std::runtime_error("Fog PNG encoding failed: "+result.message());
+                        const auto bytes=stream.str();snapshot->mPng.assign(bytes.begin(),bytes.end());
+                        if(snapshot->mPng.empty())throw std::runtime_error("Empty fog PNG result");
+                        if(observed.valid())observed->compact(snapshot,*image);
+                    } catch(const std::exception& exception) {snapshot->mError=exception.what();}
+                    snapshot->mReady=true;
+                });
+        } catch(const std::exception& exception) {snapshot->mError=exception.what();snapshot->mReady=true;}
+    }
+
+    bool LocalMap::isSaveReady() const
+    {
+        if(!dynamic_cast<WebCuda::Viewer*>(mViewer.get()))return true;
+        bool ready=true;
+        for(const auto* segments:{&mExteriorSegments,&mInteriorSegments})for(const auto& entry:*segments) {
+            const auto& segment=entry.second;
+            if(segment.mHasFogState)if(const auto* texture=dynamic_cast<const WebCuda::FogTexture*>(segment.mFogOfWarTexture.get()))
+                ready=captureFog(*texture)->mReady&&ready;
+        }
+        for(auto it=mPendingFogImages.begin();it!=mPendingFogImages.end();) {
+            if(const auto snapshot=it->lock()) {ready=snapshot->mReady&&ready;++it;}
+            else it=mPendingFogImages.erase(it);
+        }
+        return ready;
     }
 
     void LocalMap::saveFogOfWar(MWWorld::CellStore* cell) const
@@ -188,7 +249,7 @@ namespace MWRender
                 auto fog = std::make_unique<ESM::FogState>();
                 fog->mFogTextures.emplace_back();
 
-                segment.saveFogOfWar(fog->mFogTextures.back());
+                segment.saveFogOfWar(fog->mFogTextures.back(),*this);
 
                 cell->setFog(std::move(fog));
             }
@@ -220,7 +281,7 @@ namespace MWRender
                     if (!segment.mHasFogState)
                         continue;
                     ESM::FogTexture& texture = fog->mFogTextures.emplace_back();
-                    segment.saveFogOfWar(texture);
+                    segment.saveFogOfWar(texture,*this);
                     texture.mX = x;
                     texture.mY = y;
                 }
@@ -250,6 +311,7 @@ namespace MWRender
         MapSegment& segment = mInterior ? mInteriorSegments[std::make_pair(segmentX, segmentY)]
                                         : mExteriorSegments[std::make_pair(segmentX, segmentY)];
         segment.mMapTexture = static_cast<osg::Texture2D*>(mLocalMapRTTs.back()->getColorTexture(nullptr));
+        segment.mRenderRecipe={left,top,zmin,zmax,upVector,true};
 
         // WHICH TEXTURE THE WIDGET WILL BE HANDED. Ten suspects have died on this bug and the
         // survivors all reduce to one unproven assumption: that the texture stored here is the
@@ -277,6 +339,38 @@ namespace MWRender
                                 << (t ? t->getInternalFormat() : 0) << std::dec
                                 << " size=" << (t ? t->getTextureWidth() : 0) << "x"
                                 << (t ? t->getTextureHeight() : 0);
+        }
+    }
+
+    void LocalMap::restoreRenderTargets()
+    {
+        if(!WebCuda::Viewer::requested())return;
+        // Viewer invalidation has canceled old-device callbacks. Retry the same
+        // shared snapshots so unloaded cell records also receive the new PNG.
+        for(const auto& weak:mPendingFogImages)if(const auto snapshot=weak.lock()) {
+            if(!snapshot->mReady||!snapshot->mError.empty()) {
+                osg::observer_ptr<WebCuda::FogTexture> observed;
+                for(auto* segments:{&mExteriorSegments,&mInteriorSegments})for(auto& entry:*segments)
+                    if(auto* fog=dynamic_cast<WebCuda::FogTexture*>(entry.second.mFogOfWarTexture.get()))
+                        if(fog->saveSnapshot==snapshot)observed=fog;
+                submitFogSnapshot(snapshot,observed);
+            }
+        }
+        for(const auto& rtt:mLocalMapRTTs)mRoot->removeChild(rtt);
+        mLocalMapRTTs.clear();
+        auto& segments=mInterior?mInteriorSegments:mExteriorSegments;
+        for(auto& entry:segments) {
+            auto& segment=entry.second;
+            const auto& recipe=segment.mRenderRecipe;
+            if(!recipe.valid||!segment.mMapTexture)continue;
+            auto rtt=osg::ref_ptr<LocalMapRenderToTexture>(new LocalMapRenderToTexture(
+                mSceneRoot,mMapResolution,mMapWorldSize,recipe.x,recipe.y,recipe.up,
+                recipe.zmin,recipe.zmax,segment.mMapTexture));
+            // Instantiate the camera now, so the existing GUI texture receives
+            // a fresh render target without reloading cell fog snapshots.
+            rtt->getColorTexture(nullptr);
+            mRoot->addChild(rtt);
+            mLocalMapRTTs.push_back(rtt);
         }
     }
 
@@ -565,6 +659,9 @@ namespace MWRender
         int texU = static_cast<int>((sFogOfWarResolution - 1) * nX);
         int texV = static_cast<int>((sFogOfWarResolution - 1) * nY);
 
+        if(const auto* fog=dynamic_cast<const WebCuda::FogTexture*>(segment.mFogOfWarTexture.get()))
+            return fog->isExplored(static_cast<unsigned int>(texU),static_cast<unsigned int>(texV));
+
         const std::uint32_t clr
             = reinterpret_cast<const uint32_t*>(segment.mFogOfWarImage->data())[texV * sFogOfWarResolution + texU];
         uint8_t alpha = (clr >> 24);
@@ -634,6 +731,12 @@ namespace MWRender
                 if (!segment.mFogOfWarImage || !segment.mMapTexture)
                     continue;
 
+                if(auto* fog=dynamic_cast<WebCuda::FogTexture*>(segment.mFogOfWarTexture.get())) {
+                    fog->explore((u-mx)*(sFogOfWarResolution-1),(v-my)*(sFogOfWarResolution-1),sqrExploreRadius);
+                    segment.mHasFogState=true;
+                    if(fog->needsCompaction())captureFog(*fog);
+                    continue; // WebCuda paints pixels only in generate_fog_map.
+                }
                 std::uint32_t* data = reinterpret_cast<std::uint32_t*>(segment.mFogOfWarImage->data());
                 bool changed = false;
                 for (int texV = 0; texV < sFogOfWarResolution; ++texV)
@@ -697,7 +800,7 @@ namespace MWRender
     {
         if (mFogOfWarTexture)
             return;
-        mFogOfWarTexture = new osg::Texture2D;
+        mFogOfWarTexture = WebCuda::Viewer::requested()?static_cast<osg::Texture2D*>(new WebCuda::FogTexture(*mFogOfWarImage)):new osg::Texture2D;
         // TODO: synchronize access? for now, the worst that could happen is the draw thread jumping a frame ahead.
         // mFogOfWarTexture->setDataVariance(osg::Object::DYNAMIC);
         mFogOfWarTexture->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR);
@@ -725,6 +828,15 @@ namespace MWRender
 
     void LocalMap::MapSegment::loadFogOfWar(const ESM::FogTexture& esm)
     {
+        if(esm.mPendingImage&&WebCuda::Viewer::requested()) {
+            // Raw owned inputs are available even before asynchronous PNG encoding.
+            initFogOfWar();
+            auto* texture=dynamic_cast<WebCuda::FogTexture*>(mFogOfWarTexture.get());
+            if(!texture)throw std::runtime_error("Missing procedural fog texture on reload");
+            texture->restoreSnapshot(*esm.mPendingImage);
+            texture->saveSnapshot=esm.mPendingImage;
+            mHasFogState=true;return;
+        }
         const std::vector<char>& data = esm.mImageData;
         if (data.empty())
         {
@@ -751,13 +863,17 @@ namespace MWRender
         mFogOfWarImage = result.getImage();
         mFogOfWarImage->flipVertical();
         mFogOfWarImage->dirty();
+        if(auto* fog=dynamic_cast<WebCuda::FogTexture*>(mFogOfWarTexture.get()))fog->reset(*mFogOfWarImage);
 
         createFogOfWarTexture();
         mHasFogState = true;
     }
 
-    void LocalMap::MapSegment::saveFogOfWar(ESM::FogTexture& fog) const
+    void LocalMap::MapSegment::saveFogOfWar(ESM::FogTexture& fog,const LocalMap& owner) const
     {
+        if(const auto* texture=dynamic_cast<const WebCuda::FogTexture*>(mFogOfWarTexture.get())) {
+            fog.mPendingImage=owner.captureFog(*texture);fog.mImageData.clear();return;
+        }
         if (!mFogOfWarImage)
             return;
 
@@ -771,27 +887,30 @@ namespace MWRender
         }
 
         // extra flips are unfortunate, but required for compatibility with older versions
-        mFogOfWarImage->flipVertical();
-        osgDB::ReaderWriter::WriteResult result = readerwriter->writeImage(*mFogOfWarImage, ostream);
+        // Serialize an isolated copy: a writer failure must not leave the live
+        // mask vertically flipped, and asynchronous rendering may still use it.
+        osg::ref_ptr<osg::Image> output=new osg::Image(*mFogOfWarImage,osg::CopyOp::DEEP_COPY_ALL);
+        output->flipVertical();
+        osgDB::ReaderWriter::WriteResult result = readerwriter->writeImage(*output, ostream);
         if (!result.success())
         {
             Log(Debug::Error) << "Error: Unable to write fog: " << result.message() << " code " << result.status();
             return;
         }
-        mFogOfWarImage->flipVertical();
-
         std::string data = ostream.str();
         fog.mImageData = std::vector<char>(data.begin(), data.end());
     }
 
     LocalMapRenderToTexture::LocalMapRenderToTexture(osg::Node* sceneRoot, int res, int mapWorldSize, float x, float y,
-        const osg::Vec3d& upVector, float zmin, float zmax)
+        const osg::Vec3d& upVector, float zmin, float zmax, osg::Texture2D* restoreTexture)
         : RTTNode(res, res, 0, false, 0, StereoAwareness::Unaware_MultiViewShaders, shouldAddMSAAIntermediateTarget())
+        , mRestoreTexture(restoreTexture)
         , mSceneRoot(sceneRoot)
         , mActive(true)
         // 3: enough to survive a first traversal that draws nothing, small enough that the
         // extra cost is invisible. See mFramesLeft.
         , mFramesLeft(3)
+        , mWebCuda(WebCuda::Viewer::requested())
     {
         setNodeMask(Mask_RenderToTexture);
 
@@ -828,6 +947,12 @@ namespace MWRender
 
     void LocalMapRenderToTexture::setDefaults(osg::Camera* camera)
     {
+        if(mRestoreTexture)camera->attach(osg::Camera::COLOR_BUFFER,mRestoreTexture);
+        if(mWebCuda) {
+            camera->setUserValue("webcuda.notifyPassComplete",true);
+            camera->setUserValue("webcuda.passComplete",false);
+            mCaptureCameras.emplace_back(camera);
+        }
         camera->setName("LocalMap");
         // Disable small feature culling, it's not going to be reliable for this camera
         osg::Camera::CullingMode cullingMode
@@ -917,6 +1042,9 @@ namespace MWRender
         stateset->setAttributeAndModes(fog, osg::StateAttribute::OFF | osg::StateAttribute::OVERRIDE);
 
         // turn of sky blending
+        // The CUDA material packet needs the camera's explicit feature state;
+        // this RTT has no sky sampler and must not inherit the global variant.
+        stateset->addUniform(new osg::Uniform("webcudaDisableSkyBlending", true));
         stateset->addUniform(new osg::Uniform("far", 10000000.0f));
         stateset->addUniform(new osg::Uniform("skyBlendingStart", 8000000.0f));
         stateset->addUniform(new osg::Uniform("screenRes", osg::Vec2f{ 1, 1 }));
@@ -1090,6 +1218,15 @@ namespace MWRender
         // Counted DOWN rather than flipped off after one visit, so a first traversal that did
         // not actually draw (a lazily created FBO under WebGL) does not cost the map its only
         // chance. mActive is kept because the cleanup pass in cleanupCameras() keys off it.
+        if(node->mWebCuda) {
+            bool completed=!node->mCaptureCameras.empty();
+            for(const auto& camera:node->mCaptureCameras) {
+                bool done=false;if(camera.valid())camera->getUserValue("webcuda.passComplete",done);
+                completed=completed&&done;
+            }
+            if(completed){node->setNodeMask(0);node->mActive=false;}
+            traverse(node,nv);return;
+        }
         if (node->mFramesLeft > 0)
             node->mFramesLeft--;
         else

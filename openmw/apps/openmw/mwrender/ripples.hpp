@@ -8,6 +8,7 @@
 
 #include <components/sceneutil/rtt.hpp>
 #include <components/sceneutil/statesetupdater.hpp>
+#include <components/webcuda/submission.hpp>
 
 namespace Resource
 {
@@ -29,7 +30,7 @@ namespace osg
 
 namespace MWRender
 {
-    class RipplesSurface : public osg::Geometry
+    class RipplesSurface : public osg::Geometry, public WebCuda::CustomDrawable
     {
     public:
         RipplesSurface(Resource::ResourceSystem* resourceSystem);
@@ -39,6 +40,7 @@ namespace MWRender
         void emit(const osg::Vec3f pos, float sizeInCellUnits);
 
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
+        void submitWebCuda(WebCuda::SubmissionSink&,const WebCuda::DrawContext&) const override;
 
         void setPaused(bool paused) { mPaused = paused; }
 
@@ -54,6 +56,7 @@ namespace MWRender
         struct State
         {
             bool mPaused = true;
+            float mTime = 0;
             osg::ref_ptr<osg::StateSet> mStateset;
         };
 

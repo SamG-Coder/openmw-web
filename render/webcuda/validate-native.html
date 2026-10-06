@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenMW native CUDA validation</title>
+<style>
+  :root{color-scheme:dark;font:16px/1.55 system-ui;background:#141b24;color:#e5eef8}
+  body{max-width:980px;margin:40px auto;padding:0 24px}h1{font-size:28px}
+  button,select{font:inherit;padding:9px 14px;margin:0 8px 8px 0;border:1px solid #52657c;border-radius:6px}
+  button{cursor:pointer}button:disabled{cursor:default;opacity:.55}
+  a{color:#9fcaff}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;background:#0b111a;padding:18px}
+  #status{font-weight:600}small{color:#a9bdd3}
+</style>
+<h1>OpenMW native CUDA validation</h1>
+<p>Compile the renderer’s authored CUDA with ChromiumRTXCuda’s NVRTC compiler and run the small raster and depth checks on the GPU.</p>
+<p>This checks kernel compatibility. It does not switch the game renderer or establish full-game native performance.</p>
+<p id="availability" role="status">Checking native CUDA availability…</p>
+<label for="scope">Kernels </label>
+<select id="scope"><option value="raster">Main rasterizer</option><option value="all">All runtime kernels</option></select>
+<label for="storage">Storage </label>
+<select id="storage"><option value="direct">Direct CUDA buffers</option><option value="paged">Paged game renderer</option></select>
+<button id="run" disabled>Compile and test native CUDA</button>
+<button id="save" disabled>Save report</button>
+<p id="status" role="status">Ready</p>
+<small>Native access uses the browser’s normal Native CUDA and RTX permission. No permission is requested until you press the test button. The test closes its native session afterward.</small>
+<pre id="results" aria-live="polite"></pre>
+<p><a href="validate-kernels.html">WebGPU kernel validation</a></p>
+<script type="module" src="validate-native.js"></script>
+</html>

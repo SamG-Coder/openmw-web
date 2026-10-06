@@ -1,0 +1,37 @@
+{
+  "name": "pack_present",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Write a padded RGBA8 buffer for a WebGPU copy into the canvas texture.\n// No JavaScript fragment shader and no CPU pixel readback are used to present.\n__global__ void pack_present(const float* rgba, unsigned int* pixels,\n                             unsigned int width, unsigned int height,\n                             unsigned int row_pixels) {\n    unsigned int i = (blockIdx.x + blockIdx.y * gridDim.x) * blockDim.x + threadIdx.x;\n    if (i >= width * height) return;\n    unsigned int r = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4])) * 255.0f + 0.5f);\n    unsigned int g = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4 + 1])) * 255.0f + 0.5f);\n    unsigned int b = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4 + 2])) * 255.0f + 0.5f);\n    unsigned int a = (unsigned int)(fminf(1.0f, fmaxf(0.0f, rgba[i * 4 + 3])) * 255.0f + 0.5f);\n    pixels[(i / width) * row_pixels + i % width] = r | (g << 8) | (b << 16) | (a << 24);\n}\n",
+    "entry": "pack_present",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "rgba",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "row_pixels",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

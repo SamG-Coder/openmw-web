@@ -1,0 +1,182 @@
+{
+  "name": "expand_screen_primitives",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "vertices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "attributes",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "records",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "lighting_origins",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "fixed_lighting",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "primitive_count",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "track_lighting",
+        "type": "u32",
+        "offset": 12
+      },
+      {
+        "name": "fixed_enabled",
+        "type": "u32",
+        "offset": 16
+      },
+      {
+        "name": "sample_count",
+        "type": "u32",
+        "offset": 20
+      },
+      {
+        "name": "source_point_fade_offset",
+        "type": "u32",
+        "offset": 24
+      }
+    ],
+    "uniformSize": 32,
+    "uniformBinding": 5,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 14595,
+      "beforeBytes": 14595,
+      "afterBytes": 14595,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 13567,
+          "transitiveBytes": 13837,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Expand ordinary point/line geometry after deformation and vertex transforms.\r\n// Inputs refer only to original vertices; each record owns four output vertices.\r\n__global__ void expand_screen_primitives(const unsigned long long* omw_pages_vertices,const unsigned long long* omw_pages_attributes,const unsigned long long* omw_pages_records,const unsigned long long* omw_pages_lighting_origins,const unsigned long long* omw_pages_fixed_lighting,\r\n    unsigned int primitive_count,unsigned int width,unsigned int height,unsigned int track_lighting,unsigned int fixed_enabled,unsigned int sample_count,unsigned int source_point_fade_offset) {\nOmwPaged<float> vertices(omw_pages_vertices);\nOmwPaged<float> attributes(omw_pages_attributes);\nOmwPaged<const unsigned int> records(omw_pages_records);\nOmwPaged<unsigned int> lighting_origins(omw_pages_lighting_origins);\nOmwPaged<float> fixed_lighting(omw_pages_fixed_lighting);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=primitive_count)return;\r\n    unsigned int r=i*12u,a=records[r],b=records[r+1u],output=records[r+2u],point=records[r+3u];\r\n    float size=__uint_as_float(records[r+4u]);\r\n    float start[4],finish[4];\r\n    for(unsigned int k=0;k<4;k++){start[k]=vertices[a*10u+k];finish[k]=vertices[b*10u+k];}\r\n    float begin=0.0f,end=1.0f,alpha=1.0f,smoothRadius=0.0f;\r\n    unsigned int visible=1u;\r\n    for(unsigned int plane=0;plane<6;plane++) {\r\n        if(plane>=4u&&(records[r+11u]&32u)!=0u)continue;\r\n        unsigned int axis=plane/2;float sign=(plane%2)==0?1.0f:-1.0f;\r\n        float p=start[3]+sign*start[axis],q=finish[3]+sign*finish[axis];\r\n        if(plane==4u&&(records[r+11u]&512u)!=0u){p=start[2];q=finish[2];}\r\n        if(p<0.0f&&q<0.0f)visible=0u;\r\n        else if(p<0.0f)begin=fmaxf(begin,p/(p-q));\r\n        else if(q<0.0f)end=fminf(end,p/(p-q));\r\n    }\r\n    float first[4],last[4];\r\n    for(unsigned int k=0;k<4;k++){first[k]=start[k]+begin*(finish[k]-start[k]);last[k]=start[k]+end*(finish[k]-start[k]);}\r\n    if(end<begin||first[3]<=0.0f||last[3]<=0.0f)visible=0u;\r\n    float x=0.0f,y=0.0f,nx=0.0f,ny=0.0f,ex=0.0f,ey=0.0f;\r\n    if(visible!=0u) {\r\n        if(point!=0u) {\r\n            float distance=0.0f;\r\n            for(unsigned int k=0;k<3;k++)distance+=attributes[a*34u+k]*attributes[a*34u+k];\r\n            distance=sqrtf(distance);\r\n            float attenuation=__uint_as_float(records[r+8u])+__uint_as_float(records[r+9u])*distance\r\n                +__uint_as_float(records[r+10u])*distance*distance;\r\n            size/=sqrtf(fmaxf(0.000000000001f,attenuation));\r\n            size=fminf(__uint_as_float(records[r+6u]),fmaxf(__uint_as_float(records[r+5u]),size));\r\n            float fade=__uint_as_float(records[r+7u]);\r\n            unsigned int multisample=sample_count>1u&&(records[r+11u]&64u)!=0u?1u:0u;\r\n            if(multisample!=0u&&fade>0.0f&&size<fade){float ratio=size/fade;alpha=ratio*ratio;size=fade;}\r\n            unsigned int pointStyle=records[r+11u]&384u;\r\n            if(multisample==0u&&pointStyle==128u)smoothRadius=size*0.5f;\r\n            if(multisample==0u&&pointStyle==0u)size=fmaxf(1.0f,floorf(size+0.5f));\r\n            float odd=size-2.0f*floorf(size*0.5f);\r\n            x=(first[0]/first[3]*0.5f+0.5f)*(float)width;\r\n            y=(first[1]/first[3]*0.5f+0.5f)*(float)height;\r\n            if(multisample==0u&&pointStyle==0u) {\r\n                x=odd>0.0f?floorf(x)+0.5f:floorf(x+0.5f);\r\n                y=odd>0.0f?floorf(y)+0.5f:floorf(y+0.5f);\r\n            }\r\n        } else {\r\n            float support=fmaxf(size,fmaxf(1.0f,floorf(size+0.5f)))+2.0f;\r\n            float dx=(last[0]/last[3]-first[0]/first[3])*(float)width;\r\n            float dy=(last[1]/last[3]-first[1]/first[3])*(float)height;\r\n            float length=sqrtf(dx*dx+dy*dy);\r\n            if(length<=0.000001f)visible=0u;\r\n            else {nx=-dy/length*support/(float)width;ny=dx/length*support/(float)height;\r\n                ex=dx/length*support/(float)width;ey=dy/length*support/(float)height;}\r\n        }\r\n    }\r\n    for(unsigned int corner=0;corner<4;corner++) {\r\n        unsigned int v=output+corner;\r\n        float t=(corner>=2u?end:begin),side=(corner==0u||corner==3u)?-1.0f:1.0f;\r\n        if(fixed_enabled!=0)for(unsigned int k=0;k<16;k++)fixed_lighting[v*16+k]=fixed_lighting[a*16+k]+t*(fixed_lighting[b*16+k]-fixed_lighting[a*16+k]);\r\n        // Two-sided lighting applies to polygons, not the point/line that\r\n        // this quad represents. Tag the back slot for flat provoking assembly.\r\n        if(fixed_enabled!=0&&fixed_lighting[v*16+7]>0.5f) {\r\n            for(unsigned int k=0;k<7;k++)fixed_lighting[v*16+8+k]=fixed_lighting[v*16+k];\r\n            fixed_lighting[v*16+15]=2.0f;\r\n        }\r\n        if(track_lighting!=0){lighting_origins[v*3]=a;lighting_origins[v*3+1]=b;lighting_origins[v*3+2]=__float_as_uint(t);}\r\n        for(unsigned int k=0;k<10;k++)vertices[v*10u+k]=vertices[a*10u+k]+t*(vertices[b*10u+k]-vertices[a*10u+k]);\r\n        for(unsigned int k=0;k<34;k++)attributes[v*34u+k]=attributes[a*34u+k]+t*(attributes[b*34u+k]-attributes[a*34u+k]);\r\n        if(visible==0u) {for(unsigned int k=0;k<4;k++)vertices[v*10u+k]=0.0f;}\r\n        else if(point!=0u) {\r\n            float horizontal=corner>=2u?1.0f:-1.0f,w=vertices[v*10u+3u];\r\n            vertices[v*10u]=((x+horizontal*(size*0.5f+(smoothRadius>0.0f?0.5f:0.0f)))/(float)width*2.0f-1.0f)*w;\r\n            vertices[v*10u+1u]=((y+side*(size*0.5f+(smoothRadius>0.0f?0.5f:0.0f)))/(float)height*2.0f-1.0f)*w;\r\n            unsigned int metadata=source_point_fade_offset+v*12u;\r\n            attributes[metadata]=alpha;\r\n            attributes[metadata+1u]=horizontal*(size*0.5f+(smoothRadius>0.0f?0.5f:0.0f));\r\n            attributes[metadata+2u]=side*(size*0.5f+(smoothRadius>0.0f?0.5f:0.0f));\r\n            // Negative radius tags sprite metadata; positive radius tags smoothing.\r\n            attributes[metadata+3u]=(records[r+11u]&256u)!=0u?-size*0.5f:smoothRadius;\r\n            // Point-sprite replacement follows texture transformation, as in\r\n            // the raster stage. Origin defaults to upper-left; bit4 flips it.\r\n            unsigned int sprite=records[r+11u];\r\n            float u=horizontal*0.5f+0.5f;\r\n            float textureV=(sprite&16u)!=0u?side*0.5f+0.5f:0.5f-side*0.5f;\r\n            for(unsigned int unit=0;unit<4;unit++)if((sprite&(1u<<unit))!=0u) {\r\n                unsigned int coord=unit==0u?16u:10u+(unit-1u)*2u;\r\n                attributes[v*34u+coord]=u;attributes[v*34u+coord+1u]=textureV;\r\n                attributes[v*34u+26u+unit*2u]=0.0f;attributes[v*34u+27u+unit*2u]=1.0f;\r\n                if(unit==0u){vertices[v*10u+8u]=u;vertices[v*10u+9u]=textureV;}\r\n            }\r\n        } else {\r\n            // Preserve the clipped centreline independently of the support quad.\r\n            // Coverage can then recover original endpoint positions and w after\r\n            // homogeneous clipping and viewport mapping of the quad itself.\r\n            unsigned int metadata=source_point_fade_offset+v*12u;\r\n            attributes[metadata+1u]=corner>=2u?1.0f:0.0f;\r\n            attributes[metadata+2u]=size;\r\n            for(unsigned int k=0u;k<4u;k++) {\r\n                attributes[metadata+4u+k]=first[k];\r\n                attributes[metadata+8u+k]=last[k];\r\n            }\r\n            vertices[v*10u]+=(side*nx+(corner>=2u?ex:-ex))*vertices[v*10u+3u];\r\n            vertices[v*10u+1u]+=(side*ny+(corner>=2u?ey:-ey))*vertices[v*10u+3u];\r\n        }\r\n    }\r\n}\r\n",
+    "entry": "expand_screen_primitives",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "attributes",
+        "type": "buffer"
+      },
+      {
+        "name": "records",
+        "type": "buffer"
+      },
+      {
+        "name": "lighting_origins",
+        "type": "buffer"
+      },
+      {
+        "name": "fixed_lighting",
+        "type": "buffer"
+      },
+      {
+        "name": "primitive_count",
+        "type": "u32"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "track_lighting",
+        "type": "u32"
+      },
+      {
+        "name": "fixed_enabled",
+        "type": "u32"
+      },
+      {
+        "name": "sample_count",
+        "type": "u32"
+      },
+      {
+        "name": "source_point_fade_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

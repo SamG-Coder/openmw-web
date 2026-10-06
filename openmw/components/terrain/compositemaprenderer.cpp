@@ -1,6 +1,8 @@
 #include "compositemaprenderer.hpp"
 
 #include <osg/FrameBufferObject>
+#include <osg/Geometry>
+#include <chrono>
 #include <osg/RenderInfo>
 #include <osg/Texture2D>
 
@@ -20,6 +22,54 @@ namespace Terrain
     }
 
     CompositeMapRenderer::~CompositeMapRenderer() = default;
+
+    void CompositeMapRenderer::submitWebCuda(WebCuda::SubmissionSink& sink, const WebCuda::DrawContext& context) const
+    {
+        const double dt=std::min(mTimer.time_s(),0.2);
+        mTimer.setStartTick();
+        const double availableTime=std::max((1.0/static_cast<double>(mTargetFrameRate)-dt)*0.75,mMinimumTimeAvailable);
+        // Budget background CPU capture; GPU rendering is ordered before terrain consumers.
+        std::unique_lock<std::mutex> lock(mMutex);
+        auto capture=[&](const osg::ref_ptr<CompositeMap>& map) {
+            if(!map->mTexture)throw std::runtime_error("Composite map has no texture");
+            if(map->mTexture->referenceCount()<=1) {
+                map->mCompiled=map->mDrawables.size();return;
+            }
+            if(map->mDrawables.empty())return;
+            // Validate before opening the nested pass, so unsupported drawables
+            // cannot leave a half-open target or be silently omitted.
+            for(size_t i=map->mCompiled;i<map->mDrawables.size();++i)
+                if(!map->mDrawables[i]||!map->mDrawables[i]->asGeometry()||map->mDrawables[i]->getDrawCallback())
+                    throw std::runtime_error("Unsupported terrain composite drawable");
+            sink.beginColorTarget(*map->mTexture);
+            try {
+                for(size_t i=map->mCompiled;i<map->mDrawables.size();++i) {
+                    const auto* geometry=map->mDrawables[i]->asGeometry();
+                    auto draw=context;
+                    if(geometry->getStateSet())draw.states.push_back(geometry->getStateSet());
+                    sink.geometry(*geometry,draw);
+                }
+            } catch(...) {
+                // Restore the enclosing pass before propagating capture failure.
+                sink.endColorTarget();throw;
+            }
+            sink.endColorTarget();
+            map->mCompiled=map->mDrawables.size();
+            map->mDrawables.clear();
+        };
+        auto process=[&](CompileSet& queue) {
+            osg::ref_ptr<CompositeMap> map=*queue.begin();queue.erase(queue.begin());
+            lock.unlock();
+            try {capture(map);} catch(...) {
+                lock.lock();queue.insert(map);throw;
+            }
+            lock.lock();
+        };
+        while(!mImmediateCompileSet.empty())process(mImmediateCompileSet);
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::duration<double>(availableTime);
+        while(!mCompileSet.empty()&&std::chrono::steady_clock::now()<deadline)process(mCompileSet);
+        mTimer.setStartTick();
+    }
 
     void CompositeMapRenderer::drawImplementation(osg::RenderInfo& renderInfo) const
     {

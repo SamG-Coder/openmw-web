@@ -1,0 +1,14 @@
+--- a/include/osgText/TextBase
++++ b/include/osgText/TextBase
+@@ -275,6 +275,11 @@
+     typedef osg::ref_ptr<osg::Vec3Array> Coords;
+     Coords& getCoords() { return _coords; }
+     const Coords& getCoords() const { return _coords; }
++
++    /** Read-only decoration topology for render backends that capture text. */
++    const std::vector<osg::ref_ptr<osg::DrawElements> >& getDecorationPrimitives() const { return _decorationPrimitives; }
++    const osg::Vec3& getLayoutOffset() const { return _offset; }
++    bool getGlyphNormalized() const { return _glyphNormalized; }
+ 
+     void getCoord(unsigned int i, osg::Vec2& c) const { c.set((*_coords)[i].x(), (*_coords)[i].y()); }
+     void getCoord(unsigned int i, osg::Vec3& c) const { c = (*_coords)[i]; }

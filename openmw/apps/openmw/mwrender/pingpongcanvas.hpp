@@ -11,6 +11,7 @@
 #include <components/fx/technique.hpp>
 
 #include "luminancecalculator.hpp"
+#include <components/webcuda/submission.hpp>
 
 namespace Shader
 {
@@ -19,7 +20,7 @@ namespace Shader
 
 namespace MWRender
 {
-    class PingPongCanvas : public osg::Geometry
+    class PingPongCanvas : public osg::Geometry, public WebCuda::CustomDrawable
     {
     public:
         PingPongCanvas(
@@ -28,6 +29,7 @@ namespace MWRender
         void drawGeometry(osg::RenderInfo& renderInfo) const;
 
         void drawImplementation(osg::RenderInfo& renderInfo) const override;
+        void submitWebCuda(WebCuda::SubmissionSink&,const WebCuda::DrawContext&) const override;
 
         void dirty() { mDirty = true; }
 

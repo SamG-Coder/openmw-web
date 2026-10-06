@@ -106,6 +106,9 @@ void main()
     else if (pass == PASS_SUNFLASH_QUERY)
     {
         processSunflashQuery();
+        // Query color writes are masked, but alpha still participates in
+        // fragment tests and multisample coverage. Do not leave it undefined.
+        gl_FragData[0] = vec4(1.0);
         return;
     }
 

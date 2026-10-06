@@ -1,0 +1,5 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -101,1 +101,1 @@
+-if (EMSCRIPTEN)
++if (EMSCRIPTEN AND NOT MYGUI_ENGINE_ONLY)

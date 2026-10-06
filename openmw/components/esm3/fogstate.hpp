@@ -3,16 +3,30 @@
 
 #include <cstdint>
 #include <vector>
+#include <memory>
+#include <string>
 
 namespace ESM
 {
     class ESMReader;
     class ESMWriter;
 
+    // Transient owned GPU snapshot. Never serialized as a new save record:
+    // completed PNG bytes use the existing FTEX representation.
+    struct PendingFogImage
+    {
+        unsigned int mWidth=0,mHeight=0;
+        std::vector<std::uint32_t> mInputs;
+        std::vector<char> mPng;
+        std::string mError;
+        bool mReady=false;
+    };
+
     struct FogTexture
     {
-        int32_t mX, mY; // Only used for interior cells
+        int32_t mX=0, mY=0; // Only used for interior cells
         std::vector<char> mImageData;
+        std::shared_ptr<PendingFogImage> mPendingImage;
     };
 
     // format 0, saved games only

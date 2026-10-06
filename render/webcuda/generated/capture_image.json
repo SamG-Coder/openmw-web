@@ -1,0 +1,163 @@
+{
+  "version": "0.1.1",
+  "name": "capture_image",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel capture_image.\n@group(0) @binding(0) var<storage, read> b_source: array<f32>;\n@group(0) @binding(1) var<storage, read_write> b_pixels: array<u32>;\nstruct CWParams {\n  p_source_width: u32,\n  p_source_height: u32,\n  p_width: u32,\n  p_height: u32,\n  p_region_x: i32,\n  p_region_y: i32,\n  p_region_width: u32,\n  p_region_height: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }\nfn f_cw_buffer_helper_0(cw_buffer_arg_0: i32, cw_arg_width: u32, cw_arg_height: u32, cw_arg_x: i32, cw_arg_y: i32, cw_arg_c: u32, cw_thread: vec3<u32>, cw_block: vec3<u32>, cw_grid: vec3<u32>) -> f32 {\n  var cw_buffer_offset_0: i32 = cw_buffer_arg_0;\n  var v_width: u32 = cw_arg_width;\n  var v_height: u32 = cw_arg_height;\n  var v_x: i32 = cw_arg_x;\n  var v_y: i32 = cw_arg_y;\n  var v_c: u32 = cw_arg_c;\n  if (((((v_x < 0i) || (v_y < 0i)) || (v_x >= i32(v_width))) || (v_y >= i32(v_height)))) {\n    return 0.0f;\n  }\n  return b_source[(cw_buffer_offset_0 + i32(((((u32(v_y) * v_width) + u32(v_x)) * 9u) + v_c)))];\n}\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= (cw_params.p_width * cw_params.p_height))) {\n    return;\n  }\n  var v_aspect: f32 = cw_divide_f32(f32(cw_params.p_width), f32(cw_params.p_height));\n  var v_left: i32 = (i32((f32(cw_params.p_region_width) - (f32(cw_params.p_region_height) * v_aspect))) / 2i);\n  var v_top: i32 = (i32((f32(cw_params.p_region_height) - cw_divide_f32(f32(cw_params.p_region_width), v_aspect))) / 2i);\n  if ((v_left < 0i)) {\n    v_left = 0i;\n  }\n  if ((v_top < 0i)) {\n    v_top = 0i;\n  }\n  var v_crop_width: u32 = (cw_params.p_region_width - (2u * u32(v_left)));\n  var v_crop_height: u32 = (cw_params.p_region_height - (2u * u32(v_top)));\n  var v_x: f32 = ((f32(v_left) + cw_divide_f32(((f32((v_i % cw_params.p_width)) + 0.5f) * f32(v_crop_width)), f32(cw_params.p_width))) - 0.5f);\n  var v_y: f32 = ((f32(v_top) + cw_divide_f32(((f32(((cw_params.p_height - 1u) - (v_i / cw_params.p_width))) + 0.5f) * f32(v_crop_height)), f32(cw_params.p_height))) - 0.5f);\n  v_x = min(f32(((cw_params.p_region_width - 1u) - u32(v_left))), max(f32(v_left), v_x));\n  v_y = min(f32(((cw_params.p_region_height - 1u) - u32(v_top))), max(f32(v_top), v_y));\n  var v_local_x: i32 = i32(floor(v_x));\n  var v_local_y: i32 = i32(floor(v_y));\n  var v_fx: f32 = (v_x - f32(v_local_x));\n  var v_fy: f32 = (v_y - f32(v_local_y));\n  var v_x0: i32 = (cw_params.p_region_x + v_local_x);\n  var v_y0: i32 = (((i32(cw_params.p_source_height) - cw_params.p_region_y) - i32(cw_params.p_region_height)) + v_local_y);\n  var cw_tmp_0: i32;\n  if (((v_local_x + 1i) < i32(cw_params.p_region_width))) {\n    cw_tmp_0 = (v_x0 + 1i);\n  } else {\n    cw_tmp_0 = v_x0;\n  }\n  var v_x1: i32 = cw_tmp_0;\n  var cw_tmp_1: i32;\n  if (((v_local_y + 1i) < i32(cw_params.p_region_height))) {\n    cw_tmp_1 = (v_y0 + 1i);\n  } else {\n    cw_tmp_1 = v_y0;\n  }\n  var v_y1: i32 = cw_tmp_1;\n  var v_packed: u32 = 0u;\n  {\n    var v_c: u32 = u32(0i);\n    loop {\n      if (!(v_c < u32(4i))) { break; }\n      var v_a: f32 = f_cw_buffer_helper_0(0i, cw_params.p_source_width, cw_params.p_source_height, v_x0, v_y0, v_c, cw_thread, cw_block, cw_grid);\n      var v_b: f32 = f_cw_buffer_helper_0(0i, cw_params.p_source_width, cw_params.p_source_height, v_x1, v_y0, v_c, cw_thread, cw_block, cw_grid);\n      var v_d: f32 = f_cw_buffer_helper_0(0i, cw_params.p_source_width, cw_params.p_source_height, v_x0, v_y1, v_c, cw_thread, cw_block, cw_grid);\n      var v_e: f32 = f_cw_buffer_helper_0(0i, cw_params.p_source_width, cw_params.p_source_height, v_x1, v_y1, v_c, cw_thread, cw_block, cw_grid);\n      var v_value: f32 = (((v_a + ((v_b - v_a) * v_fx)) * (1.0f - v_fy)) + ((v_d + ((v_e - v_d) * v_fx)) * v_fy));\n      var v_byte: u32 = u32(floor(((min(1.0f, max(0.0f, v_value)) * 255.0f) + 0.5f)));\n      v_packed = (v_packed | (v_byte << (v_c * 8u)));\n      continuing {\n        v_c += u32(1);\n      }\n    }\n  }\n  b_pixels[v_i] = v_packed;\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "source",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "pixels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "source_width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "source_height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 12
+      },
+      {
+        "name": "region_x",
+        "type": "i32",
+        "offset": 16
+      },
+      {
+        "name": "region_y",
+        "type": "i32",
+        "offset": 20
+      },
+      {
+        "name": "region_width",
+        "type": "u32",
+        "offset": 24
+      },
+      {
+        "name": "region_height",
+        "type": "u32",
+        "offset": 28
+      }
+    ],
+    "uniformSize": 32,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 4528,
+      "beforeBytes": 4528,
+      "afterBytes": 4528,
+      "functionsBefore": 3,
+      "functionsAfter": 3,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 3147,
+          "transitiveBytes": 4031,
+          "reachableFunctions": 3
+        },
+        {
+          "name": "f_cw_buffer_helper_0",
+          "ownBytes": 614,
+          "transitiveBytes": 614,
+          "reachableFunctions": 1
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// Crop, bilinear resize and byte conversion for screenshot/readback images.\r\n// Output is packed RGBA8 in bottom-up row order for osg::Image consumers.\r\n__device__ float capture_component(const float* source,unsigned int width,unsigned int height,int x,int y,unsigned int c) {\r\n    if(x<0||y<0||x>=(int)width||y>=(int)height)return 0.0f;\r\n    return source[((unsigned int)y*width+(unsigned int)x)*9u+c];\r\n}\r\n__global__ void capture_image(const float* source,unsigned int* pixels,\r\n    unsigned int source_width,unsigned int source_height,unsigned int width,unsigned int height,\r\n    int region_x,int region_y,unsigned int region_width,unsigned int region_height) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    float aspect=(float)width/(float)height;\r\n    int left=(int)((float)region_width-(float)region_height*aspect)/2;\r\n    int top=(int)((float)region_height-(float)region_width/aspect)/2;\r\n    if(left<0)left=0;if(top<0)top=0;\r\n    unsigned int crop_width=region_width-2u*(unsigned int)left,crop_height=region_height-2u*(unsigned int)top;\r\n    float x=(float)left+((float)(i%width)+0.5f)*(float)crop_width/(float)width-0.5f;\r\n    float y=(float)top+((float)(height-1u-i/width)+0.5f)*(float)crop_height/(float)height-0.5f;\r\n    x=fminf((float)(region_width-1u-(unsigned int)left),fmaxf((float)left,x));\r\n    y=fminf((float)(region_height-1u-(unsigned int)top),fmaxf((float)top,y));\r\n    int local_x=(int)floorf(x),local_y=(int)floorf(y);\r\n    float fx=x-(float)local_x,fy=y-(float)local_y;\r\n    int x0=region_x+local_x,y0=(int)source_height-region_y-(int)region_height+local_y;\r\n    int x1=local_x+1<(int)region_width?x0+1:x0;\r\n    int y1=local_y+1<(int)region_height?y0+1:y0;\r\n    unsigned int packed=0u;\r\n    for(unsigned int c=0;c<4;c++) {\r\n        float a=capture_component(source,source_width,source_height,x0,y0,c),b=capture_component(source,source_width,source_height,x1,y0,c);\r\n        float d=capture_component(source,source_width,source_height,x0,y1,c),e=capture_component(source,source_width,source_height,x1,y1,c);\r\n        float value=(a+(b-a)*fx)*(1.0f-fy)+(d+(e-d)*fx)*fy;\r\n        unsigned int byte=(unsigned int)floorf(fminf(1.0f,fmaxf(0.0f,value))*255.0f+0.5f);\r\n        packed|=byte<<(c*8u);\r\n    }\r\n    pixels[i]=packed;\r\n}\r\n",
+    "entry": "capture_image",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "source",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "source_width",
+        "type": "u32"
+      },
+      {
+        "name": "source_height",
+        "type": "u32"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "region_x",
+        "type": "i32"
+      },
+      {
+        "name": "region_y",
+        "type": "i32"
+      },
+      {
+        "name": "region_width",
+        "type": "u32"
+      },
+      {
+        "name": "region_height",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

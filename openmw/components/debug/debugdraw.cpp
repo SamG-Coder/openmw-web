@@ -311,6 +311,41 @@ namespace Debug
     {
     }
 
+    void DebugCustomDraw::submitWebCuda(WebCuda::SubmissionSink& sink, const WebCuda::DrawContext& context) const
+    {
+        // Match the per-primitive uniform overrides of the GL implementation.
+        // The sink copies inputs synchronously; all transform/shading is in .cu.
+        auto submit=[&](const osg::Geometry* geometry,const osg::Vec3f& position,const osg::Vec3f& color,
+                        const osg::Vec3f& scale,bool normalAsColor) {
+            if(!geometry)throw std::runtime_error("Missing custom debug geometry");
+            if(!geometry->getVertexArray()||geometry->getVertexArray()->getNumElements()==0)return;
+            osg::ref_ptr<osg::StateSet> uniforms=new osg::StateSet;
+            const auto mode=osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED;
+            uniforms->addUniform(new osg::Uniform("trans",position),mode);
+            uniforms->addUniform(new osg::Uniform("color",color),mode);
+            uniforms->addUniform(new osg::Uniform("scale",scale),mode);
+            uniforms->addUniform(new osg::Uniform("useNormalAsColor",normalAsColor),mode);
+            auto draw=context;draw.states.push_back(uniforms.get());
+            sink.geometry(*geometry,draw);
+        };
+        submit(mLinesToDraw,{0.f,0.f,0.f},{1.f,1.f,1.f},{1.f,1.f,1.f},true);
+        for(const auto& shape:mShapesToDraw) {
+            const osg::Geometry* geometry=nullptr;
+            switch(shape.mDrawShape) {
+                case DrawShape::Cube:geometry=mCubeGeometry;break;
+                case DrawShape::Cylinder:geometry=mCylinderGeometry;break;
+                case DrawShape::Sphere:geometry=mSphereGeometry;break;
+                case DrawShape::WireCube:geometry=mWireCubeGeometry;break;
+            }
+            submit(geometry,shape.mPosition,shape.mColor,shape.mDims,false);
+        }
+        // Consume the same one-frame queues, only after every submission succeeds.
+        mShapesToDraw.clear();
+        static_cast<osg::Vec3Array*>(mLinesToDraw->getVertexArray())->clear();
+        static_cast<osg::Vec3Array*>(mLinesToDraw->getNormalArray())->clear();
+        static_cast<osg::DrawArrays*>(mLinesToDraw->getPrimitiveSet(0))->setCount(0);
+    }
+
     void DebugCustomDraw::drawImplementation(osg::RenderInfo& renderInfo) const
     {
         auto state = renderInfo.getState();

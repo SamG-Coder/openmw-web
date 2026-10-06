@@ -1,0 +1,245 @@
+{
+  "name": "assemble_ribbon",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "prepared",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "summary",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "vertices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "attributes",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "triangles",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "status",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 5,
+        "readOnly": false,
+        "atomic": true
+      },
+      {
+        "name": "flat_colors",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 6,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "segment_count",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "vertex_base",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "triangle_base",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "material",
+        "type": "u32",
+        "offset": 12
+      },
+      {
+        "name": "line_material",
+        "type": "u32",
+        "offset": 16
+      },
+      {
+        "name": "line_width",
+        "type": "f32",
+        "offset": 20
+      },
+      {
+        "name": "normal_x",
+        "type": "f32",
+        "offset": 24
+      },
+      {
+        "name": "normal_y",
+        "type": "f32",
+        "offset": 28
+      },
+      {
+        "name": "normal_z",
+        "type": "f32",
+        "offset": 32
+      },
+      {
+        "name": "status_index",
+        "type": "u32",
+        "offset": 36
+      },
+      {
+        "name": "flat_color",
+        "type": "u32",
+        "offset": 40
+      },
+      {
+        "name": "point_flags",
+        "type": "u32",
+        "offset": 44
+      }
+    ],
+    "uniformSize": 48,
+    "uniformBinding": 7,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 6386,
+      "beforeBytes": 6386,
+      "afterBytes": 6386,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 5433,
+          "transitiveBytes": 5433,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// ConnectedParticleSystem preparation. Input follows linked-list order:\r\n// position xyz, size, color rgba, alpha, S texture coordinate (10 floats).\r\n// Output is compact pairs of packed position4/color4/UV2 vertices. Thin-line\r\n// pairs coincide; the downstream line raster path expands them in screen space.\r\n// summary: selected particle count, thin-line flag, singular-matrix status.\r\n__global__ void prepare_ribbon(const unsigned long long* omw_pages_particles,const unsigned long long* omw_pages_matrices,const unsigned long long* omw_pages_vertices,const unsigned long long* omw_pages_summary,unsigned int particle_count,\r\n    unsigned int max_skip,unsigned int width,unsigned int height) {\nOmwPaged<const float> particles(omw_pages_particles);\nOmwPaged<const float> matrices(omw_pages_matrices);\nOmwPaged<float> vertices(omw_pages_vertices);\nOmwPaged<unsigned int> summary(omw_pages_summary);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i!=0u)return;\r\n    summary[0]=0u;summary[1]=0u;summary[2]=0u;\r\n    if(particle_count==0u)return;\r\n    // OSG matrices are row-major; their uploaded representation is consumed\r\n    // as column-major by the common transform kernels.\r\n    float p00=matrices[16]*((float)width*0.5f);\r\n    float p20=(matrices[24]+matrices[27])*((float)width*0.5f);\r\n    float p11=matrices[21]*((float)height*0.5f);\r\n    float p21=(matrices[25]+matrices[27])*((float)height*0.5f);\r\n    float magnitude=0.0f;\r\n    for(unsigned int k=0;k<3;k++) {\r\n        float a=matrices[k*4]*p00+matrices[k*4+2]*p20;\r\n        float b=matrices[k*4+1]*p11+matrices[k*4+2]*p21;\r\n        magnitude+=a*a+b*b;\r\n    }\r\n    if(magnitude<=0.0f){summary[2]=1u;return;}\r\n    float ratio=0.7071067811f/sqrtf(magnitude);\r\n    float inverse_pixel=matrices[14]*matrices[27]+matrices[15]*matrices[31];\r\n    for(unsigned int k=0;k<3;k++)inverse_pixel+=particles[k]*matrices[k*4+2]*matrices[27];\r\n    inverse_pixel*=ratio;\r\n    float error2=inverse_pixel*inverse_pixel;\r\n    unsigned int thin=fabsf(inverse_pixel)>particles[3]?1u:0u;\r\n    summary[1]=thin;\r\n    float eye[3];for(unsigned int k=0;k<3;k++)eye[k]=0.0f;\r\n    if(thin==0u) {\r\n        float augmented[32];\r\n        for(unsigned int row=0;row<4;row++)for(unsigned int col=0;col<4;col++) {\r\n            augmented[row*8+col]=matrices[col*4+row];\r\n            augmented[row*8+4+col]=row==col?1.0f:0.0f;\r\n        }\r\n        for(unsigned int col=0;col<4;col++) {\r\n            unsigned int pivot=col;float largest=fabsf(augmented[col*8+col]);\r\n            for(unsigned int row=col+1;row<4;row++)if(fabsf(augmented[row*8+col])>largest){pivot=row;largest=fabsf(augmented[row*8+col]);}\r\n            if(largest<0.000000000001f){summary[2]=1u;return;}\r\n            if(pivot!=col)for(unsigned int k=0;k<8;k++){float temp=augmented[col*8+k];augmented[col*8+k]=augmented[pivot*8+k];augmented[pivot*8+k]=temp;}\r\n            float divisor=augmented[col*8+col];for(unsigned int k=0;k<8;k++)augmented[col*8+k]/=divisor;\r\n            for(unsigned int row=0;row<4;row++)if(row!=col) {\r\n                float factor=augmented[row*8+col];\r\n                for(unsigned int k=0;k<8;k++)augmented[row*8+k]-=factor*augmented[col*8+k];\r\n            }\r\n        }\r\n        float w=augmented[31];\r\n        if(fabsf(w)<0.000000000001f){summary[2]=1u;return;}\r\n        for(unsigned int k=0;k<3;k++)eye[k]=augmented[k*8+7]/w;\r\n    }\r\n    float delta[3];delta[0]=0.0f;delta[1]=0.0f;delta[2]=1.0f;\r\n    unsigned int current=0u,selected=0u;\r\n    while(current<particle_count) {\r\n        unsigned int next=current+1u;\r\n        if(next<particle_count) {\r\n            float direction[3],length2=0.0f;\r\n            for(unsigned int k=0;k<3;k++){delta[k]=particles[next*10u+k]-particles[current*10u+k];direction[k]=delta[k];length2+=delta[k]*delta[k];}\r\n            if(length2>0.0f)for(unsigned int k=0;k<3;k++)direction[k]/=sqrtf(length2);\r\n            float distance2=0.0f;\r\n            for(unsigned int skipped=0;skipped<max_skip&&distance2<error2&&next+1u<particle_count;skipped++) {\r\n                next++;\r\n                for(unsigned int k=0;k<3;k++)delta[k]=particles[next*10u+k]-particles[current*10u+k];\r\n                float x=delta[1]*direction[2]-delta[2]*direction[1];\r\n                float y=delta[2]*direction[0]-delta[0]*direction[2];\r\n                float z=delta[0]*direction[1]-delta[1]*direction[0];distance2=x*x+y*y+z*z;\r\n            }\r\n        }\r\n        float offset[3];for(unsigned int k=0;k<3;k++)offset[k]=0.0f;\r\n        if(thin==0u) {\r\n            float eye_direction[3];for(unsigned int k=0;k<3;k++)eye_direction[k]=particles[current*10u+k]-eye[k];\r\n            offset[0]=delta[1]*eye_direction[2]-delta[2]*eye_direction[1];\r\n            offset[1]=delta[2]*eye_direction[0]-delta[0]*eye_direction[2];\r\n            offset[2]=delta[0]*eye_direction[1]-delta[1]*eye_direction[0];\r\n            float length=sqrtf(offset[0]*offset[0]+offset[1]*offset[1]+offset[2]*offset[2]);\r\n            if(length>0.0f)for(unsigned int k=0;k<3;k++)offset[k]*=particles[current*10u+3u]/length;\r\n        }\r\n        for(unsigned int side=0;side<2;side++) {\r\n            unsigned int out=(selected*2u+side)*10u;\r\n            for(unsigned int k=0;k<3;k++)vertices[out+k]=particles[current*10u+k]+offset[k]*(side==0u?-1.0f:1.0f);\r\n            vertices[out+3u]=1.0f;\r\n            for(unsigned int c=0;c<4;c++)vertices[out+4u+c]=particles[current*10u+4u+c];\r\n            vertices[out+7u]*=particles[current*10u+8u];\r\n            vertices[out+8u]=particles[current*10u+9u];vertices[out+9u]=thin!=0u?0.5f:(float)side;\r\n        }\r\n        selected++;current=next;\r\n    }\r\n    summary[0]=selected;\r\n}\r\n\r\n__global__ void assemble_ribbon(const unsigned long long* omw_pages_prepared,const unsigned long long* omw_pages_summary,const unsigned long long* omw_pages_vertices,const unsigned long long* omw_pages_attributes,const unsigned long long* omw_pages_triangles,const unsigned long long* omw_pages_status,const unsigned long long* omw_pages_flat_colors,\r\n    unsigned int segment_count,unsigned int vertex_base,unsigned int triangle_base,\r\n    unsigned int material,unsigned int line_material,float line_width,\r\n    float normal_x,float normal_y,float normal_z,unsigned int status_index,unsigned int flat_color,unsigned int point_flags) {\nOmwPaged<const float> prepared(omw_pages_prepared);\nOmwPaged<const unsigned int> summary(omw_pages_summary);\nOmwPaged<float> vertices(omw_pages_vertices);\nOmwPaged<float> attributes(omw_pages_attributes);\nOmwPaged<unsigned int> triangles(omw_pages_triangles);\nOmwPaged<unsigned int> status(omw_pages_status);\nOmwPaged<unsigned int> flat_colors(omw_pages_flat_colors);\n\r\n    unsigned int segment=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(segment>=segment_count)return;\r\n    if(summary[2]!=0u){atomicExch(&status[status_index],1u);return;}\r\n    unsigned int first=vertex_base+segment*4u,t=(triangle_base+segment*2u)*4u,thin=summary[1];\r\n    triangles[t]=first;triangles[t+1u]=first+1u;triangles[t+2u]=first+2u;triangles[t+3u]=thin!=0u?line_material:material;\r\n    triangles[t+4u]=first;triangles[t+5u]=first+2u;triangles[t+6u]=first+3u;triangles[t+7u]=triangles[t+3u];\r\n    flat_colors[triangle_base+segment*2]=flat_color!=0u?first+2u:0xffffffffu;\r\n    flat_colors[triangle_base+segment*2+1]=flat_colors[triangle_base+segment*2];\r\n    for(unsigned int corner=0;corner<4;corner++) {\r\n        unsigned int p=(first+corner)*10u,a=(first+corner)*34u;\r\n        for(unsigned int k=0;k<10;k++)vertices[p+k]=0.0f;\r\n        for(unsigned int k=0;k<34;k++)attributes[a+k]=0.0f;\r\n        for(unsigned int unit=0;unit<4;unit++)attributes[a+27u+unit*2u]=1.0f;\r\n        if(segment+1u>=summary[0])continue;\r\n        unsigned int point=segment+(corner>=2u?1u:0u),side=(corner==1u||corner==2u)?1u:0u;\r\n        unsigned int src=(point*2u+side)*10u;\r\n        for(unsigned int k=0;k<10;k++)vertices[p+k]=prepared[src+k];\r\n        attributes[a+3u]=normal_x;attributes[a+4u]=normal_y;attributes[a+5u]=normal_z;\r\n        if(thin!=0u) {\r\n            unsigned int start=segment*20u,end=(segment+1u)*20u;\r\n            for(unsigned int k=0;k<10;k++)vertices[p+k]=prepared[start+k];\r\n            attributes[a+24u]=(float)flat_color;attributes[a+25u]=(float)point_flags;\r\n            attributes[a]=7.0f;attributes[a+1u]=corner>=2u?1.0f:-1.0f;attributes[a+2u]=side!=0u?1.0f:-1.0f;\r\n            for(unsigned int k=0;k<3;k++)attributes[a+10u+k]=prepared[end+k]-prepared[start+k];\r\n            for(unsigned int k=0;k<4;k++)attributes[a+18u+k]=prepared[end+4u+k];\r\n            attributes[a+22u]=prepared[end+8u];attributes[a+15u]=line_width;\r\n        }\r\n        // Both vertices of the selected final particle have the same RGBA.\r\n        // Setting both line endpoints also preserves flat color after clipping.\r\n        if(flat_color!=0u)for(unsigned int k=0;k<4;k++)vertices[p+4u+k]=prepared[(segment+1u)*20u+4u+k];\r\n        attributes[a+16u]=vertices[p+8u];attributes[a+17u]=vertices[p+9u];\r\n    }\r\n}\r\n",
+    "entry": "assemble_ribbon",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "prepared",
+        "type": "buffer"
+      },
+      {
+        "name": "summary",
+        "type": "buffer"
+      },
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "attributes",
+        "type": "buffer"
+      },
+      {
+        "name": "triangles",
+        "type": "buffer"
+      },
+      {
+        "name": "status",
+        "type": "buffer"
+      },
+      {
+        "name": "flat_colors",
+        "type": "buffer"
+      },
+      {
+        "name": "segment_count",
+        "type": "u32"
+      },
+      {
+        "name": "vertex_base",
+        "type": "u32"
+      },
+      {
+        "name": "triangle_base",
+        "type": "u32"
+      },
+      {
+        "name": "material",
+        "type": "u32"
+      },
+      {
+        "name": "line_material",
+        "type": "u32"
+      },
+      {
+        "name": "line_width",
+        "type": "f32"
+      },
+      {
+        "name": "normal_x",
+        "type": "f32"
+      },
+      {
+        "name": "normal_y",
+        "type": "f32"
+      },
+      {
+        "name": "normal_z",
+        "type": "f32"
+      },
+      {
+        "name": "status_index",
+        "type": "u32"
+      },
+      {
+        "name": "flat_color",
+        "type": "u32"
+      },
+      {
+        "name": "point_flags",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

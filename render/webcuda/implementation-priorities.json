@@ -1,0 +1,865 @@
+{
+  "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
+  "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
+  "currentPriority": "P0: continue code-led work on tiled rendering, GPU sizing readbacks and native submission/fence costs. CPU capture and packet validation now have measured reductions with unchanged packet checksums and passing regressions.",
+  "tasks": [
+    {
+      "priority": "P0",
+      "task": "Complete main-game source integration",
+      "pending": [
+        "Keep generator/runtime kernel inventory and packet/binding contracts aligned.",
+        "Trace menu, loading, interior, exterior, animated actors, water, shadows, particles and GUI through the replacement viewer.",
+        "Resolve unsupported passes encountered in that source trace without routing rendering back to WebGL."
+      ],
+      "progress": "Source integration includes groundcover, multisampling, debug drawables, callback state, terrain composite targets, asynchronous screenshot/save capture, and ordinary glyph text with gradients and distance-field coverage. Text decorations now submit original OSG topology before glyphs, including decoration-only text. All remain unbuilt and untested. All eight text drop-shadow directions now have source capture and CUDA fragment sampling/compositing for grayscale and distance-field glyphs; unbuilt and untested. Text outlines now have grayscale 3x3 coverage and distance-field outline transitions/weighted color accumulation in CUDA source; unbuilt and untested. Camera-dependent text now captures raw layout/quaternion/size parameters and applies billboard, screen-size and font-height cap calculations in local-transform.cu. Local placement records are 35 floats and bind camera matrices. Unbuilt and untested. Loading-screen background now queues a previous-frame GPU snapshot before scene traversal and samples its registered texture, replacing the unexecuted GL callback on the WebCuda viewer. New snapshot.cu owns the copy/resize. Unbuilt and untested. Primary RGB/RGBA camera-image readback now queues asynchronous CUDA capture, preserves alpha and signals completion; global-map exploration retains its GPU texture attachment and waits for that completion instead of an update-frame delay. Source only. Deferred WebCuda saves now wait for global-map CPU copies as well as thumbnails, with a shared timeout that cancels rather than writes incomplete captures. Capture requests recorded in an aborted frame are reset for retry and stale JS completions canceled. Source-only. Global-map base and land-alpha generation now uses map.cu from captured 9x9 WNAM cells and palette inputs. WebCuda skips CPU per-pixel map painting; material encoding schedules generation through the texture preparation pass. Source only; not generated or tested. Map inputs and generated outputs are now deduplicated within each material table, preserving source lifetime; clones retain MapTexture inputs. Host checks reject invalid dimensions, palette values and land indices before dispatch. Cross-frame residency remains pending. Camera image capture now tracks destination identity/format/viewport with weak completion tickets, supports recurring captures and explicit retry, and ignores obsolete results. Global-map updates explicitly opt into one-shot capture. Source only. Local and global map cameras now wait for WebCuda pass completion acknowledged after the host finishes a successful GPU frame, rather than retiring on update counts. Aborted/busy frames do not acknowledge cameras. Source only. Camera image requests are now collected independently of render-stage FBO target overrides, avoiding dropped readback requests. Image-only color attachment storage derives its format from the image with RGBA8 fallback. Multiple image destinations remain explicitly unsupported. Source-route audit recorded actual bs shader-family gaps and identified local-map fog painting as remaining main-game CPU rendering. Added the CUDA minimum-alpha fog kernel and manifest entry; integration is pending and the CPU path remains active. Local fog textures now capture saved masks and exploration brush history and dispatch generate_fog_map through texture preparation (decode kind 258). Per-table revision caching and brush validation are connected. CPU fog image updates remain temporarily for exploration queries and PNG save consumers; their migration is pending. WebCuda exploration point queries now evaluate the saved mask and brush inputs directly. Exact repeated brushes are deduplicated across the history. Fog PNG serialization uses an isolated image copy so failure cannot flip live state. CPU full-image updates remain solely until GPU save readback is connected. Standalone fog snapshot/readback service now captures immutable mask/brush words, dispatches generate_fog_map with dedicated buffers, and returns RGBA through existing image completion polling. Host disposal waits for outstanding fog jobs. Cell-store/save consumers are not connected yet. Added shared transient fog-snapshot ownership on ESM fog textures, retaining raw inputs and eventual PNG independently of segment lifetime. FTEX serialization accepts only completed nonempty PNG results and rejects pending/failed jobs. FogTexture can restore retained inputs for revisiting an unloaded cell. Producer and save-readiness wiring remain pending. LocalMap now produces owned GPU fog snapshots for cells, restores retained inputs on reload, and contributes active/unloaded snapshot readiness to deferred saves. WebCuda exploration updates bypass the CPU full-image painter; PNG encoding consumes GPU readback. Source only, with save/unload/reload and error behavior unverified. Fog GPU readback now compacts an unchanged saved baseline and exact captured brush prefix, preserving newer brushes. Background compaction begins at 256 brushes with one tracked background job per texture; obsolete/reset snapshots do not overwrite live state. All unbuilt/untested. Pending render captures now hold engine simulation/world/physics/mechanics and script updates while leaving GUI, viewer traversal and GPU completion polling active. Simulation clocks also stop during the pending interval, preventing continuously changing fog revisions from delaying saves. Source review only. bs/nolighting base variants now route to an explicit CUDA unlit diffuse material, disabling inherited lighting and texture features absent from that shader. Enabled vertex falloff is still explicitly rejected pending varying transport. No generation or verification. Unlit vertex falloff now has CUDA evaluation, clipping-weight transport and fragment-alpha interpolation. Source review found collisions with bump-matrix and shadow-cascade fields; falloff now occupies the explicitly disabled dark-map descriptor (80-84), with host validation. Source only, unbuilt and untested. Further source review corrected falloff being applied inside lighting then overwritten: it now multiplies final diffuse/coverage alpha before alphaTest and participates in quad-helper alpha derivatives. Unlit skips the lighting loop. Fog now selects interpolated vertex euclidean distance and the existing shader linear-depth route for this family. No generation/build/tests. Unlit varying records now contain falloff plus raw inverse-transpose view normal (four floats). Clipping and raster interpolation preserve normal magnitude until fragment normalization, matching bs/nolighting rather than shared normalized mesh-basis interpolation. Source comparison found the existing soft fade formula matches for regular finite inputs. Generated/expanded primitive handling and runtime parity remain unverified. bs/default shader pairs now route to a dedicated feature on the CUDA object material. Capture disables absent maps/soft-particle features, forces per-pixel lighting, and records tree alpha. CUDA scales specular by normal alpha, multiplies emission by its map, preserves tree alpha, and selects Bethesda raw normals/depth/fog. Source only. Source inspection confirms generated screen vertices have zero placeholder source inputs, requiring endpoint-based Bethesda varying transport next. Bethesda point/line varyings now prepare original vertex angle/raw normals in CUDA, evaluate material falloff at each endpoint, then interpolate through the existing screen expansion origin records. Tracking now includes Bethesda materials. A separate prepare kernel keeps each dispatch within the eight-storage-binding limit. Generation/runtime validation pending. Bethesda preparation now consumes projected particle endpoint metadata (enabled for Bethesda as well as vertex lighting). Six-float endpoint records hold both view angles and the clipping fraction; material falloff is evaluated at both original endpoints before interpolation. Stretched particles/ribbons no longer derive falloff solely from the source origin. Unbuilt/untested. Projected stretched/ribbon particle radial-depth varying now interpolates original endpoint distances rather than recomputing length at the clipped point. Sphere mapping retains actual clipped-position normalization. Source-only. Camera source trace confirms sampler-driven render-target mip generation already dispatches CUDA after attachment copies, and native luminance last-mip FBO is replaced by sceneLuminance. All four shipped omwfx files have explicit CUDA submission branches. These source findings are not runtime proof; custom effects/multiview remain unsupported. Explicit fixed-function particle fog no longer rejects capture: a ninth descriptor word carries the current fog coordinate with a constant-coordinate flag, host range/finiteness validation, and CUDA distance selection. Material deduplication includes the coordinate. Source only; generation/build/runtime checks remain deferred. Effective empty OSG Program attributes now normalize to the CUDA compatibility route after state inheritance merge. This also selects fixed lighting, fog, flat color and TexGen capture consistently; nonempty unknown programs remain rejected. Source only. FrontFace winding is now captured independently of CULL_FACE so CUDA front/back stencil and two-sided lighting selection also honor clockwise state on uncullled draws. Existing CUDA facing classification already consumes the control bit. Source only. Indexed Enablei/Disablei GL_BLEND state is now captured for color and normal attachments. Raster control bit 26 carries normal blending, with host validation widened accordingly. material.cu blends normal output against its own destination and alpha with shared factors/equations, retaining masks and logic-op precedence. Source-only; indexed-state and MRT runtime parity remain unverified. Normal RGB/RGBA attachment format now flows from Viewer through the pass bridge into CUDA clear, raster and multisample resolve. RGB normals use implicit destination alpha one and absent-channel storage values. Primary color blending likewise uses destination alpha one for attachments without alpha. Unsupported normal texture formats now fail explicitly like renderbuffers rather than silently quantizing as RGBA8. Source only; generated bindings and runtime checks pending. CUDA color clear and fragment storage now enforce absent channel defaults even when a write mask disables those nonexistent channels. Destination color for blend/logic operations uses zero for missing RGB components and one for missing alpha. Resolve conversion already follows destination channels. Source only. Normal attachments now use the shared color storage formats, including half/full float, UNORM16 and SNORM. Wide normal IDs retain both normal-plane and four-word-atlas flags; new float_normals_to_texture CUDA kernel copies the normal plane without 8-bit packing. Host attachment metadata feeds float mip generation; clear/raster/resolve carry normal storage precision. Signed-normalized logic ops remain explicitly unsupported. Source only. Bloom source comparison records pass/filter/half-storage/formula agreement for finite nonnegative inputs. Intermediate allocation now scales the input scene texture rather than the independent shader resolution uniform; blur math retains that uniform. Runtime parity remains pending. Postprocessing no longer skips CUDA techniques based on browser GLSL version, and WebCuda explicitly uses named uniforms regardless of GL UBO capability. Unknown techniques still reject in CUDA submission. Source only. Ordinary screen point/line capture carries depth-clamp flag32 in its existing flags word; host validation and CUDA expansion now preserve near/far clipping disable. PolygonMode LINE/POINT was confirmed as a remaining producer-backed gap (NIF wireframe, terrain borders, render toggle). Source only. Particle point/line capture now stores depth-clamp input in otherwise unused particle attribute25; ribbon flags carry it into CUDA thin-line assembly. project_particles skips near/far clipping for clamped draws while retaining side-plane, positive-w and shader visibility checks. Source only; generated ribbon binding and runtime validation pending. Polygon state transport started: control bits27-30 hold front/back fill/line/point modes; raster records are now 43 words with line width, point size and per-face polygon offset pairs. C++ dedup/copy, host validation and CUDA stride agree in source. Generated non-polygon point/line quads force fill mode. CUDA polygon edge/point coverage is still pending, so non-fill polygon rendering is not implemented yet. Clipping now writes an outgoing boundary flag in the previously unused fourth weight component after interpolation. It distinguishes clipped-polygon perimeter from fan diagonals without changing the three barycentric weights. Raster consumption, original quad/polygon boundary metadata, point ownership, coverage and expanded bins remain pending. Source only; no generation/build/tests. CUDA polygon coverage now consumes a separate boundary region in the shared attribute buffer. Front/back modes select fill, perimeter-segment or square-point coverage, with segment/constant varying gradients and per-face polygon offset. Tile count/scatter kernels use eight bindings and expand bounds for line/point size and actual MSAA sample extrema. Remaining fidelity work includes original quad/polygon edge flags, clipping-created point semantics, exact line rasterization and overlap ownership across clipped fan triangles. Source only; generated outputs, fixtures, builds and tests remain deferred. Original GL_QUADS, GL_QUAD_STRIP and GL_POLYGON now emit three-bit outgoing boundary masks alongside triangle packets, including smooth draws and primitive subranges/restarts. Browser bridge and host validate/upload polygonEdges. CUDA clipping carries incoming edge flags discretely, creates clip-plane boundary edges (including exact-plane entry vertices), and emits only perimeter edges after fan triangulation. Source-only; point semantics and overlap/line precision remain pending. Khronos polygon-point source review confirms outgoing boundary flags select point vertices, including clip-generated boundaries. Raster now processes each boundary primitive independently through shading/depth/stencil/blending instead of retaining only the nearest overlapping primitive. Non-MSAA points round size and snap centers in bottom-left window coordinates; bins include snapping displacement. Precise line coverage, point smoothing/attenuation/sprite state and decomposed-polygon clipping fidelity remain pending. Source only; no generation/build/tests. Polygon point records now capture min/max size, fade threshold and three distance attenuation coefficients in raster words43-48. Raster stride is49, material dedup key61. C++ glyph copying, JS defaults/validation/indexing and CUDA raster/bin strides updated. CUDA computes eye-distance attenuation and size clamping for each polygon point; tile bounds compute the same sizes. Fade threshold is transported but application remains pending alongside smoothing/sprite state and exact line rasterization. Source only; no generation/build/tests. Polygon multisample point fading now raises sub-threshold footprints to the fade threshold and multiplies final fragment alpha by the squared derived-size/threshold ratio, after shading and before fixed alpha test/coverage. Normal output alpha receives the fade, with alpha-to-one respected. Tile bounds use the raised footprint. Khronos GL1.4/2.0 source confirms these rules. Ordinary screen-point expansion still fades vertex alpha unconditionally and requires migration to the same fragment-stage semantics. Source only; no generation/build/tests. Ordinary screen-point fading now uses captured MULTISAMPLE flag64 and actual sample count. CUDA expansion raises sub-threshold MSAA footprints, preserves subpixel MSAA centers, and writes separate per-vertex fade values instead of changing vertex/fixed-lighting alpha. assemble_attributes carries fade through clipping into shared attribute storage; raster applies it at the final fragment stage for color and normals. Host initializes neutral fade values and aligns new bindings/offsets. Projected particle points still require the same correction. Source only; no generation/build/tests. Projected particle points now gate fade on sample count and captured multisample bit2 in input attribute25 (depth clamp bit1 retained). Projection writes final-stage fade without modifying vertex/fixed lighting alpha and preserves MSAA subpixel size/centers. Fade storage moved into a dedicated tail of transformedAttributes, initialized to one by transform_attributes and read by assemble_attributes; ordinary expansion shares that tail, removing the extra upload/binding. Projection remains at eight storage bindings. Input flags validated by host. Source only; no generation/build/tests. Polygon point smoothing captures smooth/sprite flags in new raster word49 (stride50, dedup62). CUDA computes circular pixel-square coverage analytically, applies it through final alpha, and bins partial pixels. Sprite state suppresses smoothing and alias snapping; sprite coordinate replacement remains pending. Host, C++ glyph/copy/dedup and CUDA strides updated. Area math/asinf and runtime parity unverified; no generation/build/tests. Polygon point-sprite compatibility coordinates now capture per-unit replacement bits2-5 and origin bit6 in raster word49, limited to the no-Program route like ordinary points. CUDA derives fragment-centre sprite UV and size gradients, overrides unit0 direct sampling and all enabled fixed texture stages after texture matrices. Host validates flags0-127 and rejects replacement without sprite enable. Shader-authored UV outputs remain unchanged. Source only; no generation/build/tests. Generated ordinary and projected particle points now capture smooth/sprite state and carry four metadata floats per vertex (fade/localXY/radius). CUDA expands smooth points with half-pixel support, retains unsnapped centers/sizes for smooth or sprite points, and computes disk coverage after clipping/interpolation in the shared raster path. Buffer layout and initialization migrated to four-word metadata without extra bindings. Ordinary flags range0-511, particle flags0-15. Source only; compiler/numerical/runtime validation deferred. Generated point sprite metadata now uses negative radius to distinguish sprites from positive-radius smooth points. Raster reconstructs fragment-centre sprite coordinates from interpolated local XY, correcting MSAA sample displacement, and routes ordinary/projected sprites through existing per-unit fixed-stage replacement and gradients. This also bypasses fixed texture matrices for projected sprites. Existing ordinary point matrix suppression was confirmed in material capture. No added bindings or stride change. Source only; no generation/build/tests. One-pixel non-MSAA polygon lines now use CUDA diamond-exit clipping with lexicographic symbolic epsilon/epsilon-squared endpoint perturbation in top-left coordinates. Segment endpoint interpolation clamps when coverage extends past perpendicular endpoint planes. Bins allow a half-pixel footprint for widths rounding to one. Wide/smooth lines and generated line quads still require equivalent coverage work. Source only, numerical/compiler/runtime behavior unverified; no tests/build. Wide non-MSAA polygon lines now round width and apply minor-axis shifted diamond-exit replication. CUDA uses a three-candidate replica lookup based on major-axis intersection rather than a width-proportional loop. Tile padding follows rounded width. Original-line interpolation retained (permitted alternative to replicated attributes). Smooth/stipple/generated-line coverage remains pending. Source only; no generation/build/numerical/runtime checks. Polygon LINE_SMOOTH now captured in raster word49 bit7 (record remains50, host flags0-255). Non-MSAA CUDA line coverage clips the finite line rectangle against the pixel square and uses polygon area for final alpha; normal alpha shares coverage. Bins expand by half a pixel. Point state checks mask low bits so line smoothing does not change point snapping. Source only, not compiled or tested. Generated ordinary lines now retain both clipped homogeneous centreline endpoints in shared per-vertex metadata words4-11. Metadata stride is12 (point fade/localXY/radius remain0-3); initialization, clipping assembly, host allocations and all existing point accesses migrated. Endpoint payload is identical at all support-quad corners and preserves original w. This is prerequisite transport only: generated line coverage/interpolation still uses the existing quad and must be connected. Source only; no generation/build/tests. Generated line centreline metadata now receives identical homogeneous viewport mapping to support vertices. map_viewport binds shared attributes and point_fade_offset. Projected particle lines/thin ribbons now retain clipped endpoints c0/c1 like ordinary lines; metadata word1 tracks the clipped segment parameter at each corner for later endpoint interpolation. Coverage activation/support bounds still pending. Source only; no generation/build/tests. Generated ordinary/projected particle/thin-ribbon lines now activate centreline coverage in raster: aliased diamond-exit, smooth rectangle area or MSAA strip. Expansion uses conservative side/end support with original attributes and w; metadata2 retains actual width. Support triangles retain top-left ownership. Raster reconstructs perspective endpoint parameter from the centreline and solves corner weights/gradients using retained parameters before depth/shading, avoiding padded-quad interpolation. This is uncompiled/unverified source; stipple and numerical clipping/ownership validation remain pending. Source audit found no app/component LineStipple producers and OSG LineStipple apply is GL1-gated (disabled in staged profile); stipple remains unsupported rather than treated as a current game blocker. Corrected a live source gap: dedicated generated point/line materials now carry flag4194304; clip_triangles skips side-plane reclipping for footprints whose centers/centrelines were already clipped, retaining depth clipping/clamp. Host flag validation updated. Shader-particle base-material mode8 and polygon-mode footprints need separate review. Source only; no build/tests. Source review confirms shader-particle mode8 already selects screenMaterial via isPoint; the previous pending routing concern was stale. Generated nonpolygon points/lines now select front stencil state independently of support-triangle winding. Polygon LINE/POINT retains original facing. Source only; generation/build/runtime validation deferred. Ribbon source trace found missing quad perimeter capture: ConnectedParticleSystem emits GL_QUAD_STRIP but reserved replacement triangles defaulted to all edges. Ribbon capture now supplies masks3/6 per segment, hiding the triangulation diagonal in polygon LINE/POINT. Commit preserves those masks and CUDA clipping consumes them; thin-line material forces fill and remains separate. Source only, unbuilt/untested."
+    },
+    {
+      "priority": "P1",
+      "task": "Implement missing rendering paths",
+      "pending": [
+        "Audit remaining shader sample semantics and required shader routes.",
+        "Close camera attachment, image readback, mip/layer and MRT gaps required by the main-game pass trace.",
+        "Close required shader/texture/postprocess variants; account explicitly for unsupported multiview and custom effects."
+      ],
+      "progress": "Source now includes persistent sample storage, per-sample clear/raster, shared-plane transfer, resolve FBO mappings, postprocess sample writes, normal renderbuffers, raster alpha coverage and object/groundcover/shadow alpha remapping. These are implemented in source only; generation, build and validation are deferred. Explicit OSG sample coverage and inversion now flow through the 26-float raster record to CUDA sample selection. Explicit masks and multisample-disable state are now connected through a 28-float raster record; unverified. Sun-query counting now follows shared fragment tests with deterministic opaque output."
+    },
+    {
+      "priority": "P1",
+      "task": "Frame pacing and resource cost",
+      "pending": [
+        "Reduce GPU synchronization/readbacks on the frame path.",
+        "Improve persistent geometry/texture residency and allocation reuse.",
+        "Complete submission and presentation behavior for variable refresh; measurements deferred."
+      ],
+      "progress": "Pipeline buffers now allocate up to 25 percent spare capacity (maximum 4 MiB headroom, device-limit capped) for allocations >=4 KiB, keeping small buffers exact. Replacement allocation precedes retirement so allocation failure preserves the old resource. Logical dispatch/readback counts remain explicit. Source only; no performance measurement. Tile-prefix capacity readback, clustered-light overflow readback and frame-boundary GPU idle remain synchronization points requiring a coordinated redesign. Small-pass tile lists now use the proven bound tiles+1+clippedTriangleSlots*tiles when it fits <=1M words and the device limit, avoiding the sizing await before scatter/raster. Status readback remains asynchronously joined to frame completion. CUDA skips scatter and zeroes offsets on reported failure. Larger passes keep exact readback sizing. Source only, performance unmeasured. Cluster culling now skips overflow readback whenever capacity covers the entire snapshot light count, including initial snapshots <=64 lights and retries that reach full count. The CUDA loop visits each light once, proving this capacity bound. Larger partial lists retain overflow readback and retry; allocation size and queue-ordered atlas copies are unchanged. Source only. Deferred tile/status validation now precedes visible canvas texture acquisition/copy in game host and standalone rendering. Failed standalone deferred validation drains queued work before returning. Game host retains its final GPU wait for retirement and C++ camera completion guarantees. Presentation replacement allocation now preserves the old buffer on allocation failure. Source only. Game host now retains 240 completed-frame timing records: packet capture, dispatch phase (including in-phase waits), deferred validation wait, final queue-completion wait, frame wall time, presentation-copy submission interval and skipped counts. timingSnapshot returns copies. Metrics are explicitly wall-clock/submission observations, not GPU timestamps or display scanout. No measurements yet."
+    },
+    {
+      "priority": "P2",
+      "task": "Remaining state fidelity and resilience",
+      "pending": [
+        "Color-material persistence and remaining custom draw-state side effects.",
+        "Uncovered texture/primitive/state formats.",
+        "Device-loss recovery and resource reconstruction."
+      ],
+      "progress": "Source comparison with OSG Material::apply corrected current-color capture by build profile: GL1 fixed-function selects color-material mode; emulated/non-fixed profiles use diffuse; fixed-function without GL1 leaves current color unchanged. Both retained submission and direct packet fallback agree. Broader material parameter persistence remains pending; unbuilt/untested. Current staged wasm64 OSG headers disable GL1 and fixed-function support, so GL1 parameter persistence does not block this build profile. Device failure notification is now idempotent; disposal detaches the GPU error listener and cleans resources/canvas even when queue completion rejects. Automatic device/resource reconstruction remains pending. Recovery source trace identified retired LocalMap cameras and persistent GlobalMap overlay as reconstruction requirements, alongside viewer tickets and transient histories. Early host installation now validates canvas attachment before device creation and cleans up device/pipeline/canvas on kernel or context initialization failure. Automatic recovery is still not connected. LocalMap segments now retain camera placement/depth/up-vector recipes and expose restoreRenderTargets, which removes obsolete RTT nodes, creates fresh completion-tracked cameras into existing GUI texture identities, and leaves fog inputs/snapshots untouched. This producer is not yet wired to device recovery. Source only. GlobalMap now retains raw update recipes until camera retirement. restoreRenderTargets recreates the existing overlay from an immutable CPU snapshot without reapplying its land mask, then replays active operations in order with fresh image requests. Baseline restoration is not retained as another recipe. Recovery trigger remains disconnected; source only. Successful host installation now increments a device generation. WindowManager update polls it and, on replacement, Viewer invalidates target residency and old camera tickets, cancels image requests, then restores local maps before global maps. Pending loading snapshot targets are re-registered. Automatic host replacement and persistent loading-snapshot recovery remain pending. Device loss now schedules one host replacement, gates submission until engine generation invalidation/map reconstruction acknowledgment, and resets retry allowance only after a successful GPU frame. Live loading snapshot textures are tracked weakly and recreated through CUDA with an empty-screen clear when previous pixels are lost. Renderer selection remains sticky during host unavailability, avoiding native-path selection during recovery. Shader errors remain fatal. All recovery behavior unbuilt/untested. Recovery polling is now a WindowManager method shared by normal updates and loading-screen traversal, removing the loading-loop handshake gap. LocalMap recovery resubmits failed/unfinished shared fog snapshots after viewer cancellation, including snapshots owned by unloaded cells; it reuses immutable inputs and preserves shared result identity. Runtime/save behavior remains unverified. Host disposal now attempts queue completion, pipeline and attachment release, context unconfiguration, canvas removal and device destruction independently; collected errors are reported after all steps. Concurrent callers retain the shared disposal promise. Source-only. A per-module WeakMap owner now covers async initialization through disposal. Failed creation and completed teardown release only their own token. Public installation rejects during pending automatic recovery; the private recovery path can acquire ownership after old cleanup, preventing external installs in the handover gap. Source only. Camera, plane and depth-capture allocation now share planeStorage, which allocates, clears and seeds a replacement before removing the previous target. Multisample changes likewise keep old sample storage until replacement setup succeeds. Synchronous setup failure retires only new buffers; asynchronous GPU errors still use existing failure/recovery handling. Source only."
+    },
+    {
+      "priority": "Validation gate",
+      "task": "After implementation is complete",
+      "pending": [
+        "Migrate test fixtures to current packet and kernel signatures.",
+        "Generate WGSL from all authored .cu and complete full local engine build/link.",
+        "Run submission, CPU reference and browser GPU suites.",
+        "Install replacement and verify real Morrowind scenes and zero rendering draw calls through WebGL.",
+        "Measure frame times and presentation at 60-180 Hz on this PC."
+      ]
+    }
+  ],
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Latest staged engine is 61275df13d9f. Array readers and one resolved state per capture remove repeated type/binding/merge work; host validation folds particle classification into its existing scan. Continue tracing the remaining tile-list sizing waits, per-pass packing and native fence boundaries. Isolated improvements do not establish gameplay FPS.",
+  "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
+  "focusedSourceReview": {
+    "basis": "Source inspection only; no generation, build or tests",
+    "reviewed": [
+      "C++ geometry capture, browser bridge, JavaScript validation and CUDA local transform use the 35-float placement record.",
+      "C++ material table, JavaScript validation and CUDA material raster indexing use the 50-word raster record.",
+      "Bethesda prepare/shade/assemble binding names and new tile summary binding are present in host dispatch and CUDA signatures.",
+      "Raster word 23 is an opaque fog atlas address. WASM capture now copies its record through HEAPU32 and reinterprets the buffer; float finiteness validation excludes this slot while existing integer atlas range validation remains active. Source only.",
+      "Fixed two EM_JS declaration/call mismatches: sampleCount was missing from camera-pass declaration and incorrectly present on luminance. It now belongs only to the camera pass, matching callers and JS consumers. Source inspection, not compilation."
+    ],
+    "remaining": [
+      "Complete inventory and scalar/buffer-layout review across all kernel dispatches.",
+      "Finish required main-game pass and lifecycle integration.",
+      "Generated outputs and fixtures remain stale until the deferred validation phase."
+    ],
+    "kernelInventory": {
+      "basis": "Static source inspection; no shader generation, build or runtime tests.",
+      "authoredKernels": 84,
+      "manifestEntries": 84,
+      "findings": [
+        "Each authored CUDA entry has a matching manifest file and entry; no authored entry is omitted.",
+        "No authored kernel declares more than eight pointer parameters.",
+        "Compared 72 literal k/pipeline.kernels host dispatch sites in pipeline.js and game-host.js with authored pointer/scalar argument names. The viewportArgs spread provides the four viewport scalars; no name mismatch was found in these sites.",
+        "Manually inspected dynamic copyPlane dispatch: copy_depth, copy_normals and copy_stencil all accept source, target and pixel_count.",
+        "Primitive metadata allocation, assembly and viewport mapping use 12 floats per vertex; clipped allocation places 36 floats per triangle slot before raster records.",
+        "Expanded literal inspection covers 49 pipeline.js sites and 27 game-host.js sites, including this.kernels and multiline argument lists. All referenced literal entries are runtime-enabled and match authored argument names.",
+        "Manually reconciled the other three bind sites: decode_float_image/decode_dxt share blocks,pixels and five scalars; four color/normal texture-copy variants share target,texels,width,height,offset; dynamic copyPlane selects matching source,target,pixel_count signatures.",
+        "The 79 inspected sites account for every current .bind call in pipeline.js and game-host.js. This closes their argument-name inventory only, not semantic validation.",
+        "Multisample allocation uses ten words per pixel per sample, matching nine interleaved color/depth/normal words plus a separate stencil plane in multisample.cu."
+      ],
+      "limits": [
+        "Source inspection and textual extraction do not prove compilation, scalar conversion, data ranges or runtime semantics.",
+        "Review of calls outside pipeline.js and game-host.js and broader main-game data production remains separate.",
+        "All 84 artifacts have now been regenerated successfully; GPU validation and runtime semantics remain unverified."
+      ],
+      "literalDispatchSites": 76,
+      "conditionalOrDynamicDispatchSites": 3
+    }
+  },
+  "generation": {
+    "status": "complete",
+    "kernelCount": 84,
+    "command": "WEBCUDA_ROOT=D:/cuda-webshader node wasm-build/compile-webcuda.mjs",
+    "log": "render/webcuda/generation.log",
+    "fixes": [
+      "Disk integral uses atan2f in place of unsupported asinf.",
+      "Bloom uses local phase instead of mutating scalar time.",
+      "Float-image and DXT decoding use local encoding instead of mutating scalar format.",
+      "Water uses atan2f and explicit local array copies instead of unsupported atanf and offset local-array pointers."
+    ],
+    "limits": "Generation and engine build/link succeeded. Actual GPU rendering and gameplay remain unverified."
+  },
+  "engineBuild": {
+    "status": "compiled and linked",
+    "log": "D:/OpenMW-local/webcuda-engine-build.log",
+    "sessionId": null,
+    "fixes": [
+      "Use OSG-provided ARB names for floating texture format enums.",
+      "Explicit raw pointer conversion for observer target registration.",
+      "Stage existing inline-only OSG TextBase and ParticleSystem patches into local dependency headers.",
+      "Retain screenshot HUD camera ref_ptr with auto.",
+      "Use raw mViewer pointer directly in local-map creation and recovery."
+    ],
+    "completed": "components, openmw-lib and main object compiled; canonical wasm64 link succeeded; matching outputs staged locally.",
+    "linkLog": "D:/OpenMW-local/webcuda-engine-link.log",
+    "localVersion": "50ae76ab4dda"
+  },
+  "browserValidation": {
+    "status": "PASS: all80 runtime kernels validated and compiled",
+    "url": "http://127.0.0.1:8910/index.html?renderer=webcuda&skipintro=1",
+    "observed": "raster_material: runtime pipeline creation (307.6 s)",
+    "errors": "No warnings/errors in current tab console at 77.6 second observation.",
+    "changes": [
+      "Added optional per-kernel progress callback to MaterialPipeline.create and connected it to Module.setStatus.",
+      "Restaged local index using explicit UTF-8 to fix corrupted loading text."
+    ],
+    "limits": "Kernel creation and small raster fixtures passed. Engine startup, full scene rendering, zero legacy draws and frame pacing still unverified.",
+    "diagnosticHarness": "render/webcuda/validate-kernels.html",
+    "latest": "Observed complete diagnostic; main raster runtime pipeline created in 318.33 seconds; five raster GPU fixtures passed.",
+    "baselineObservation": {
+      "wgslValidationSeconds": 0.08,
+      "pipelinePendingSeconds": 610.8,
+      "outcome": "Observed pending, not completed or failed. Switching to the changed flattened shader is a separate experiment.",
+      "artifactHash": "Not captured by the original diagnostic; do not claim an exact artifact hash for this run."
+    },
+    "activeArtifactSha256": "307a063c5aefd047050d2d6baef4098f0c7241f29678ce33715826976d62076e",
+    "flattenedBaseline": {
+      "hash": "dfc7eb66009944e6060b503eecf89150b52675b98374cb1faf55af2ab1083185",
+      "pendingSeconds": 191.6,
+      "outcome": "Closed deliberately to compare float-power shader; neither completion nor failure observed."
+    },
+    "adapter": "nvidia blackwell",
+    "floatPowerBaseline": {
+      "hash": "af881d08ff46b4df7f540e96ec75a8071ceab606f98b1ef12b39ba073844325b",
+      "pendingSeconds": 330.6,
+      "outcome": "Still pending when deliberately reloaded to compare consolidated sampler; no success/failure inferred."
+    },
+    "rasterPipelineSeconds": 318.33
+  },
+  "submissionTests": {
+    "log": "D:/OpenMW-local/webcuda-submission-tests.log",
+    "passed": [
+      "submission",
+      "renderer",
+      "geometrypacket",
+      "materialstate",
+      "materialtable",
+      "browserbridge"
+    ],
+    "stoppedAt": null,
+    "changes": [
+      "Matched test/probe C++ standard, GL compatibility include and osgParticle library to engine integration.",
+      "Updated inherited-state assertion for pass defaults.",
+      "Added GL_LINES packet assertions and kept unknown-topology rejection check.",
+      "Corrected alpha-only pixel fixture RGB from white to zero.",
+      "Replaced obsolete fixed atlas offsets/rejection assumptions with descriptor-aware pixel/version/dedup checks, supported mip generation and empty Program behavior; retained unknown-shader rejection."
+    ],
+    "remaining": "C++ integration and current CPU raster fixtures pass. Generated GPU execution and browser gameplay remain pending."
+  },
+  "cpuRasterValidation": {
+    "passed": [
+      "clip.test.cpp: 10000 randomized containment, reconstruction and guarded-buffer cases",
+      "assemble.test.cpp: clipped vertex attributes, material identity and invalid slots",
+      "material.test.cpp: seams, winding, blend, alpha/depth/scissor and sampling",
+      "material.test.cpp: 60 disk-overlap cases versus 256x256 midpoint integration with absolute tolerance 0.003, symmetry, three line-area cases and three diamond-endpoint cases",
+      "tiles.test.cpp: production count/prefix/scatter/sort path, reverse append ordering, guarded storage and exact reference rendering for 30 randomized scenes",
+      "dxt.test.cpp: DXT1/3/5 palettes, transparency, partial blocks and floating sRGB conversion with output guard"
+    ],
+    "compiler": "clang++ -std=c++20; clipping/assembly -O2, material -O1",
+    "limits": "CPU execution of authored CUDA bodies only. Does not validate generated GPU execution, whole-scene parity, multisample coverage or full primitive combinations."
+  },
+  "rasterCompilationWork": {
+    "change": "Flattened candidate and polygon-primitive traversal into one ordered while loop; cursor advances before shading/discard. Full material body remains authored CUDA.",
+    "basis": "Nested small primitive loop may amplify downstream compiler work; this is a hypothesis, not a measured compiler diagnosis.",
+    "validation": "Byte-identical CPU target buffers against saved pre-change kernel for existing material fixtures and all nine front/back polygon-mode pairs, both windings, repeated depth-tested draws. All84 kernels regenerated successfully.",
+    "paritySource": "D:/OpenMW-local/raster-loop-parity.cpp",
+    "baselineSource": "D:/OpenMW-local/raster-before-flat-loop.cu",
+    "limits": "CPU fixture parity passed. Changed shader is now under browser GPU compilation; no compile-time improvement or visual parity yet proven."
+  },
+  "activePriorityQueue": [
+    {
+      "priority": 1,
+      "task": "Diagnose and fix missing world geometry in completed GPU frames",
+      "status": "in progress",
+      "acceptance": "Imperial Prison Ship geometry and actors visibly render correctly, with advancing frames and no renderer errors"
+    },
+    {
+      "priority": 2,
+      "task": "Verify Morrowind gameplay with installed assets",
+      "status": "pending",
+      "acceptance": "New game, interiors, exteriors, actors, water, GUI, maps and save/load function"
+    },
+    {
+      "priority": 3,
+      "task": "Measure and fix 60 to 180 Hz frame pacing",
+      "status": "pending",
+      "acceptance": "Frame-time captures in working scenes establish pacing and remaining bottlenecks"
+    },
+    {
+      "priority": 4,
+      "task": "Expand GPU correctness and verify rendering completeness",
+      "status": "partially validated",
+      "acceptance": "Representative scene and primitive GPU checks pass; gameplay shows no legacy WebGL rendering"
+    },
+    {
+      "priority": 5,
+      "task": "Verify resize and device-loss recovery",
+      "status": "pending",
+      "acceptance": "Rendering and scene state recover correctly"
+    },
+    {
+      "priority": 6,
+      "task": "Reduce main raster shader startup compilation time",
+      "status": "pending",
+      "acceptance": "Measured startup improvement over observed 318.33-second pipeline creation without correctness regressions"
+    }
+  ],
+  "gpuRasterFixtures": {
+    "status": "GPU PASS on nvidia blackwell for consolidated sampler artifact 307a063c5aefd047050d2d6baef4098f0c7241f29678ce33715826976d62076e",
+    "file": "render/webcuda/raster-gpu-check.js",
+    "coverage": [
+      "both triangle windings",
+      "alpha discard before depth",
+      "scissor before depth",
+      "all 16 texture quadrant pixels",
+      "four trailing target guard words"
+    ],
+    "validation": "Actual GPU readback passed both windings, alpha/depth ordering, scissor/depth ordering, all 16 texture pixels and guard words on NVIDIA Blackwell. Full gameplay remains unverified.",
+    "integration": "All 80 runtime kernels validated and compiled; main raster pipeline creation measured 318.33 seconds."
+  },
+  "floatPowerWork": {
+    "change": "Nonnegative render power authored with exp2f/log2f plus explicit zero/one handling in precision.cuh; material, water and sRGB calls use it. No generated WGSL hand edits.",
+    "basis": "Generated cw_pow_f32 used software double multiply/divide for integer exponents; current generated main raster contains zero cw_d_ symbols. This does not yet prove the compilation delay cause.",
+    "validation": [
+      "84 kernel artifacts regenerated",
+      "material CPU tests passed",
+      "100000 power comparisons max normalized error 6.61285094e-06",
+      "65536 sRGB round trips passed",
+      "DXT decoding CPU suite passed after shared sRGB helper change"
+    ],
+    "artifactSha256": "af881d08ff46b4df7f540e96ec75a8071ceab606f98b1ef12b39ba073844325b",
+    "wgslBytes": 292111,
+    "limits": "GPU numerical error and visual effects including procedural water require browser validation.",
+    "validationFix": "Browser rejected constant infinity in unused negative-exponent branch. Restricted helper explicitly to nonnegative bases/exponents and removed that branch; regenerated all84 and repeated CPU power checks.",
+    "domainAudit": "All nine rendering call sites use nonnegative bases and exponents: fixed positive constants, bounded water scramble inputs, or shininess clamped to at least 0.0001."
+  },
+  "defaultRenderer": {
+    "status": "source and local entry point updated",
+    "behavior": "WebCuda installation is mandatory before engine loader insertion. Missing renderer query no longer selects original GL path. Failure stops startup.",
+    "validation": "All five inline scripts parsed in both source and staged index. Actual engine startup awaits raster pipeline compilation.",
+    "localEngineVersion": "1228be2c7c2a"
+  },
+  "mipCompilationWork": {
+    "change": "Consolidated four static mip_sample call sites into one dynamic level loop in authored sample_mipped. Filter selection and trilinear operation order retained.",
+    "validation": [
+      "24000 bit-identical CPU comparisons with frozen prior branch structure across six min filters, two mag filters, four wraps, descriptor and raw images, packed and float storage",
+      "CPU material tests passed",
+      "84 artifacts regenerated"
+    ],
+    "test": "render/webcuda/mip-sampling.test.cpp",
+    "artifactSha256": "307a063c5aefd047050d2d6baef4098f0c7241f29678ce33715826976d62076e",
+    "limits": "GPU compile cost improvement and GPU output not yet measured. Live browser owns preceding float-power artifact.",
+    "expansionEstimate": {
+      "beforeBytes": 15130400,
+      "afterBytes": 4630665,
+      "method": "Recursively sum WGSL function body sizes weighted by static call multiplicity; no loop expansion. Not actual compiler IR, inlining or timing.",
+      "report": "D:/OpenMW-local/raster-call-expansion.json"
+    }
+  },
+  "legacyDrawGuard": {
+    "status": "implemented; unit test passed; live engine verification pending",
+    "files": [
+      "render/webcuda/legacy-draw-guard.js",
+      "render/webcuda/legacy-draw-guard.test.mjs"
+    ],
+    "scope": "SDL game canvas GL contexts acquired through the main page getContext wrapper; blocks draw, framebuffer clear/blit and known instanced/multi-draw extensions before execution. Records attempts and reports error.",
+    "limits": "Not a proof of zero GL rendering in gameplay. Worker/offscreen contexts or separately cached prototype entry points are not covered by this guard."
+  },
+  "gameStartup": {
+    "rendererInitialization": "completed on first real game attempt",
+    "firstFailure": "StreamFS missing from local staging caused all game-data mounts to fail, but upstream code continued and engine terminated: Archive Morrowind.bsa not found.",
+    "fixes": [
+      "Restored .local-runtime/streamfs.js and verified served bytes against source",
+      "Missing StreamFS or failed server-data mount now rejects the load chain and retains run dependency",
+      "Added wasm-build/stage-webcuda-page.py to validate engine/mount paths and stage required scripts with page"
+    ],
+    "current": "World frames complete but geometry not visible (gray + GUI). Direct-cell renderdebug run started to distinguish depth/shading/composition failure.",
+    "additionalFinding": "Engine reported resource-directory version mismatch; investigate after data mount.",
+    "menuVerified": true,
+    "worldVerified": false,
+    "nextStagedEngine": "5919df1aa99c",
+    "menuFrameEvidence": {
+      "engine": "f2179d22e55e",
+      "presented": 1179,
+      "accepted": 1180,
+      "skipped": 1242,
+      "lastFrameWallMs": 19.5349999666214,
+      "legacyDrawAttempts": 0,
+      "scope": "main-page guarded GL context, menu only; not gameplay completeness or scanout timing"
+    }
+  },
+  "resourceVersionFix": {
+    "cause": "fsroot and CMake-generated resources/version contain CRLF; Emscripten getline retains CR while engine constants have no CR. All three version fields otherwise match.",
+    "change": "link-openmw.sh packages build-generated resources/version with CR stripped. Missing generated version fails packaging.",
+    "validation": "Shell syntax passed; normalized generated file matches compiled getVersion, getCommitHash and getTagHash.",
+    "relinkSession": null,
+    "relinkLog": "D:/OpenMW-local/webcuda-engine-link.log",
+    "status": "relink complete, artifacts hash verified, version payload bytes checked, staged as861614807c5b",
+    "stagedVersion": "861614807c5b"
+  },
+  "depthImageIntegration": {
+    "observation": "Live menu frames repeatedly throw Unsupported floating image pixel format, so apparent keyboard failure is a rendering exception.",
+    "sourceFinding": "ShadowManager creates 1x1 GL_DEPTH_COMPONENT/GL_FLOAT fallback image with +inf and DEPTH_COMPONENT32F internal format. Upload switch previously rejected depth pixel format.",
+    "change": "C++ accepts depth image layout and packs scalar depth decode requests; CUDA decode_float_image preserves float depth or quantizes16/24-bit normalized depth. JS validates scalar output and routes generated mips to depth kernel. Exceptions now report pixel format and filename.",
+    "validation": [
+      "Depth-image CPU kernel test passed including infinity, scalar addressing, depth16 quantization and guards",
+      "84 shaders regenerated",
+      "All six C++ integration suites passed including new scalar depth record test",
+      "Engine components rebuilt successfully"
+    ],
+    "linkSession": null,
+    "status": "Verified in engine 50ae76ab4dda: menu responds and New Game reaches Imperial Prison Ship; original floating image exception absent",
+    "stagedVersion": "50ae76ab4dda",
+    "gpuValidation": {
+      "status": "passed",
+      "adapter": "nvidia blackwell",
+      "wgslSha256": "5c518ed0060558794a654fa9e78c61c1ee84be2956815465c8b40d2f6bd4c158",
+      "checks": [
+        "float infinity preserved",
+        "normalized16",
+        "normalized24",
+        "source and destination offsets",
+        "atlas guards"
+      ],
+      "scope": "Actual generated kernel dispatch and GPU readback; engine frame integration remains pending"
+    }
+  },
+  "inactiveShadowMatrixFix": {
+    "cause": "ShadowManager disabled-shadow state uses ALWAYS comparison and deliberately omits matrices",
+    "change": "Only absent matrices on ALWAYS comparison samplers receive identity; missing matrices on ordinary samplers still reject",
+    "validation": "Integration suite passed, including new fallback descriptor identity/ALWAYS assertions and LEQUAL missing-matrix rejection",
+    "buildSession": null,
+    "status": "Verified engine f2179d22e55e advances past missing shadow matrix exception; next blocker is local-map sky sampler",
+    "stagedVersion": "f2179d22e55e"
+  },
+  "offscreenSkyStateFix": {
+    "cause": "Local map and character preview disable sky blending by large distance uniforms but have no sky sampler while global shader variant remains enabled",
+    "change": "Explicit webcudaDisableSkyBlending camera uniform disables only those camera material feature bits; normal scene still requires sky binding",
+    "validation": "Integration suite passed; tests cover absent binding rejection, explicit disable, re-enable rejection and valid active sky binding",
+    "buildSession": null,
+    "status": "Verified in engine 5919df1aa99c: local map reaches 642 drawable submission; missing sky sampler exception cleared",
+    "stagedVersion": "5919df1aa99c"
+  },
+  "attachmentBufferLimits": {
+    "observation": "Game host failed in planeStorage with Buffer exceeds maxStorageBufferBindingSize after local map submission",
+    "cause": "GpuRuntime default caps requested storage/buffer limits at 256 MiB",
+    "change": "Host requests useAdapterBufferLimits and validates allocation with attachment dimensions/bytes in error; no resolution or sample reduction",
+    "validation": "Actual NVIDIA Blackwell device accepted maxStorageBufferBindingSize 2147483644 and maxBufferSize 2147483648; depth-image GPU dispatch/readback checks passed on requested device",
+    "status": "Adapter limits applied in gameplay; 8192x8192 depth-only attachment still exceeds 2 GiB because full layout consumes 2684354560 bytes"
+  },
+  "compactDepthAttachments": {
+    "cause": "8192x8192 depth-only target allocated 40 bytes/pixel despite not storing color/normal/stencil",
+    "change": "Scalar 4-byte depth planes for single-sample depth-only cameras; CUDA clear/copy/export and raster depth layout, same alpha/coverage/depth tests",
+    "validation": [
+      "CPU full-vs-compact depth parity across alpha discard and depth write cases passed",
+      "CPU compact transfer/export orientation and guards passed",
+      "87 kernels regenerated from CUDA",
+      "JS syntax passed"
+    ],
+    "gpuStatus": "PASS on NVIDIA Blackwell: existing raster fixtures plus compact scalar depth thresholds 0/255 and guards; pipeline creation 333.02 seconds",
+    "artifactSha256": "ad22ad981211082d4b293360049e3a712cca0c870ba0b02ce1395ba839e60515",
+    "remaining": [
+      "Actual gameplay rendering with full-size attachments",
+      "General scene, recovery and pacing validation"
+    ],
+    "transferGpuValidation": {
+      "adapter": "nvidia blackwell",
+      "checks": [
+        "compact/full transfers preserve non-depth planes",
+        "texture flip and offsets",
+        "clear and buffer guards",
+        "partial-viewport resolved depth16 quantization with outside preservation"
+      ],
+      "status": "passed"
+    },
+    "integration": "Capture, resolve and depth save/restore now use layout-aware CUDA transfers. Compact single-sample setup skips full-layout sample allocation checks. Color captures reject depth-only attachments explicitly.",
+    "fullSizeGpuValidation": {
+      "status": "passed",
+      "dimensions": [
+        8192,
+        8192
+      ],
+      "depthBytes": 268435456,
+      "guardBytes": 16,
+      "adapter": "nvidia blackwell",
+      "checks": [
+        "allocation with requested adapter limits",
+        "CUDA clear across full extent",
+        "readback first pixel, row boundary, middle and last pixel",
+        "trailing guards untouched"
+      ],
+      "kernelSha256": "ac00d8d709cf2bd875a034c53291bd13f31234d031201a2300d872dc4adaf28a"
+    },
+    "gameplayObservation": "Game advanced beyond 8192x8192 allocation; then texture decode queue failed at uniform arena capacity. Full visible world still unverified."
+  },
+  "targetIdAbiFix": {
+    "change": "Canonical unsigned32 target IDs at every engine-to-host command boundary; accepts signed i32 representation while rejecting out-of-range or noninteger values",
+    "validation": "Node tests passed for high-bit IDs, Uint32 lookup, deletion, command fields, immutability and invalid values",
+    "status": "implemented; gameplay verification pending"
+  },
+  "boundedUniformBatches": {
+    "cause": "Scene texture decode batch exceeded 64 KiB runtime uniform arena",
+    "change": "Split texture decode and clustered-light pack command sequences at aligned uniform capacity; preserve ordered dispatches/copies without dropping scene work",
+    "validation": [
+      "Node 1000-command order, capacity, boundary and lifecycle checks passed",
+      "GPU readback preserved 1000 CUDA uniform snapshots and copies across 4 submissions",
+      "Full 8192-square compact depth allocation/clear test passed again"
+    ],
+    "status": "Verified in gameplay: no uniform arena error; scene frames complete"
+  },
+  "worldVisibilityDiagnosis": {
+    "observation": "Imperial Prison Ship scene presents flat gray with crosshair, then name GUI; completed frames advance with zero aborts/host errors/guarded GL draw attempts",
+    "observedFrameWallMs": [
+      1902.25,
+      2005.99
+    ],
+    "change": "Opt-in renderdebug camera-pass diagnostic captures geometry counts, GPU tile references and center depth/color samples before attachment reuse",
+    "status": "World geometry visibly renders in 704992650cc0: textured hull, beams and walls plus GUI. Main depth near .998744 exposed an additional culling-versus-shader projection mismatch; correctness remains pending that fix.",
+    "limits": "No world visibility or acceptable performance claim; diagnostic readback adds overhead",
+    "liveEvidence": {
+      "accepted": 68,
+      "presented": 67,
+      "aborted": 0,
+      "error": null,
+      "legacyDrawAttempts": 0,
+      "scope": "Imperial Prison Ship diagnostic scene, guarded main canvas only"
+    }
+  },
+  "reverseZStateFix": {
+    "cause": "AutoDepth reverses its comparison only when applying state; WebCuda encoded the stored unreversed function",
+    "change": "Shared getEffectiveFunction used by native apply and WebCuda state encoder",
+    "validation": "Regression checks for all eight comparisons, standard depth before reversal, literal osg::Depth and depth write masks passed",
+    "remaining": [
+      "Verify visible world geometry in rebuilt gameplay"
+    ]
+  },
+  "clipDepthConvention": {
+    "change": "Resolved ClipControl depth mode is encoded for triangles, ordinary points/lines, projected particles and thin ribbons. CUDA clipping, depth mapping and polygon offset slopes use the selected convention. JavaScript transports and validates the flags.",
+    "validation": [
+      "87 kernels generated from CUDA",
+      "20,000 randomized triangle cases across both depth conventions passed",
+      "CUDA raster zero-clear GEQUAL depth and negative-depth rejection passed",
+      "CUDA point/line/particle clipping and depth-clamp cases passed",
+      "All six C++ integration suites passed",
+      "CUDA ordinary and projected line crossing endpoints and interpolation at z=0 passed",
+      "CUDA reverse-Z overlapping draws: farther fragment preserves near color/depth; nearer fragment replaces it; negative clip depth rejected"
+    ],
+    "gpuShaderSha256": "5d869b9cd259b42443d1849a2c28d828eac47ed92b070e2d22db755ebb739e68",
+    "status": "Engine build/link passed; artifacts hash verified and staged as 704992650cc0. New game and GPU fixtures are compiling pipelines in the browser.",
+    "buildSession": null,
+    "stagedVersion": "704992650cc0",
+    "gpuObservation": "PASS: actual NVIDIA Blackwell GPU raster fixtures including reverse Z zero-to-one against zero clear and negative clip-depth rejection; runtime pipeline creation 401.36 seconds.",
+    "gpuPipelineSeconds": 401.36
+  },
+  "shaderProjectionFix": {
+    "cause": "RenderingManager retains unreversed camera projection for culling and supplies the real rendering projection as projectionMatrix uniform. GeometryPacket always used the culling projection.",
+    "change": "Vertex shaders assigning gl_Position through modelToClip/viewToClip now upload resolved projectionMatrix; ordinary compatibility and shadow shaders retain camera matrix. Transform calculations remain in CUDA.",
+    "validation": "All six C++ integration suites passed, including missing uniform rejection, actual shader matrix transport and inherited uniform not overriding shadow projection.",
+    "status": "Verified live in 7db678b4cc40: actor and interior furnishings correctly occlude hull. Main center depth .000627 versus previous .998744; no renderer errors or aborted frames in observed sample.",
+    "buildSession": null,
+    "stagedVersion": "7db678b4cc40"
+  },
+  "frameProfiling": {
+    "change": "DOM diagnostics now expose existing complete frame phase timings and per-scene pipeline.render call wall duration plus texture decode count. Pass wall durations include CPU work and waits for earlier GPU work, not GPU timestamps.",
+    "validation": "game-host.js syntax check passed; current game will load these diagnostics after pipeline compilation",
+    "status": "Awaiting first corrected-projection frame"
+  },
+  "memoryInvestigation": {
+    "systemRamGiB": 31.11,
+    "availableRamGiB": 9.37,
+    "committedGiB": 31.08,
+    "commitLimitGiB": 40.84,
+    "pagesInputPerSecond": 0,
+    "pagesOutputPerSecond": 0,
+    "gpu": "NVIDIA GeForce RTX 5080",
+    "gpuTotalMiB": 16303,
+    "gpuUsedMiB": 4097,
+    "gpuFreeMiB": 11881,
+    "scope": "Point-in-time OS and nvidia-smi readings, not a leak or sustained pressure test",
+    "finding": "No capacity exhaustion established. WASM bridge heap.slice copies all resource arrays; unused cumulative scene texture records were being copied and decoded in zero-triangle passes."
+  },
+  "emptyPassResourceFix": {
+    "change": "Submit no materials or scene atlas for zero-triangle passes; retain pass clear/attachment ordering and original resource table for following populated passes.",
+    "validation": "All six C++ integration suites passed including empty resource payload and retained source table regression check.",
+    "status": "Verified live in 98b195825462: all observed zero-triangle passes had zero texture decode records; clear and attachment ordering preserved in rendered interior.",
+    "buildSession": null,
+    "stagedVersion": "4641f7adc5fb"
+  },
+  "gpuTimestampProfiling": {
+    "change": "Optional timestamp queries around each clear+raster compute pass in renderdebug mode. Frame diagnostics also report captured scene bytes, runtime buffer allocation bytes and WASM heap capacity; allocation counts are not physical residency.",
+    "validation": "Actual CUDA clear dispatch output and duplicate submit rejection passed with profiling on and off. 128 clear dispatches measured .32768ms; single clear was below timestamp resolution and reported null.",
+    "status": "Verified live in 98b195825462. Example main-scene clear+raster 58.589ms; 8192-square shadow clear+raster 19.857ms; GUI .328ms. Render call wall time is distinct from these timestamps."
+  },
+  "directWasmUpload": {
+    "change": "Version 2 pass transport retains moved C++ geometry and immutable shared material tables, exposing heap subarray views directly to WebGPU uploads. Later table mutations detach first. The host releases passes after GPU completion and on abort/error/disposal. Rendering remains authored in .cu.",
+    "validation": [
+      "Actual browser shared-WASM upload passed: immediate source reuse, post-growth upload, and a retained pre-growth view with all bits set preserved across the upload.",
+      "All six C++ integration suites passed; bridge checks original buffer address, delayed data lifetime, material detachment, explicit release, rejection and JS exception cleanup.",
+      "Five actual-host lifecycle tests with controlled GPU dependencies passed: backpressure/completion, abort/invalid commit, dispatch failure drain, disposal, and device-loss cleanup with cancelled recreation.",
+      "Engine build/link passed; all three staged artifacts verified by SHA-256.",
+      "New live host reports retainedPassesAfterFrame=0, confirming explicit release in the completed gameplay frame."
+    ],
+    "stagedVersion": "98b195825462",
+    "status": "Verified in build 98b195825462: ship interior, actor and HUD rendered. More than 280 frames presented, no renderer errors/aborts or guarded legacy draw attempts. Retained packet backlog stayed at 16 while captured/released totals advanced.",
+    "limits": [
+      "Removes JS-owned scene copies, not WebGPU internal transfer copies.",
+      "No FPS or memory reduction claim yet.",
+      "Material tables can still copy in WASM at boundaries when later draws need to mutate a retained snapshot.",
+      "Texture residency and repeated uploads/decodes remain separate pending optimizations."
+    ],
+    "liveBeforeAtlasOptimization": {
+      "presented": 283,
+      "frameWallMs": 536.49,
+      "packetCaptureMs": 50.055,
+      "presentationIntervalMs": 597.015,
+      "uploadedBytesDuringFrame": 553448300,
+      "capturedSceneBytes": 552805356,
+      "runtimeBufferBytes": 1704873028,
+      "wasmHeapCapacityBytes": 3180134400,
+      "capturedPasses": 4499,
+      "releasedPasses": 4483,
+      "retainedPasses": 16,
+      "copiedSceneBytes": 0,
+      "width": 1286,
+      "height": 1244,
+      "scope": "Diagnostic ship interior with renderdebug; single sample, not a controlled benchmark."
+    }
+  },
+  "sparseAttachmentAtlasUpload": {
+    "change": "Upload only atlas intervals outside attachment-copy destinations. Shadow/depth and floating-color attachment pixels stay GPU-produced; CPU metadata and image data retain original offsets. Shared-WASM views feed queue.writeBuffer directly.",
+    "validation": [
+      "Scalar/wide attachment ranges, overlap, bounds, offsets above signed-i32 byte range, an 8192-square shadow hole and 500 randomized coverage layouts passed.",
+      "Actual WebGPU depth_to_texture and float_target_to_texture CUDA outputs plus untouched metadata matched a full-upload reference, with omitted regions prefilled with stale sentinels."
+    ],
+    "status": "Verified live in build 98b195825462, fresh tab 3: ship interior, actor, HUD and sampled attachment colors/depth unchanged. No renderer error, abort or guarded legacy draw attempt in sample.",
+    "liveSample": {
+      "presented": 51,
+      "accepted": 52,
+      "width": 1286,
+      "height": 1244,
+      "capturedSceneBytes": 577120340,
+      "uploadedBytesDuringFrame": 31913352,
+      "packetCaptureMs": 123.95,
+      "frameWallMs": 178.665,
+      "presentationIntervalMs": 315.35,
+      "retainedPassesAfterFrame": 0,
+      "copiedSceneBytes": 0,
+      "runtimeBufferBytes": 1711261792,
+      "wasmHeapCapacityBytes": 3180134400,
+      "mainSceneClearAndRasterGpuMs": 41.484288,
+      "shadowClearAndRasterGpuMs": 19.922944,
+      "scope": "Single diagnostic frame; not a controlled FPS or physical-memory benchmark."
+    },
+    "comparison": {
+      "beforeUploadedBytes": 576494120,
+      "afterUploadedBytes": 31913352,
+      "sameCapturedSceneBytes": 577120340,
+      "beforeRenderWallMs": 573.475,
+      "afterRenderWallMs": 178.665,
+      "scope": "Observed ship-interior frames at 1286x1244 with equal captured scene byte counts. GPU diagnostic mode and live simulation remain enabled."
+    },
+    "laterLiveSample": {
+      "presented": 363,
+      "aborted": 0,
+      "rendererError": null,
+      "guardedLegacyDrawAttempts": 0,
+      "capturedSceneBytes": 575977748,
+      "uploadedBytesDuringFrame": 30755596,
+      "packetCaptureMs": 122.29,
+      "frameWallMs": 119.83,
+      "presentationIntervalMs": 245.8,
+      "retainedPassesAfterFrame": 0,
+      "capturedPasses": 5815,
+      "releasedPasses": 5799,
+      "retainedPasses": 16,
+      "scope": "Later live diagnostic frame; simulation running, not a controlled benchmark."
+    }
+  },
+  "engineCaptureProfiling": {
+    "stagedVersion": "8b99d0043e77",
+    "scope": "Single live diagnostic ship-interior frame; inclusive material timing includes atlas resize. Values are not additive or a controlled benchmark.",
+    "sample": {
+      "presented": 159,
+      "capturedSceneBytes": 577120340,
+      "packetCaptureMs": 123.115,
+      "materialCopyMs": 8.190208,
+      "materialCopies": 1,
+      "materialEncodeMs": 57.69472,
+      "materialEncodes": 556,
+      "geometryEncodeMs": 45.0048,
+      "geometryEncodes": 552,
+      "atlasResizeMs": 19.8336,
+      "atlasResizes": 99,
+      "uploadedBytesDuringFrame": 31913352,
+      "frameWallMs": 165.85,
+      "presentationIntervalMs": 303.305,
+      "wasmHeapCapacityBytes": 3180134400,
+      "runtimeBufferBytes": 1711261792
+    }
+  },
+  "compactAttachmentAtlas": {
+    "change": "CPU atlas stores image data and sampler metadata only. Render attachments and their mip chains occupy a trailing GPU-only region. Immutable pass snapshots resolve deferred addresses before exposing direct WASM views. GPU allocation extent travels separately from CPU view length; clustered light storage follows the entire GPU atlas.",
+    "status": "Verified in local engine build 9ff011d06069: ship interior and HUD visibly rendered. More than 200 frames presented; completed frames release all retained passes. Main-canvas guarded legacy draw attempts and renderer abort/error counters remain zero in samples.",
+    "validation": [
+      "All six C++ integration suites passed, including an 8192-square depth mip chain with fewer than 64 CPU words, float attachment relocation, prior snapshot immutability and bridge GPU extent.",
+      "Atlas range bounds, compact tails, overlap and 500 randomized layouts passed. Five host lifecycle tests passed.",
+      "Actual GPU compact atlas depth/color output and CPU metadata matched a full-upload reference with stale sentinel destinations; 32 bytes uploaded versus 112. Shared-WASM source reuse, heap growth and retained pre-growth view checks passed.",
+      "Engine build/link and standalone bridge probe rebuild passed; openmw.js, openmw.wasm and openmw.data verified after local staging."
+    ],
+    "limits": [
+      "GPU attachment allocation remains necessary. Fresh game stayed at the configured 1.5 GiB WASM heap capacity versus 2.96 GiB in the baseline; overall process RAM was not measured.",
+      "Several generic Chromium UnknownError unhandled rejections occurred while rendering continued. Their source remains unresolved; this is not a claim of an error-free browser session.",
+      "Cross-frame asset residency, repeated scene construction, CUDA scene/shadow performance and broad gameplay/60-180 Hz verification remain pending."
+    ],
+    "stagedVersion": "9ff011d06069",
+    "liveSamples": [
+      {
+        "presented": 81,
+        "capturedSceneBytes": 15927416,
+        "uploadedBytesDuringFrame": 16454536,
+        "packetCaptureMs": 22.62,
+        "frameWallMs": 75.81,
+        "presentationIntervalMs": 110.375,
+        "materialCopyMs": 0.16,
+        "materialEncodeMs": 5.16864,
+        "geometryEncodeMs": 14.573568,
+        "atlasResizeMs": 0.189184,
+        "wasmHeapCapacityBytes": 1610612736,
+        "runtimeBufferBytes": 1704907912
+      },
+      {
+        "presented": 218,
+        "capturedSceneBytes": 42908820,
+        "uploadedBytesDuringFrame": 42407700,
+        "packetCaptureMs": 79.35,
+        "frameWallMs": 135.945,
+        "presentationIntervalMs": 216.96,
+        "materialCopyMs": 0.659968,
+        "materialEncodeMs": 29.467904,
+        "geometryEncodeMs": 39.22176,
+        "atlasResizeMs": 0.776192,
+        "wasmHeapCapacityBytes": 1610612736,
+        "runtimeBufferBytes": 1780298984,
+        "capturedPasses": 3495,
+        "releasedPasses": 3479,
+        "retainedPasses": 16,
+        "retainedPassesAfterFrame": 0,
+        "copiedSceneBytes": 0
+      }
+    ],
+    "liveScope": "Live simulation and camera state vary between samples, so these are not paired benchmark frames. Resolution 1286x1244. Heap and GPU buffer numbers are allocated capacities, not measured physical RAM or VRAM residency.",
+    "gpuSample": {
+      "mainSceneClearAndRasterMs": 36.634624,
+      "shadowClearAndRasterMs": 14.7456,
+      "shadowSize": 8192,
+      "mainSceneTriangles": 50614,
+      "shadowTriangles": 3070
+    }
+  },
+  "textureResidency": {
+    "change": "Immutable image-version IDs cross material-table/frame boundaries. A bounded GPU cache stores CUDA-decoded full mip chains and copies them into each current atlas. Warm images skip CPU atlas/source uploads and CUDA decoding/mip regeneration. Dynamic render attachments remain uncached.",
+    "stagedVersion": "8b2f378cabc7",
+    "budgetBytes": 67108864,
+    "status": "Verified in full-game build 8b2f378cabc7: Imperial Prison Ship and HUD rendered correctly, with warm GPU cache hits and no decoded textures in the observed frame.",
+    "validation": [
+      "All six C++ integration suites passed, including stable cross-table identities, dirty-version invalidation, storage-format separation and direct shared-WASM resource metadata.",
+      "Texture cache tests passed: relocated reuse, dirty miss, overlap/identity rejection, strict allocation budget including retired buffers, deferred eviction, submission failure cleanup and disabled-cache behavior.",
+      "Atlas tests including resident-image omissions and five host lifecycle tests passed.",
+      "Actual WebGPU CUDA DXT/mip fixture passed: cached pixels survived atlas relocation and poisoned source data; a new version decoded correctly. CPU uploads were 168 cold versus 76 warm bytes.",
+      "Live game at presented frame 131: 111 cache entries, 16,258,012 allocated bytes, zero evictions/bypasses, all four textured passes had zero misses and zero CUDA decodes. Renderer error null, aborted frames 0, guarded legacy draw attempts 0."
+    ],
+    "limits": [
+      "Point-in-time scene sample; no claim of a controlled frame-rate improvement. CPU geometry and image packing still occurs each frame. Cache allocations include deferred deletions and are capped at 64 MiB."
+    ],
+    "observedFrame": {
+      "presented": 131,
+      "capturedSceneBytes": 32541660,
+      "runtimeBufferBytes": 1721120924,
+      "presentationIntervalMs": 221.84,
+      "packetCaptureMs": 95.285,
+      "heapCapacityBytes": 1610612736,
+      "uploadedBytes": 15627376,
+      "renderFrameWallMs": 113.16
+    }
+  },
+  "nativeCudaValidation": {
+    "architecture": "sm_120",
+    "runtimeKernelsCompiled": 83,
+    "browserRasterCompileAndLoadSeconds": 9.483,
+    "browserGpuChecks": 9,
+    "compiler": "NVRTC 13.3",
+    "device": "NVIDIA GeForce RTX 5080",
+    "report": "D:/OpenMW-local/webcuda-native-compile-report.json",
+    "localRasterCompileSeconds": 9.3569202,
+    "browser": "ChromiumRTXCuda 0.1.0-alpha.6",
+    "localCompileSeconds": 13.1132644,
+    "limits": [
+      "Full-game host still uses WebGPU. No native gameplay or frame-rate claim.",
+      "Current buffers total about 1.6 GiB, and the atlas includes the 8192-square shadow plus other image/metadata words. A direct native backend flag cannot satisfy the alpha.6 allocation and sharing contracts.",
+      "The local check targets the actual GPU architecture and uses the alpha.6 compiler options; it does not load modules into the browser. The separate user screenshot proves native browser raster dispatch."
+    ],
+    "nativeOwnedBudgetBytes": 67108864,
+    "browserEvidence": "User screenshot C:/Users/samue/AppData/Local/Temp/codex-clipboard-7681a800-370d-4edd-9a4a-c1c8628dd22d.png",
+    "status": "All runtime kernels compile with bundled NVRTC; user-provided browser screenshot confirms raster execution.",
+    "sharedSessionLimitBytes": 2147483648,
+    "sharedResourceLimitBytes": 268435456,
+    "testPage": "http://127.0.0.1:8910/webcuda/validate-native.html"
+  },
+  "nativePagedRenderer": {
+    "pageBytes": 67108864,
+    "localKernelsCompiled": 85,
+    "storage": "64 MiB shared pages, CUDA-owned address tables, authored CUDA indexing and copies. Every indirect page is an explicit kernel argument in its batch so browser fences cover it.",
+    "localCompileSeconds": 14.10744719998911,
+    "localCompileReport": "D:/OpenMW-local/webcuda-native-paged-compile-report.json",
+    "browserRasterSourceSha256": "c4828654fa1fb556c5ed37dda842280a4ef48d5718af9da212b491b98860f655",
+    "hostTests": "Nine native ownership/range/budget/disposal tests, five host retained-packet lifecycle tests, atlas upload, bounded batch and texture residency tests passed.",
+    "browserPassedChecks": [
+      "Nine raster checks including textured quad, alpha/discard, reverse Z and compact depth.",
+      "Four compact-depth transfer, orientation, guard and quantization checks.",
+      "Three float/normalized depth image checks.",
+      "8192-square compact depth plus trailing guards crosses the 256 MiB single-allocation limit.",
+      "GPU copy across unequal 64 MiB page boundaries; owned upload snapshots.",
+      "Borrowed shared heap uploads across a page boundary.",
+      "Real GPU buffer-to-texture presentation across a split row, first and last pixel."
+    ],
+    "browserEvidence": "User supplied the All runtime kernels + Paged game renderer output in this conversation.",
+    "pending": [
+      "Actual full-game combined allocation budget and pass ordering.",
+      "Scene fidelity, transitions and sustained performance.",
+      "Native device loss and permission revocation during real gameplay."
+    ],
+    "status": "Implemented behind backend=native. Browser compiler and 20 GPU checks passed. After storage revision 2 and 2048 default shadows, the user screenshot visibly shows the Imperial Prison Ship, HUD and 16 native presentations. The previous startup allocation stop is cleared in this run; sustained performance and broader gameplay remain incomplete.",
+    "browserRuntimeKernels": 83,
+    "browserRasterCompileAndLoadSeconds": 9.388
+  },
+  "nativeAllocationRecovery": {
+    "evidence": "C:/Users/samue/Downloads/openmw-renderer-report.json, observed 2026-10-06T09:40:44.009Z",
+    "failure": "OpenMW texels replacement requested 294276352 bytes with 1913782272 shared bytes already reserved; aggregate exceeds the 2147483648-byte session cap.",
+    "observed": {
+      "presented": 2,
+      "sharedBytes": 1913782272,
+      "sharedPages": 176,
+      "tables": 161,
+      "textureCacheBytes": 16258012,
+      "shadowResolution": 8192
+    },
+    "change": "Native pipeline scratch growth retains complete prefix pages with reference-counted lifetimes and separate address tables. Only the partial tail is allocated and copied in CUDA; failed reservations leave the old buffer live. Default shadow resolution changes from RAM-selected 8192 to 2048, with explicit shadowres override preserved.",
+    "storageRevision": 2,
+    "validation": "14 native host tests passed, including a regression using the reported shared-byte total and 294276352-byte requested atlas, successive growth, queued use, retirement and failure cleanup. Five game-host lifecycle tests and atlas upload, bounded batch and texture cache checks passed.",
+    "recoveredGameEvidence": "C:/Users/samue/AppData/Local/Temp/codex-clipboard-af0150b1-7b0e-473a-8797-cb833259316b.png",
+    "recoveredGameSample": {
+      "presented": 16,
+      "captureMs": 119.2,
+      "renderWallMs": 434.1,
+      "presentationIntervalMs": 565.3
+    },
+    "pending": "Dedicated GPU growth fixture and saved post-fix allocation totals; the screenshot verifies recovered scene rendering, not sustained stability or physical memory usage."
+  },
+  "nativeSubmissionCoalescing": {
+    "revision": 1,
+    "change": "Consecutive logical batches share a native submit until execution starts or an upload/readback/allocation/presentation/release closes the group. Each dispatch keeps resource/scalar snapshots; 256-job splits include page bindings and rebind all pages.",
+    "validation": "18 native host tests pass, including 600 logical submissions reduced to three simulated native submissions with identical dispatch order, transfer barriers and immutable executing groups. Five frame-lifetime tests and atlas/cache/bounded-batch checks also pass.",
+    "pending": "Native browser correctness and actual frame/submission measurements remain unverified. User asked for code-led diagnosis without further visual data requests."
+  },
+  "captureCodeAudit": {
+    "stagedVersion": "339095a75c39",
+    "findings": [
+      "Material classification repeatedly built whitespace-stripped copies of entire GLSL sources to reject ordinary programs as built-in particle shaders.",
+      "Geometry matrix capture repeatedly built another whitespace-stripped vertex shader to find its projection convention.",
+      "Each drawable grew temporary vertex, attribute and secondary-color vectors incrementally despite knowing its source vertex count."
+    ],
+    "changes": "Streaming equality stops at the first mismatch; candidate substring search skips unrelated text without allocating. Exact prior whitespace semantics and immediate source edits are preserved without a stale cache. Per-draw arrays reserve known source capacity before packing.",
+    "validation": "Six WASM64 integration suites passed, including 1000 deterministic differential shader-recognition cases. Incremental full engine rebuild/link succeeded; new loader/WASM/data were content-versioned and staged together.",
+    "benchmarkReport": "D:/OpenMW-local/webcuda-shader-scan-benchmark.json",
+    "benchmark": {
+      "scope": "WASM64 CPU microbenchmark using concatenated repository shader text; not a gameplay measurement",
+      "checksPerVariant": 20000,
+      "oldProjectionMs": 244.619,
+      "newProjectionMs": 38.4993,
+      "oldParticleMs": 213.019,
+      "newParticleMs": 0.806
+    },
+    "limits": "The new engine's gameplay FPS and complete native frame timing have not been remeasured. Geometry/material capture, GPU raster work and necessary transfer boundaries remain."
+  },
+  "geometryCaptureOptimization": {
+    "stagedVersion": "61275df13d9f",
+    "change": "Resolve OSG array type, binding and bounds once per synchronous draw; constant attributes unpack once. Reuse one merged state through geometry, ribbon and particle capture; no persistent cache. Keep CUDA rendering and packet ABI unchanged.",
+    "validation": "Six WASM64 integration suites pass. New geometry cases cover all vector/color formats, all attribute bindings, disabled attributes, homogeneous UV/position data, in-place edits and invalid/short array rejection. Full engine rebuild/link succeeded.",
+    "benchmarkReport": "D:/OpenMW-local/webcuda-geometry-capture-benchmark.json",
+    "benchmark": {
+      "scope": "Synthetic WASM64 capture benchmark, not gameplay FPS",
+      "equivalentPackets": true,
+      "cases": [
+        {
+          "name": "many_small_draws",
+          "beforeMs": 50.81088,
+          "afterMs": 6.65984,
+          "checksum": "f6179bb4d751ee83",
+          "checkedBytes": 7323648
+        },
+        {
+          "name": "larger_geometry",
+          "beforeMs": 166.653696,
+          "afterMs": 14.530048,
+          "checksum": "52f5c7240781f603",
+          "checkedBytes": 29122560
+        }
+      ]
+    },
+    "limits": "Synthetic capture performance in the real WASM64 toolchain. Live game capture/frame times have not been remeasured."
+  },
+  "packetValidationOptimization": {
+    "change": "Use direct finite-value loops for large packet arrays; identify projected/line particle modes during the 34-field attribute validation loop. Derive fixed-light enablement during descriptor validation. Keep bounds, finiteness and flag guards.",
+    "validation": "25 host checks and five frame-lifetime checks pass, including shared heap subview boundaries, every non-finite attribute position, particle flag bounds and real pipeline rejection before the first GPU allocation.",
+    "benchmarkReport": "D:/OpenMW-local/webcuda-packet-validation-benchmark.json",
+    "benchmark": {
+      "scope": "Synthetic host validation of shared typed-array views in Node; not GPU timing or gameplay FPS",
+      "cases": [
+        {
+          "classifyParticles": false,
+          "vertices": 147456,
+          "bytes": 25952256,
+          "beforeMs": 30.837400000000002,
+          "afterMs": 3.175299999999993
+        },
+        {
+          "classifyParticles": true,
+          "vertices": 147456,
+          "bytes": 25952256,
+          "beforeMs": 80.60069999999996,
+          "afterMs": 3.1685999999999694
+        }
+      ]
+    },
+    "limits": "Node synthetic host validation, not GPU execution or gameplay FPS. Full frame and 60-180 Hz pacing remain unverified."
+  }
+}

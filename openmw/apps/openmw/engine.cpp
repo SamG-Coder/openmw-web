@@ -4,6 +4,7 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#include <components/webcuda/viewer.hpp>
 #include <osg/NodeVisitor>
 #include <osg/DisplaySettings>
 #include <osg/Geometry>
@@ -260,7 +261,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         // update input
         {
             ScopedProfile<UserStatsType::Input> profile(frameStart, frameNumber, *timer, *stats);
-            mInputManager->update(frametime, false);
+            mInputManager->update(frametime, mStateManager->isRenderCapturePending());
         }
 
         // When the window is minimized, pause the game. Currently this *has* to be here to work around a MyGUI bug.
@@ -294,7 +295,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
             ScopedProfile<UserStatsType::LuaSyncUpdate> profile(frameStart, frameNumber, *timer, *stats);
             // Should be called after input manager update and before any change to the game world.
             // It applies to the game world queued changes from the previous frame.
-            mLuaManager->synchronizedUpdate();
+            if(!mStateManager->isRenderCapturePending())mLuaManager->synchronizedUpdate();
         }
 
         // update game state
@@ -303,12 +304,15 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
             mStateManager->update(frametime);
         }
 
-        bool paused = mWorld->getTimeManager()->isPaused();
+        // A deferred save needs stable world inputs while GPU readbacks finish.
+        // Keep GUI/rendering alive; do not advance simulation or scripts.
+        const bool capturePending=mStateManager->isRenderCapturePending();
+        bool paused = capturePending||mWorld->getTimeManager()->isPaused();
 
         {
             ScopedProfile<UserStatsType::Script> profile(frameStart, frameNumber, *timer, *stats);
 
-            if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
+            if (!capturePending && mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
                 if (!mWindowManager->containsMode(MWGui::GM_MainMenu) || !paused)
                 {
@@ -337,7 +341,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         {
             ScopedProfile<UserStatsType::Mechanics> profile(frameStart, frameNumber, *timer, *stats);
 
-            if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
+            if (!capturePending && mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
                 mMechanicsManager->update(frametime, paused);
             }
@@ -354,7 +358,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         {
             ScopedProfile<UserStatsType::Physics> profile(frameStart, frameNumber, *timer, *stats);
 
-            if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
+            if (!capturePending && mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
                 mWorld->updatePhysics(frametime, paused, frameStart, frameNumber, *stats);
             }
@@ -364,7 +368,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
         {
             ScopedProfile<UserStatsType::World> profile(frameStart, frameNumber, *timer, *stats);
 
-            if (mStateManager->getState() != MWBase::StateManager::State_NoGame)
+            if (!capturePending && mStateManager->getState() != MWBase::StateManager::State_NoGame)
             {
                 mWorld->update(frametime, paused);
             }
@@ -433,7 +437,8 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     }
 
     // if there is a separate Lua thread, it starts the update now
-    mLuaWorker->allowUpdate(frameStart, frameNumber, *stats);
+    const bool runLuaUpdate=!mStateManager->isRenderCapturePending();
+    if(runLuaUpdate)mLuaWorker->allowUpdate(frameStart, frameNumber, *stats);
 
     // H1 sim-peer spike: simulation (AI, physics, scripts) ran in updateTraversal() above;
     // drawing is this call alone. Skipping it is the entire headless saving — GL is paid
@@ -521,7 +526,7 @@ bool OMW::Engine::frame(unsigned frameNumber, float frametime)
     }
 #endif
 
-    mLuaWorker->finishUpdate(frameStart, frameNumber, *stats);
+    if(runLuaUpdate)mLuaWorker->finishUpdate(frameStart, frameNumber, *stats);
 
     return true;
 }
@@ -1416,7 +1421,12 @@ void OMW::Engine::go()
     mEncoder = std::make_unique<ToUTF8::Utf8Encoder>(mEncoding);
 
     // Setup viewer
-    mViewer = new osgViewer::Viewer;
+#ifdef __EMSCRIPTEN__
+    if (WebCuda::Viewer::requested())
+        mViewer = new WebCuda::Viewer;
+    else
+#endif
+        mViewer = new osgViewer::Viewer;
     mViewer->setReleaseContextAtEndOfFrameHint(false);
 #ifdef __EMSCRIPTEN__
     // OSG defaults to DrawThreadPerContext, running draw + GL-object compilation on a
@@ -1609,7 +1619,7 @@ void OMW::Engine::go()
             if (!self->frame(frameNumber, static_cast<float>(dt)))
                 return;
             timeManager.updateIsPaused();
-            if (!timeManager.isPaused())
+            if (!timeManager.isPaused()&&!self->mStateManager->isRenderCapturePending())
             {
                 timeManager.setSimulationTime(timeManager.getSimulationTime() + dt);
                 timeManager.setRenderingSimulationTime(timeManager.getRenderingSimulationTime() + dt);
@@ -1675,7 +1685,7 @@ void OMW::Engine::go()
             continue;
         }
         timeManager.updateIsPaused();
-        if (!timeManager.isPaused())
+        if (!timeManager.isPaused()&&!mStateManager->isRenderCapturePending())
         {
             timeManager.setSimulationTime(timeManager.getSimulationTime() + dt);
             timeManager.setRenderingSimulationTime(timeManager.getRenderingSimulationTime() + dt);

@@ -1,0 +1,29 @@
+{
+  "name": "clear_compact_depth",
+  "native": {
+    "version": 1,
+    "source": "// Scalar depth planes keep full resolution without unused color/normal storage.\n__global__ void clear_compact_depth(float* target,unsigned int pixel_count,float depth) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<pixel_count)target[i]=depth;\n}\n__global__ void copy_depth_layout(const float* source,float* target,unsigned int pixel_count,unsigned int source_compact,unsigned int target_compact) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<pixel_count)target[target_compact!=0u?i:i*9u+4u]=source[source_compact!=0u?i:i*9u+4u];\n}\n__global__ void compact_depth_to_texture(const float* target,unsigned int* texels,unsigned int width,unsigned int height,unsigned int offset) {\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\n    if(i<width*height)texels[offset+(height-1u-i/width)*width+i%width]=__float_as_uint(target[i]);\n}\n",
+    "entry": "clear_compact_depth",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "target",
+        "type": "buffer"
+      },
+      {
+        "name": "pixel_count",
+        "type": "u32"
+      },
+      {
+        "name": "depth",
+        "type": "f32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

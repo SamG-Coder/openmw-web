@@ -1,0 +1,121 @@
+{
+  "version": "0.1.1",
+  "name": "generate_fog_map",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel generate_fog_map.\n@group(0) @binding(0) var<storage, read> b_blocks: array<u32>;\n@group(0) @binding(1) var<storage, read_write> b_pixels: array<u32>;\nstruct CWParams {\n  p_width: u32,\n  p_height: u32,\n  p_block_offset: u32,\n  p_pixel_offset: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= (cw_params.p_width * cw_params.p_height))) {\n    return;\n  }\n  var v_brush_count: u32 = b_blocks[cw_params.p_block_offset];\n  var v_saved: u32 = b_blocks[((cw_params.p_block_offset + 1u) + v_i)];\n  var v_brushes: u32 = ((cw_params.p_block_offset + 1u) + (cw_params.p_width * cw_params.p_height));\n  var v_alpha: u32 = (v_saved >> 24u);\n  var v_x: f32 = f32((v_i % cw_params.p_width));\n  var v_y: f32 = f32((v_i / cw_params.p_width));\n  {\n    var v_b: u32 = u32(0i);\n    loop {\n      if (!(v_b < v_brush_count)) { break; }\n      let cw_argument_index_0 = (v_brushes + (v_b * 3u));\n      var v_dx: f32 = (v_x - bitcast<f32>(b_blocks[cw_argument_index_0]));\n      let cw_argument_index_1 = ((v_brushes + (v_b * 3u)) + 1u);\n      var v_dy: f32 = (v_y - bitcast<f32>(b_blocks[cw_argument_index_1]));\n      let cw_argument_index_2 = ((v_brushes + (v_b * 3u)) + 2u);\n      var v_fraction: f32 = min(1.0f, max(0.0f, cw_divide_f32(((v_dx * v_dx) + (v_dy * v_dy)), bitcast<f32>(b_blocks[cw_argument_index_2]))));\n      var v_candidate: u32 = u32((v_fraction * 255.0f));\n      if ((v_candidate < v_alpha)) {\n        v_alpha = v_candidate;\n      }\n      continuing {\n        v_b += u32(1);\n      }\n    }\n  }\n  var cw_tmp_3: u32;\n  if ((v_brush_count == 0u)) {\n    cw_tmp_3 = v_saved;\n  } else {\n    cw_tmp_3 = (v_alpha << 24u);\n  }\n  b_pixels[(cw_params.p_pixel_offset + v_i)] = cw_tmp_3;\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "blocks",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "pixels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "block_offset",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32",
+        "offset": 12
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 2363,
+      "beforeBytes": 2363,
+      "afterBytes": 2363,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 1680,
+          "transitiveBytes": 1950,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// Local-map exploration mask. Inputs are saved RGBA8 pixels plus brush history.\r\n// One thread owns one pixel; each brush applies the engine's minimum-alpha rule.\r\n// Brush records: center X, center Y, squared exploration radius, in texel units.\r\n__global__ void generate_fog_map(const unsigned int* blocks,unsigned int* pixels,\r\n                                unsigned int width,unsigned int height,unsigned int block_offset,unsigned int pixel_offset) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    unsigned int brush_count=blocks[block_offset],saved=blocks[block_offset+1u+i];\r\n    unsigned int brushes=block_offset+1u+width*height;\r\n    unsigned int alpha=saved>>24u;\r\n    float x=(float)(i%width),y=(float)(i/width);\r\n    for(unsigned int b=0;b<brush_count;b++) {\r\n        float dx=x-__uint_as_float(blocks[brushes+b*3u]),dy=y-__uint_as_float(blocks[brushes+b*3u+1u]);\r\n        float fraction=fminf(1.0f,fmaxf(0.0f,(dx*dx+dy*dy)/__uint_as_float(blocks[brushes+b*3u+2u])));\r\n        unsigned int candidate=(unsigned int)(fraction*255.0f);\r\n        if(candidate<alpha)alpha=candidate;\r\n    }\r\n    pixels[pixel_offset+i]=brush_count==0u?saved:alpha<<24u;\r\n}\r\n",
+    "entry": "generate_fog_map",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

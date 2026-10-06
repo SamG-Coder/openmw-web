@@ -1,3 +1,6 @@
+#include <components/webcuda/maptexture.hpp>
+#include <cstring>
+#include <components/webcuda/viewer.hpp>
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "globalmap.hpp"
@@ -82,6 +85,11 @@ namespace
         {
             if (mRendered)
             {
+                bool requiresCompletion=false;
+                if(node->getUserValue("webcuda.notifyPassComplete",requiresCompletion)&&requiresCompletion) {
+                    bool complete=false;node->getUserValue("webcuda.passComplete",complete);
+                    if(!complete)return;
+                }
                 if (mParent->copyResult(node, nv->getTraversalNumber()))
                 {
                     node->setNodeMask(0);
@@ -140,18 +148,19 @@ namespace MWRender
             , mCellSize(cellSize)
             , mLandStore(landStore)
             , mColorLut(colorLut)
+            , mWebCuda(WebCuda::Viewer::requested())
         {
         }
 
         void doWork() override
         {
             osg::ref_ptr<osg::Image> image = new osg::Image;
-            image->allocateImage(mWidth, mHeight, 1, GL_RGB, GL_UNSIGNED_BYTE);
+            if(!mWebCuda)image->allocateImage(mWidth, mHeight, 1, GL_RGB, GL_UNSIGNED_BYTE);
 
             osg::ref_ptr<osg::Image> alphaImage = new osg::Image;
-            alphaImage->allocateImage(mWidth, mHeight, 1, GL_ALPHA, GL_UNSIGNED_BYTE);
+            if(!mWebCuda)alphaImage->allocateImage(mWidth, mHeight, 1, GL_ALPHA, GL_UNSIGNED_BYTE);
 
-            for (int x = mMinX; x <= mMaxX; ++x)
+            if(!mWebCuda)for (int x = mMinX; x <= mMaxX; ++x)
             {
                 for (int y = mMinY; y <= mMaxY; ++y)
                 {
@@ -186,20 +195,35 @@ namespace MWRender
                 }
             }
 
-            mBaseTexture = new osg::Texture2D;
+            std::shared_ptr<std::vector<std::uint32_t>> mapInputs;
+            if(mWebCuda) {
+                mapInputs=std::make_shared<std::vector<std::uint32_t>>();
+                mapInputs->insert(mapInputs->end(),{static_cast<unsigned int>(mMaxX-mMinX+1),static_cast<unsigned int>(mMaxY-mMinY+1),static_cast<unsigned int>(mCellSize)});
+                for(unsigned int index=0;index<256;index++) {
+                    const auto color=mColorLut->getColor(index,0);
+                    for(unsigned int channel=0;channel<4;channel++) {
+                        std::uint32_t bits;const float value=color[channel];std::memcpy(&bits,&value,4);mapInputs->push_back(bits);
+                    }
+                }
+                for(int y=mMinY;y<=mMaxY;y++)for(int x=mMinX;x<=mMaxX;x++) {
+                    const auto* land=mLandStore.search(x,y);
+                    for(unsigned int sample=0;sample<81;sample++)mapInputs->push_back(land&&(land->mDataTypes&ESM::Land::DATA_WNAM)?static_cast<int>(land->mWnam[sample])+128:0);
+                }
+            }
+            mBaseTexture = mapInputs?static_cast<osg::Texture2D*>(new WebCuda::MapTexture(mapInputs,false,mWidth,mHeight)):new osg::Texture2D;
             mBaseTexture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
             mBaseTexture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
             mBaseTexture->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR);
             mBaseTexture->setFilter(osg::Texture::MAG_FILTER, osg::Texture::LINEAR);
-            mBaseTexture->setImage(image);
+            if(!mapInputs)mBaseTexture->setImage(image);
             mBaseTexture->setResizeNonPowerOfTwoHint(false);
 
-            mAlphaTexture = new osg::Texture2D;
+            mAlphaTexture = mapInputs?static_cast<osg::Texture2D*>(new WebCuda::MapTexture(mapInputs,true,mWidth,mHeight)):new osg::Texture2D;
             mAlphaTexture->setWrap(osg::Texture::WRAP_S, osg::Texture::CLAMP_TO_EDGE);
             mAlphaTexture->setWrap(osg::Texture::WRAP_T, osg::Texture::CLAMP_TO_EDGE);
             mAlphaTexture->setFilter(osg::Texture::MIN_FILTER, osg::Texture::LINEAR);
             mAlphaTexture->setFilter(osg::Texture::MAG_FILTER, osg::Texture::LINEAR);
-            mAlphaTexture->setImage(alphaImage);
+            if(!mapInputs)mAlphaTexture->setImage(alphaImage);
             mAlphaTexture->setResizeNonPowerOfTwoHint(false);
 
             mOverlayImage = new osg::Image;
@@ -223,6 +247,7 @@ namespace MWRender
         int mCellSize;
         const MWWorld::Store<ESM::Land>& mLandStore;
         osg::ref_ptr<osg::Image> mColorLut;
+        const bool mWebCuda;
 
         osg::ref_ptr<osg::Texture2D> mBaseTexture;
         osg::ref_ptr<osg::Texture2D> mAlphaTexture;
@@ -326,10 +351,15 @@ namespace MWRender
 
     void GlobalMap::requestOverlayTextureUpdate(int x, int y, int width, int height,
         osg::ref_ptr<osg::Texture2D> texture, bool clear, bool cpuCopy, float srcLeft, float srcTop, float srcRight,
-        float srcBottom)
+        float srcBottom, bool restoreBaseline)
     {
         osg::ref_ptr<osg::Camera> camera(new osg::Camera);
+        const OverlayRecipe recipe{x,y,width,height,texture,clear,cpuCopy,srcLeft,srcTop,srcRight,srcBottom};
         camera->setName("GlobalMap");
+        if(WebCuda::Viewer::requested()) {
+            camera->setUserValue("webcuda.notifyPassComplete",true);
+            camera->setUserValue("webcuda.passComplete",false);
+        }
         camera->setNodeMask(Mask_RenderToTexture);
         camera->setReferenceFrame(osg::Camera::ABSOLUTE_RF);
         camera->setViewMatrix(osg::Matrix::identity());
@@ -379,7 +409,12 @@ namespace MWRender
             // by this image attach (same COLOR_BUFFER slot), so the format must be set here.
             image->setInternalTextureFormat(GL_RGBA8);
 #endif
-            camera->attach(osg::Camera::COLOR_BUFFER, image);
+            if(WebCuda::Viewer::requested()) {
+                // Keep the GPU overlay target while asynchronously saving its pixels.
+                camera->getBufferAttachmentMap()[osg::Camera::COLOR_BUFFER]._image=image;
+                camera->setUserValue("webcuda.imageCaptureOneShot",true);
+                camera->setUserValue("webcuda.imageCapture",0);
+            } else camera->attach(osg::Camera::COLOR_BUFFER, image);
 
             ImageDest imageDest;
             imageDest.mImage = image;
@@ -399,7 +434,7 @@ namespace MWRender
             stateset->setTextureAttributeAndModes(0, texture, osg::StateAttribute::ON);
             stateset->setMode(GL_DEPTH_TEST, osg::StateAttribute::OFF);
 
-            if (mAlphaTexture)
+            if (mAlphaTexture&&!restoreBaseline)
             {
                 osg::ref_ptr<osg::Vec2Array> texcoords = new osg::Vec2Array;
 
@@ -422,6 +457,7 @@ namespace MWRender
         mRoot->addChild(camera);
 
         mActiveCameras.push_back(camera);
+        if(WebCuda::Viewer::requested()&&!restoreBaseline)mOverlayRecipes.emplace(camera.get(),recipe);
     }
 
     void GlobalMap::exploreCell(int cellX, int cellY, osg::ref_ptr<osg::Texture2D> localMapTexture)
@@ -441,6 +477,34 @@ namespace MWRender
 
         requestOverlayTextureUpdate(
             originX, mHeight - originY, cellSize, cellSize, std::move(localMapTexture), false, true);
+    }
+
+    void GlobalMap::restoreRenderTargets()
+    {
+        if(!WebCuda::Viewer::requested()||!mOverlayImage||!mOverlayTexture)return;
+        // Preserve unfinished operations in submission order. Their local-map
+        // source textures retain identity and are regenerated before this pass.
+        std::vector<OverlayRecipe> pending;
+        for(const auto& camera:mActiveCameras) {
+            const auto found=mOverlayRecipes.find(camera.get());
+            if(found!=mOverlayRecipes.end())pending.push_back(found->second);
+        }
+        for(const auto& camera:mActiveCameras)removeCamera(camera);
+        for(const auto& camera:mCamerasPendingRemoval)removeCamera(camera);
+        mActiveCameras.clear();mCamerasPendingRemoval.clear();mPendingImageDest.clear();
+        mOverlayRecipes.clear();
+        osg::ref_ptr<osg::Image> snapshot=new osg::Image(*mOverlayImage,osg::CopyOp::DEEP_COPY_ALL);
+        osg::ref_ptr<osg::Texture2D> baseline=new osg::Texture2D(snapshot);
+        baseline->setWrap(osg::Texture::WRAP_S,osg::Texture::CLAMP_TO_EDGE);
+        baseline->setWrap(osg::Texture::WRAP_T,osg::Texture::CLAMP_TO_EDGE);
+        baseline->setFilter(osg::Texture::MIN_FILTER,osg::Texture::NEAREST);
+        baseline->setFilter(osg::Texture::MAG_FILTER,osg::Texture::NEAREST);
+        baseline->setResizeNonPowerOfTwoHint(false);
+        // Existing overlay pixels already include the land mask. Copy them once.
+        requestOverlayTextureUpdate(0,0,mWidth,mHeight,baseline,true,false,0.f,0.f,1.f,1.f,true);
+        for(const auto& update:pending)
+            requestOverlayTextureUpdate(update.x,update.y,update.width,update.height,update.texture,
+                update.clear,update.cpuCopy,update.left,update.top,update.right,update.bottom);
     }
 
     void GlobalMap::clear()
@@ -623,6 +687,17 @@ namespace MWRender
         else
         {
             ImageDest& imageDest = it->second;
+            int captureState=0;
+            if(camera->getUserValue("webcuda.imageCapture",captureState)) {
+                if(captureState==0||captureState==1)return false;
+                if(captureState<0) {
+                    std::string error;camera->getUserValue("webcuda.imageCaptureError",error);
+                    throw std::runtime_error("Global map readback failed: "+error);
+                }
+                mOverlayImage->copySubImage(imageDest.mX,imageDest.mY,0,imageDest.mImage);
+                mPendingImageDest.erase(it);
+                return true;
+            }
             if (imageDest.mFrameDone == 0)
                 imageDest.mFrameDone
                     = frame + 2; // wait an extra frame to ensure the draw thread has completed its frame.
@@ -660,6 +735,7 @@ namespace MWRender
 
     void GlobalMap::removeCamera(osg::Camera* cam)
     {
+        mOverlayRecipes.erase(cam);
         cam->removeChildren(0, cam->getNumChildren());
         mRoot->removeChild(cam);
     }

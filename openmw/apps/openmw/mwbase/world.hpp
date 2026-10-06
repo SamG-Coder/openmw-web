@@ -4,6 +4,8 @@
 #include "rotationflags.hpp"
 
 #include <deque>
+#include <functional>
+#include <osg/Image>
 #include <set>
 #include <span>
 #include <string_view>
@@ -441,6 +443,7 @@ namespace MWBase
 
         /// \todo this does not belong here
         virtual void screenshot(osg::Image* image, int w, int h) = 0;
+        virtual void screenshotAsync(int w,int h,std::function<void(osg::ref_ptr<osg::Image>,std::string)> completion) = 0;
 
         /// Find default position inside exterior cell specified by name
         /// \return empty RefId if exterior with given name not exists, the cell's RefId otherwise

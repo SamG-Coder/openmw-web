@@ -8,6 +8,7 @@
 #include <osg/StateSet>
 
 #include <osgUtil/RenderBin>
+#include <components/webcuda/submission.hpp>
 
 namespace Shader
 {
@@ -21,10 +22,15 @@ namespace Stereo
 
 namespace MWRender
 {
-    class TransparentDepthBinCallback : public osgUtil::RenderBin::DrawCallback
+    class TransparentDepthBinCallback : public osgUtil::RenderBin::DrawCallback, public WebCuda::CustomRenderBin
     {
     public:
         TransparentDepthBinCallback(Shader::ShaderManager& shaderManager, bool postPass);
+        const osg::StateSet* beginWebCuda(WebCuda::SubmissionSink&) override;
+        void endWebCuda(WebCuda::SubmissionSink&) override {}
+        const osg::StateSet* beginReplayWebCuda(WebCuda::SubmissionSink&) override;
+        bool acceptReplayWebCuda(const osg::Drawable&,const WebCuda::DrawContext&) const override;
+        void endReplayWebCuda(WebCuda::SubmissionSink&) override;
 
         void drawImplementation(
             osgUtil::RenderBin* bin, osg::RenderInfo& renderInfo, osgUtil::RenderLeaf*& previous) override;

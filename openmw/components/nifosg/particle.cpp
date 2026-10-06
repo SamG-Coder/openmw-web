@@ -6,6 +6,9 @@
 #include <osg/Geometry>
 #include <osg/MatrixTransform>
 #include <osg/ValueObject>
+#include <osg/Depth>
+#include <osg/ColorMask>
+#include <components/webcuda/materialstate.hpp>
 
 #include <components/debug/debuglog.hpp>
 #include <components/misc/rng.hpp>
@@ -132,6 +135,39 @@ namespace NifOsg
         if (numParticles() - numDeadParticles() < mQuota)
             return osgParticle::ParticleSystem::createParticle(ptemplate);
         return nullptr;
+    }
+
+    void ParticleSystem::submitWebCuda(WebCuda::SubmissionSink& sink, const WebCuda::DrawContext& context) const
+    {
+        ScopedReadLock lock(_readWriteMutex);
+        // drawImplementation dispatches this OVERALL normal before the base
+        // particle draw, including its empty-system early return.
+        for(auto& value:sink.currentAttributes.normal)value=0.3f;
+        _last_frame = sink.frameNumber();
+        if (_particles.empty()) return;
+        _dirty_dt = true;
+        // OSG's particle draw path always disables depth writes for the
+        // colour pass, independently of the inherited scene state.
+        const auto resolved=WebCuda::resolveState(context);
+        const auto* inheritedDepth=dynamic_cast<const osg::Depth*>(resolved->getAttribute(osg::StateAttribute::DEPTH));
+        osg::ref_ptr<osg::Depth> depth=inheritedDepth?new osg::Depth(*inheritedDepth):new osg::Depth;
+        depth->setWriteMask(false);
+        osg::ref_ptr<osg::StateSet> colorState=new osg::StateSet;
+        colorState->setAttribute(depth,osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
+        auto colorContext=context;
+        for(auto& value:colorContext.particleNormal)value=0.3f;
+        colorContext.states.push_back(colorState);
+        sink.particles(*this, colorContext);
+        if (getDoublePassRendering())
+        {
+            osg::ref_ptr<osg::StateSet> depthState=new osg::StateSet;
+            depthState->setAttribute(new osg::ColorMask(false,false,false,false),
+                osg::StateAttribute::ON|osg::StateAttribute::OVERRIDE|osg::StateAttribute::PROTECTED);
+            auto depthContext=context;
+            for(auto& value:depthContext.particleNormal)value=0.3f;
+            depthContext.states.push_back(depthState);
+            sink.particles(*this, depthContext);
+        }
     }
 
     void ParticleSystem::drawImplementation(osg::RenderInfo& renderInfo) const

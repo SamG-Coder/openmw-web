@@ -12,6 +12,7 @@
 #include <MyGUI_UString.h>
 
 #include <components/debug/debuglog.hpp>
+#include <components/webcuda/viewer.hpp>
 #include <components/misc/pathhelpers.hpp>
 #include <components/misc/rng.hpp>
 #include <components/myguiplatform/myguitexture.hpp>
@@ -297,6 +298,11 @@ namespace MWGui
             mGuiTexture = std::make_unique<MyGUIPlatform::OSGTexture>(mTexture);
         }
 
+        if(auto* viewer=dynamic_cast<WebCuda::Viewer*>(mViewer.get())) {
+            const auto* viewport=mViewer->getCamera()->getViewport();
+            mTexture->setTextureSize(static_cast<int>(viewport->width()),static_cast<int>(viewport->height()));
+            viewer->capturePreviousFrame(mTexture);
+        } else {
         if (!mCopyFramebufferToTextureCallback)
         {
             mCopyFramebufferToTextureCallback = new CopyFramebufferToTextureCallback(mTexture);
@@ -305,6 +311,8 @@ namespace MWGui
         mViewer->getCamera()->removeInitialDrawCallback(mCopyFramebufferToTextureCallback);
         mViewer->getCamera()->addInitialDrawCallback(mCopyFramebufferToTextureCallback);
         mCopyFramebufferToTextureCallback->reset();
+
+        }
 
         mSplashImage->setBackgroundImage({});
         mSplashImage->setVisible(false);
@@ -348,6 +356,7 @@ namespace MWGui
         // at the time this function is called we are in the middle of a frame,
         // so out of order calls are necessary to get a correct frameNumber for the next frame.
         // refer to the advance() and frame() order in Engine::go()
+        MWBase::Environment::get().getWindowManager()->restoreRenderTargetsIfNeeded();
         mViewer->eventTraversal();
         mViewer->updateTraversal();
         mViewer->renderingTraversals();

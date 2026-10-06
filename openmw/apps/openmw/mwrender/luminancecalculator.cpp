@@ -1,4 +1,5 @@
 #include "luminancecalculator.hpp"
+#include <components/webcuda/submission.hpp>
 
 #include <components/misc/mathutil.hpp>
 #include <components/settings/values.hpp>
@@ -70,6 +71,12 @@ namespace MWRender
         mBuffers[1].resolveSS->setTextureAttributeAndModes(1, mBuffers[0].luminanceTex);
     }
 
+    void LuminanceCalculator::submitWebCuda(WebCuda::SubmissionSink& sink,const osg::Texture2D& scene)
+    {
+        dirty(scene.getTextureWidth(),scene.getTextureHeight());
+        sink.sceneLuminance(scene,mWidth,mHeight,mScale.x(),mScale.y(),Settings::postProcessing().mAutoExposureSpeed,mIsBlank);
+        mIsBlank=false;
+    }
     void LuminanceCalculator::compile()
     {
         int mipmapLevels = osg::Image::computeNumberOfMipmapLevels(mWidth, mHeight);

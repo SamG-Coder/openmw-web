@@ -311,6 +311,8 @@ namespace MWBase
 
         virtual void write(ESM::ESMWriter& writer, Loading::Listener& progress) = 0;
         virtual void readRecord(ESM::ESMReader& reader, uint32_t type) = 0;
+        virtual bool isMapSaveReady() const { return true; }
+        virtual void restoreRenderTargetsIfNeeded() {}
         virtual size_t countSavedGameRecords() const = 0;
 
         /// Does the current stack of GUI-windows permit saving?

@@ -1,0 +1,124 @@
+{
+  "version": "0.1.1",
+  "name": "generate_map",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel generate_map.\n@group(0) @binding(0) var<storage, read> b_blocks: array<u32>;\n@group(0) @binding(1) var<storage, read_write> b_pixels: array<u32>;\nstruct CWParams {\n  p_width: u32,\n  p_height: u32,\n  p_block_offset: u32,\n  p_pixel_offset: u32,\n  p_alpha_only: u32,\n  cw_pad_20: u32,\n  cw_pad_24: u32,\n  cw_pad_28: u32,\n}\n@group(0) @binding(2) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= (cw_params.p_width * cw_params.p_height))) {\n    return;\n  }\n  var v_cells_x: u32 = b_blocks[cw_params.p_block_offset];\n  var v_cell_size: u32 = b_blocks[(cw_params.p_block_offset + 2u)];\n  var v_x: u32 = (v_i % cw_params.p_width);\n  var v_y: u32 = (v_i / cw_params.p_width);\n  var v_cell: u32 = (((v_y / v_cell_size) * v_cells_x) + (v_x / v_cell_size));\n  var v_sample: u32 = (((((v_y % v_cell_size) * 9u) / v_cell_size) * 9u) + (((v_x % v_cell_size) * 9u) / v_cell_size));\n  var v_index: u32 = b_blocks[(((cw_params.p_block_offset + 1027u) + (v_cell * 81u)) + v_sample)];\n  if ((v_index > 255u)) {\n    v_index = 255u;\n  }\n  var v_packed: u32 = 4278190080u;\n  if ((cw_params.p_alpha_only != 0u)) {\n    var cw_tmp_0: u32;\n    if ((v_index < 128u)) {\n      cw_tmp_0 = 0u;\n    } else {\n      cw_tmp_0 = 4278190080u;\n    }\n    v_packed = (16777215u | cw_tmp_0);\n  } else {\n    {\n      var v_channel: u32 = u32(0i);\n      loop {\n        if (!(v_channel < u32(3i))) { break; }\n        let cw_argument_index_1 = (((cw_params.p_block_offset + 3u) + (v_index * 4u)) + v_channel);\n        var v_value: f32 = bitcast<f32>(b_blocks[cw_argument_index_1]);\n        var v_byte: u32 = u32((min(1.0f, max(0.0f, v_value)) * 255.0f));\n        v_packed = (v_packed | (v_byte << (v_channel * 8u)));\n        continuing {\n          v_channel += u32(1);\n        }\n      }\n    }\n  }\n  b_pixels[(cw_params.p_pixel_offset + v_i)] = v_packed;\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "blocks",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "pixels",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "width",
+        "type": "u32",
+        "offset": 0
+      },
+      {
+        "name": "height",
+        "type": "u32",
+        "offset": 4
+      },
+      {
+        "name": "block_offset",
+        "type": "u32",
+        "offset": 8
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32",
+        "offset": 12
+      },
+      {
+        "name": "alpha_only",
+        "type": "u32",
+        "offset": 16
+      }
+    ],
+    "uniformSize": 32,
+    "uniformBinding": 2,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 2202,
+      "beforeBytes": 2202,
+      "afterBytes": 2202,
+      "functionsBefore": 1,
+      "functionsAfter": 1,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 1719,
+          "transitiveBytes": 1719,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// Generate global-map palette color and land alpha from raw 9x9 WNAM cells.\r\n__global__ void generate_map(const unsigned int* blocks,unsigned int* pixels,unsigned int width,unsigned int height,\r\n                            unsigned int block_offset,unsigned int pixel_offset,unsigned int alpha_only) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    unsigned int cells_x=blocks[block_offset],cell_size=blocks[block_offset+2u];\r\n    unsigned int x=i%width,y=i/width;\r\n    unsigned int cell=(y/cell_size)*cells_x+x/cell_size;\r\n    unsigned int sample=((y%cell_size)*9u/cell_size)*9u+(x%cell_size)*9u/cell_size;\r\n    unsigned int index=blocks[block_offset+1027u+cell*81u+sample];\r\n    if(index>255u)index=255u;\r\n    unsigned int packed=4278190080u;\r\n    if(alpha_only!=0u)packed=16777215u|(index<128u?0u:4278190080u);\r\n    else for(unsigned int channel=0;channel<3;channel++) {\r\n        float value=__uint_as_float(blocks[block_offset+3u+index*4u+channel]);\r\n        unsigned int byte=(unsigned int)(fminf(1.0f,fmaxf(0.0f,value))*255.0f);\r\n        packed|=byte<<(channel*8u);\r\n    }\r\n    pixels[pixel_offset+i]=packed;\r\n}\r\n",
+    "entry": "generate_map",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      },
+      {
+        "name": "alpha_only",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

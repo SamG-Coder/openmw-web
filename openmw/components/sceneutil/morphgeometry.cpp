@@ -1,10 +1,14 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "morphgeometry.hpp"
+#include <components/webcuda/deformation.hpp>
+#include <components/webcuda/viewer.hpp>
+#include <osg/UserDataContainer>
 
 #include <osgUtil/CullVisitor>
 
 #include <cassert>
+#include <stdexcept>
 #include <components/resource/scenemanager.hpp>
 
 namespace SceneUtil
@@ -143,6 +147,27 @@ namespace SceneUtil
 
     void MorphGeometry::accept(osg::PrimitiveFunctor& func) const
     {
+        if(WebCuda::Viewer::requested())
+        {
+            const auto* metadata=getGeometry(mLastFrameNumber)->getUserDataContainer();
+            const auto* inputs=metadata?dynamic_cast<const WebCuda::MorphInputs*>(metadata->getUserObject("webcuda.morph")):nullptr;
+            if(inputs)
+            {
+                if(!inputs->base)throw std::runtime_error("Morph query has no base positions");
+                osg::ref_ptr<osg::Vec3Array> positions=new osg::Vec3Array(*inputs->base,osg::CopyOp::DEEP_COPY_ALL);
+                for(const auto& target:inputs->targets)
+                {
+                    if(!target.offsets||target.offsets->size()!=positions->size())throw std::runtime_error("Morph query target size differs from base");
+                    for(std::size_t i=0;i<positions->size();++i)(*positions)[i]+=(*target.offsets)[i]*target.weight;
+                }
+                // Query-only geometry: never submitted or uploaded. Use the
+                // same cull snapshot as the rendered frame, including weights.
+                osg::ref_ptr<osg::Geometry> query=new osg::Geometry(*mSourceGeometry,osg::CopyOp::SHALLOW_COPY);
+                query->setVertexArray(positions);
+                query->accept(func);
+                return;
+            }
+        }
         getGeometry(mLastFrameNumber)->accept(func);
     }
 
@@ -204,6 +229,22 @@ namespace SceneUtil
 
     void MorphGeometry::cull(osg::NodeVisitor* nv)
     {
+        if(WebCuda::Viewer::requested()&&!mMorphTargets.empty())
+        {
+            mLastFrameNumber=nv->getTraversalNumber();
+            osg::Geometry& geom=*getGeometry(mLastFrameNumber);
+            osg::ref_ptr<WebCuda::MorphInputs> inputs=new WebCuda::MorphInputs;
+            inputs->base=mMorphTargets[0].getOffsets();
+            for(unsigned int i=1;i<mMorphTargets.size();++i)
+                if(mMorphTargets[i].getWeight()!=0.f)inputs->targets.push_back({mMorphTargets[i].getOffsets(),mMorphTargets[i].getWeight()});
+            osg::ref_ptr<osg::UserDataContainer> metadata=geom.getUserDataContainer()
+                ?static_cast<osg::UserDataContainer*>(geom.getUserDataContainer()->clone(osg::CopyOp::SHALLOW_COPY)):new osg::DefaultUserDataContainer;
+            const auto old=metadata->getUserObjectIndex("webcuda.morph");
+            if(old<metadata->getNumUserObjects())metadata->removeUserObject(old);
+            metadata->addUserObject(inputs);geom.setUserDataContainer(metadata);
+            nv->pushOntoNodePath(&geom);nv->apply(geom);nv->popFromNodePath();
+            return;
+        }
         if (mLastFrameNumber == nv->getTraversalNumber() || !mDirty || mMorphTargets.size() == 0)
         {
             osg::Geometry& geom = *getGeometry(mLastFrameNumber);

@@ -1,0 +1,45 @@
+{
+  "name": "decode_float_image",
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Source words retain the file's byte/float/half bits. GPU conversion and swizzle\r\n// produce four float-bit atlas words per texel with requested storage precision.\r\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Storage-format conversion, authored once for native CUDA and WebCuda.\r\n// Rendering power bases and exponents are nonnegative. Spell out the float operation so\r\n// WebCuda does not pull software f64 integer-power emulation into every shader.\r\n// Zero is handled before log2, including the material convention pow(0,0)=1.\r\n// Like GPU shader pow, this is approximate; it is not a general libm replacement.\r\n__device__ float render_power(float base,float exponent) {\r\n    if(exponent==0.0f||base==1.0f)return 1.0f;\r\n    if(base==0.0f)return 0.0f;\r\n    return exp2f(exponent*log2f(base));\r\n}\r\n\r\n__device__ unsigned int expand_half(unsigned int value) {\r\n    unsigned int sign=(value&32768u)<<16,exponent=(value>>10)&31u,mantissa=value&1023u;\r\n    if(exponent==31u)return sign|2139095040u|(mantissa<<13);\r\n    if(exponent==0u) {\r\n        if(mantissa==0u)return sign;\r\n        unsigned int shift=0u;\r\n        while((mantissa&1024u)==0u){mantissa=mantissa<<1;shift++;}\r\n        return sign|((113u-shift)<<23)|((mantissa&1023u)<<13);\r\n    }\r\n    return sign|((exponent+112u)<<23)|(mantissa<<13);\r\n}\r\n\r\n__device__ unsigned int contract_half(float value) {\r\n    unsigned int bits=__float_as_uint(value),sign=(bits>>16)&32768u;\r\n    unsigned int exponent=(bits>>23)&255u,mantissa=bits&8388607u;\r\n    if(exponent==255u)return sign|31744u|(mantissa!=0u?512u|(mantissa>>13):0u);\r\n    int adjusted=(int)exponent-112;\r\n    if(adjusted>=31)return sign|31744u;\r\n    if(adjusted<=0) {\r\n        if(adjusted< -10)return sign;\r\n        mantissa|=8388608u;\r\n        unsigned int shift=(unsigned int)(14-adjusted),rounded=mantissa>>shift;\r\n        unsigned int remainder=mantissa&((1u<<shift)-1u),halfway=1u<<(shift-1u);\r\n        if(remainder>halfway||(remainder==halfway&&(rounded&1u)!=0u))rounded++;\r\n        return sign|rounded;\r\n    }\r\n    unsigned int rounded=mantissa+4095u+((mantissa>>13)&1u);\r\n    if((rounded&8388608u)!=0u){rounded=0u;adjusted++;}\r\n    if(adjusted>=31)return sign|31744u;\r\n    return sign|((unsigned int)adjusted<<10)|(rounded>>13);\r\n}\r\n__device__ float round_half(float value) {\r\n    return __uint_as_float(expand_half(contract_half(value)));\r\n}\r\n\r\n// sRGB atlas values are stored decoded, so filtering operates in linear space.\r\n__device__ float srgb_to_linear(float value) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.04045f?value/12.92f:render_power((value+0.055f)/1.055f,2.4f);\r\n}\r\n__device__ float linear_to_srgb(float value) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    return value<=0.0031308f?value*12.92f:1.055f*render_power(value,1.0f/2.4f)-0.055f;\r\n}\r\n\r\n__device__ float store_color_value(float value,unsigned int channel,unsigned int channels,unsigned int storage) {\r\n    if(channel>=channels)return channel==3u?1.0f:0.0f;\r\n    if(storage==0u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*255.0f+0.5f)/255.0f;\r\n    if(storage==1u)return round_half(value);\r\n    if(storage==4u)return floorf(fminf(1.0f,fmaxf(0.0f,value))*65535.0f+0.5f)/65535.0f;\r\n    if(storage==5u||storage==6u) {\r\n        float maximum=storage==5u?127.0f:32767.0f;\r\n        return floorf(fminf(1.0f,fmaxf(-1.0f,value))*maximum+0.5f)/maximum;\r\n    }\r\n    if(storage==3u) {\r\n        float encoded=channel<3u?linear_to_srgb(value):fminf(1.0f,fmaxf(0.0f,value));\r\n        encoded=floorf(encoded*255.0f+0.5f)/255.0f;\r\n        return channel<3u?srgb_to_linear(encoded):encoded;\r\n    }\r\n    return value;\r\n}\r\n\r\n__device__ float store_depth_value(float value,unsigned int bits) {\r\n    value=fminf(1.0f,fmaxf(0.0f,value));\r\n    if(bits==0u)return value;\r\n    float maximum=bits==16u?65535.0f:16777215.0f;\r\n    return fminf(1.0f,floorf(value*maximum+0.5f)/maximum);\r\n}\r\n\r\n__global__ void decode_float_image(const unsigned int* blocks,unsigned int* pixels,\r\n    unsigned int width,unsigned int height,unsigned int format,unsigned int block_offset,unsigned int pixel_offset) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    unsigned int destination_kind=(format>>8u)&15u,storage=(format>>12u)&7u,convert=format&65536u;\r\n    unsigned int encoding=format&255u;\r\n    unsigned int family=encoding/16u,kind=encoding%16u;\r\n    unsigned int channels=(kind==6u||kind==13u)?4u:((kind==7u||kind==14u)?3u:((kind==8u||kind==11u)?2u:1u));\r\n    unsigned int input[4];for(unsigned int k=0;k<4;k++)input[k]=k==3?1065353216u:0u;\r\n    for(unsigned int k=0;k<channels;k++) {\r\n        unsigned int index=i*channels+k;\r\n        if(family>=8u) {\r\n            unsigned int packed=family<14u?(blocks[block_offset+i/2u]>>((i%2u)*16u))&65535u:blocks[block_offset+i];\r\n            unsigned int shift=0u,bits=8u;\r\n            if(family==8u||family==9u) {\r\n                bits=k==1u?6u:5u;\r\n                shift=family==8u?(k==0u?11u:(k==1u?5u:0u)):(k==0u?0u:(k==1u?5u:11u));\r\n            } else if(family==10u||family==11u) {\r\n                bits=4u;shift=family==10u?(3u-k)*4u:k*4u;\r\n            } else if(family==12u||family==13u) {\r\n                bits=k==3u?1u:5u;\r\n                shift=family==12u?(k==3u?0u:11u-k*5u):(k==3u?15u:k*5u);\r\n            } else shift=family==14u?(3u-k)*8u:k*8u;\r\n            unsigned int mask=(1u<<bits)-1u;\r\n            input[k]=__float_as_uint((float)((packed>>shift)&mask)/(float)mask);\r\n        }\r\n        else if(family==0u)input[k]=blocks[block_offset+index];\r\n        else if(family==1u)input[k]=expand_half((blocks[block_offset+index/2u]>>((index%2u)*16u))&65535u);\r\n        else {\r\n            unsigned int value;\r\n            float decoded;\r\n            if(family==2u||family==4u) {\r\n                value=(blocks[block_offset+index/4u]>>((index%4u)*8u))&255u;\r\n                decoded=family==2u?(float)value/255.0f:fmaxf(-1.0f,(float)((int)value-(value>=128u?256:0))/127.0f);\r\n            } else if(family==3u||family==5u) {\r\n                value=(blocks[block_offset+index/2u]>>((index%2u)*16u))&65535u;\r\n                decoded=family==3u?(float)value/65535.0f:fmaxf(-1.0f,(float)((int)value-(value>=32768u?65536:0))/32767.0f);\r\n            } else {\r\n                value=blocks[block_offset+index];\r\n                decoded=family==6u?(float)value/4294967295.0f:fmaxf(-1.0f,(float)((int)value)/2147483647.0f);\r\n            }\r\n            input[k]=__float_as_uint(decoded);\r\n        }\r\n    }\r\n    // Depth images share the scalar float atlas ABI used by rendered depth\r\n    // attachments. Floating depth retains its bits (including fallback +inf).\r\n    if(convert!=0u&&destination_kind==9u) {\r\n        pixels[pixel_offset+i]=storage==0u?input[0]:__float_as_uint(store_depth_value(__uint_as_float(input[0]),storage==1u?16u:24u));\r\n        return;\r\n    }\r\n    float color[4];\r\n    for(unsigned int k=0;k<4;k++) {\r\n        unsigned int value=input[k];\r\n        if(kind==10u||kind==11u)value=k==3u?(kind==11u?input[1]:1065353216u):input[0];\r\n        if(kind==12u)value=k==3u?input[0]:0u;\r\n        if((kind==13u||kind==14u)&&k<3u)value=input[2u-k];\r\n        color[k]=__uint_as_float(value);\r\n    }\r\n    for(unsigned int k=0;k<4;k++) {\r\n        float value=color[k];\r\n        if(convert!=0u) {\r\n            if(destination_kind==5u||destination_kind==6u)value=k==3u?(destination_kind==6u?color[3]:1.0f):color[0];\r\n            if(destination_kind==7u)value=k==3u?color[3]:0.0f;\r\n            if(destination_kind==8u)value=color[0];\r\n            // Upload components already contain encoded sRGB values. Quantize\r\n            // those values before decoding; mip generation starts in linear space.\r\n            if(storage==3u) {\r\n                value=store_color_value(value,k,destination_kind,0u);\r\n                if(k<3u)value=srgb_to_linear(value);\r\n            } else value=store_color_value(value,k,destination_kind>4u?4u:destination_kind,storage);\r\n        }\r\n        pixels[pixel_offset+i*4u+k]=__float_as_uint(value);\r\n    }\r\n}\r\n",
+    "entry": "decode_float_image",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "blocks",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "format",
+        "type": "u32"
+      },
+      {
+        "name": "block_offset",
+        "type": "u32"
+      },
+      {
+        "name": "pixel_offset",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

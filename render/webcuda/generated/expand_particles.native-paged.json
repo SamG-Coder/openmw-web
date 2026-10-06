@@ -1,0 +1,116 @@
+{
+  "name": "expand_particles",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "source",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "attributes",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "matrices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "matrix_ids",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": true,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "vertex_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 4,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 7706,
+      "beforeBytes": 7706,
+      "afterBytes": 7706,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 6885,
+          "transitiveBytes": 7155,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\n// Native-only storage ABI. Actual addresses are written and consumed on the\n// GPU; JavaScript sees only the browser's opaque resource objects. A logical\n// renderer buffer can exceed the browser's per-shared-allocation size limit.\ntemplate<class T> struct OmwPaged {\n    const unsigned long long* pages;\n    T* direct;\n    unsigned long long first;\n    __device__ OmwPaged(const unsigned long long* table):pages(table),direct(nullptr),first(0) {}\n    __device__ OmwPaged(T* pointer):pages(nullptr),direct(pointer),first(0) {}\n    template<class U> __device__ OmwPaged(const OmwPaged<U>& other):pages(other.pages),direct(other.direct),first(other.first) {}\n    __device__ T& operator[](unsigned long long index) const {\n        index+=first;\n        if(direct)return direct[index];\n        unsigned long long bytes=index*sizeof(T);\n        return *reinterpret_cast<T*>(pages[bytes>>26]+(bytes&67108863ull));\n    }\n    __device__ OmwPaged operator+(unsigned long long offset) const {\n        OmwPaged result=*this;result.first+=offset;return result;\n    }\n};\n\n// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Input-only attribute modes 2/3/4 denote billboard-local, billboard-world,\r\n// and fixed particles. Expand in model space before the common transform path.\r\n__global__ void expand_particles(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_attributes,const unsigned long long* omw_pages_matrices,const unsigned long long* omw_pages_matrix_ids,unsigned int vertex_count) {\nOmwPaged<float> source(omw_pages_source);\nOmwPaged<float> attributes(omw_pages_attributes);\nOmwPaged<const float> matrices(omw_pages_matrices);\nOmwPaged<const unsigned int> matrix_ids(omw_pages_matrix_ids);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=vertex_count)return;\r\n    unsigned int d=i*34,m=matrix_ids[i]*32;\r\n    float mode=attributes[d];\r\n    if(mode<2.0f||mode>8.0f||mode==7.0f)return;\r\n    float normal[3];for(unsigned int k=0;k<3;k++)normal[k]=attributes[d+21+k];\r\n    if(mode>=5.0f) {\r\n        source[i*10+7]*=attributes[d+9];\r\n        if(mode==6.0f) {\r\n            float length=0.0f;\r\n            for(unsigned int k=0;k<3;k++)length+=attributes[d+10+k]*attributes[d+10+k];\r\n            length=sqrtf(length);\r\n            float scale=length>0.0f?attributes[d+13]*sqrtf(attributes[d+14])/length:0.0f;\r\n            for(unsigned int k=0;k<3;k++)attributes[d+10+k]*=scale;\r\n        }\r\n        for(unsigned int k=3;k<9;k++)attributes[d+k]=k<6?normal[k-3]:0.0f;\r\n        attributes[d+9]=0.0f;\r\n        return;\r\n    }\r\n    float axes[6];for(unsigned int k=0;k<6;k++)axes[k]=attributes[d+3+k];\r\n    float angle[3];for(unsigned int k=0;k<3;k++)angle[k]=attributes[d+10+k];\r\n    float size=attributes[d+13]*sqrtf(attributes[d+14]);\r\n    for(unsigned int axis=0;axis<2;axis++) {\r\n        float x=axes[axis*3],y=axes[axis*3+1],z=axes[axis*3+2];\r\n        float scale=1.0f;\r\n        if(mode<4.0f) {\r\n            float length2=0.0f;\r\n            for(unsigned int row=0;row<3;row++) {\r\n                float value=matrices[m+row*4]*x+matrices[m+row*4+1]*y+matrices[m+row*4+2]*z;\r\n                length2+=value*value;\r\n            }\r\n            scale=mode==2.0f?1.0f/sqrtf(fmaxf(length2,0.000000000001f)):1.0f/fmaxf(length2,0.000000000001f);\r\n        }\r\n        x*=scale;y*=scale;z*=scale;\r\n        float cx=cosf(angle[0]),sx=sinf(angle[0]),cy=cosf(angle[1]),sy=sinf(angle[1]),cz=cosf(angle[2]),sz=sinf(angle[2]);\r\n        float ry=y*cx-z*sx,rz=y*sx+z*cx;y=ry;z=rz;\r\n        float rx=x*cy+z*sy;rz=-x*sy+z*cy;x=rx;z=rz;\r\n        rx=x*cz-y*sz;ry=x*sz+y*cz;x=rx;y=ry;\r\n        if(mode<4.0f)for(unsigned int row=0;row<3;row++)\r\n            axes[axis*3+row]=matrices[m+row*4]*x+matrices[m+row*4+1]*y+matrices[m+row*4+2]*z;\r\n        else {axes[axis*3]=x;axes[axis*3+1]=y;axes[axis*3+2]=z;}\r\n    }\r\n    for(unsigned int k=0;k<3;k++)source[i*10+k]+=size*(axes[k]*attributes[d+1]+axes[3+k]*attributes[d+2]);\r\n    source[i*10+7]*=attributes[d+9];\r\n    // Carry the source drawable normal through billboard expansion.\r\n    for(unsigned int k=0;k<34;k++)if(k!=16&&k!=17)attributes[d+k]=0.0f;\r\n    for(unsigned int unit=0;unit<4;unit++)attributes[d+27u+unit*2u]=1.0f;\r\n    for(unsigned int k=0;k<3;k++)attributes[d+3+k]=normal[k];\r\n}\r\n\r\n// Project fixed-width particles after the ordinary vertex/attribute transforms.\r\n// The CPU uploads only primitive parameters; clipping and expansion stay here.\r\n__global__ void project_particles(const unsigned long long* omw_pages_source,const unsigned long long* omw_pages_attributes,const unsigned long long* omw_pages_matrices,const unsigned long long* omw_pages_matrix_ids,const unsigned long long* omw_pages_vertices,const unsigned long long* omw_pages_varyings,const unsigned long long* omw_pages_fixed_lighting,const unsigned long long* omw_pages_fixed_endpoints,\r\n    unsigned int vertex_count,unsigned int width,unsigned int height,unsigned int fixed_enabled,unsigned int track_world_particles,unsigned int world_particle_offset,unsigned int source_point_fade_offset,unsigned int sample_count) {\nOmwPaged<const float> source(omw_pages_source);\nOmwPaged<const float> attributes(omw_pages_attributes);\nOmwPaged<const float> matrices(omw_pages_matrices);\nOmwPaged<const unsigned int> matrix_ids(omw_pages_matrix_ids);\nOmwPaged<float> vertices(omw_pages_vertices);\nOmwPaged<float> varyings(omw_pages_varyings);\nOmwPaged<float> fixed_lighting(omw_pages_fixed_lighting);\nOmwPaged<const float> fixed_endpoints(omw_pages_fixed_endpoints);\n\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=vertex_count)return;\r\n    unsigned int d=i*34,p=i*10,m=matrix_ids[i]*32,lighting=world_particle_offset+i*24;\r\n    if(track_world_particles!=0)varyings[lighting]=0.0f;\r\n    unsigned int point_flags=(unsigned int)attributes[d+25];\r\n    unsigned int depth_clamp=point_flags&1u;\r\n    unsigned int zero_to_one=point_flags&16u;\r\n    float mode=attributes[d];if(mode!=5.0f&&mode!=6.0f&&mode!=7.0f&&mode!=8.0f)return;\r\n    float side=attributes[d+2],endpoint=(attributes[d+1]+1.0f)*0.5f;\r\n    float size=attributes[d+15];\r\n    if(mode==5.0f||mode==8.0f) {\r\n        if(mode==8.0f&&attributes[d+24]>0.0f\r\n            &&(-varyings[d+2]<=0.0f||-varyings[d+2]>=attributes[d+24])) {\r\n            for(unsigned int k=0;k<4;k++)vertices[p+k]=0.0f;return;\r\n        }\r\n        float w=vertices[p+3];\r\n        if(w<=0.0f||fabsf(vertices[p])>w||fabsf(vertices[p+1])>w||(depth_clamp==0u&&(vertices[p+2]>w||vertices[p+2]<(zero_to_one!=0u?0.0f:-w)))) {\r\n            for(unsigned int k=0;k<4;k++)vertices[p+k]=0.0f;return;\r\n        }\r\n        if(track_world_particles!=0) {\r\n            varyings[lighting]=1.0f;varyings[lighting+1]=0.0f;\r\n            for(unsigned int axis=0;axis<3;axis++) {\r\n                varyings[lighting+2+axis]=varyings[d+axis];varyings[lighting+5+axis]=varyings[d+axis];\r\n                float clip=vertices[p+(axis==2?3:axis)];\r\n                varyings[lighting+8+axis]=clip;varyings[lighting+11+axis]=clip;\r\n            }\r\n            for(unsigned int channel=0;channel<4;channel++) {\r\n                varyings[lighting+14+channel]=source[p+4+channel];varyings[lighting+18+channel]=source[p+4+channel];\r\n            }\r\n        }\r\n        float distance=sqrtf(varyings[d]*varyings[d]+varyings[d+1]*varyings[d+1]+varyings[d+2]*varyings[d+2]);\r\n        float attenuation=attributes[d+10]+attributes[d+11]*distance+attributes[d+12]*distance*distance;\r\n        size/=sqrtf(fmaxf(0.000000000001f,attenuation));\r\n        size=fminf(attributes[d+19],fmaxf(attributes[d+18],size));\r\n        float fade=attributes[d+20];\r\n        unsigned int multisample=sample_count>1u&&(point_flags&2u)!=0u?1u:0u;\r\n        if(multisample!=0u&&size<fade&&fade>0.0f) {\r\n            float ratio=size/fade;varyings[source_point_fade_offset+i*12u]=ratio*ratio;size=fade;\r\n        }\r\n        unsigned int pointStyle=point_flags&12u;\r\n        float smoothRadius=multisample==0u&&pointStyle==4u?size*0.5f:0.0f;\r\n        if(multisample==0u&&pointStyle==0u)size=fmaxf(1.0f,floorf(size+0.5f));\r\n        float odd=size-2.0f*floorf(size*0.5f);\r\n        float x=(vertices[p]/w*0.5f+0.5f)*(float)width;\r\n        float y=(vertices[p+1]/w*0.5f+0.5f)*(float)height;\r\n        if(multisample==0u&&pointStyle==0u) {\r\n            x=odd>0.0f?floorf(x)+0.5f:floorf(x+0.5f);\r\n            y=odd>0.0f?floorf(y)+0.5f:floorf(y+0.5f);\r\n        }\r\n        float halfExtent=size*0.5f+(smoothRadius>0.0f?0.5f:0.0f);\r\n        varyings[source_point_fade_offset+i*12u+1u]=attributes[d+1]*halfExtent;\r\n        varyings[source_point_fade_offset+i*12u+2u]=side*halfExtent;\r\n        varyings[source_point_fade_offset+i*12u+3u]=(point_flags&8u)!=0u?-size*0.5f:smoothRadius;\r\n        vertices[p]=((x+attributes[d+1]*halfExtent)/(float)width*2.0f-1.0f)*w;\r\n        vertices[p+1]=((y+side*halfExtent)/(float)height*2.0f-1.0f)*w;\r\n        return;\r\n    }\r\n    float view0[4],view1[4],clip0[4],clip1[4];\r\n    float motion=0.0f;for(unsigned int k=0;k<3;k++)motion+=attributes[d+10+k]*attributes[d+10+k];\r\n    for(unsigned int row=0;row<4;row++) {\r\n        view0[row]=0.0f;view1[row]=0.0f;\r\n        for(unsigned int col=0;col<4;col++) {\r\n            float a=source[p+col],b=a+(col<3?attributes[d+10+col]:0.0f);\r\n            view0[row]+=matrices[m+col*4+row]*a;view1[row]+=matrices[m+col*4+row]*b;\r\n        }\r\n    }\r\n    for(unsigned int row=0;row<4;row++) {\r\n        clip0[row]=0.0f;clip1[row]=0.0f;\r\n        for(unsigned int col=0;col<4;col++) {\r\n            clip0[row]+=matrices[m+16+col*4+row]*view0[col];\r\n            clip1[row]+=matrices[m+16+col*4+row]*view1[col];\r\n        }\r\n    }\r\n    float begin=0.0f,end=1.0f;\r\n    for(unsigned int plane=0;plane<6;plane++) {\r\n        if(plane>=4u&&depth_clamp!=0u)continue;\r\n        unsigned int axis=plane/2;float sign=(plane%2)==0?1.0f:-1.0f;\r\n        float a=clip0[3]+sign*clip0[axis],b=clip1[3]+sign*clip1[axis];\r\n        if(plane==4u&&zero_to_one!=0u){a=clip0[2];b=clip1[2];}\r\n        if(a<0.0f&&b<0.0f)end=-1.0f;\r\n        else if(a<0.0f)begin=fmaxf(begin,a/(a-b));\r\n        else if(b<0.0f)end=fminf(end,a/(a-b));\r\n    }\r\n    float c0[4],c1[4];\r\n    for(unsigned int k=0;k<4;k++){c0[k]=clip0[k]+begin*(clip1[k]-clip0[k]);c1[k]=clip0[k]+end*(clip1[k]-clip0[k]);}\r\n    if(end<begin||motion==0.0f||c0[3]<=0.0f||c1[3]<=0.0f) {\r\n        for(unsigned int k=0;k<4;k++)vertices[p+k]=0.0f;return;\r\n    }\r\n    float dx=(c1[0]/c1[3]-c0[0]/c0[3])*(float)width;\r\n    float dy=(c1[1]/c1[3]-c0[1]/c0[3])*(float)height;\r\n    float length=sqrtf(dx*dx+dy*dy);\r\n    if(length<=0.000001f){for(unsigned int k=0;k<4;k++)vertices[p+k]=0.0f;return;}\r\n    unsigned int lineMetadata=source_point_fade_offset+i*12u;\r\n    varyings[lineMetadata+1u]=endpoint;varyings[lineMetadata+2u]=size;\r\n    for(unsigned int k=0u;k<4u;k++) {\r\n        varyings[lineMetadata+4u+k]=c0[k];\r\n        varyings[lineMetadata+8u+k]=c1[k];\r\n    }\r\n    float t=begin+endpoint*(end-begin);\r\n    if(track_world_particles!=0) {\r\n        varyings[lighting]=2.0f;varyings[lighting+1]=t;\r\n        for(unsigned int axis=0;axis<3;axis++) {\r\n            varyings[lighting+2+axis]=view0[axis];varyings[lighting+5+axis]=view1[axis];\r\n            varyings[lighting+8+axis]=clip0[axis==2?3:axis];varyings[lighting+11+axis]=clip1[axis==2?3:axis];\r\n        }\r\n        for(unsigned int channel=0;channel<4;channel++) {\r\n            varyings[lighting+14+channel]=source[p+4+channel];\r\n            varyings[lighting+18+channel]=mode==7.0f?attributes[d+18+channel]:source[p+4+channel];\r\n        }\r\n    }\r\n    if(fixed_enabled!=0) {\r\n        float lightingT=mode==7.0f&&attributes[d+24]!=0.0f?1.0f:t;\r\n        for(unsigned int channel=0;channel<16;channel++)fixed_lighting[i*16+channel]\r\n            =fixed_endpoints[i*32+channel]*(1.0f-lightingT)+fixed_endpoints[i*32+16+channel]*lightingT;\r\n    }\r\n    for(unsigned int k=0;k<4;k++)vertices[p+k]=clip0[k]+t*(clip1[k]-clip0[k]);\r\n    float support=fmaxf(size,fmaxf(1.0f,floorf(size+0.5f)))+2.0f;\r\n    float endSide=endpoint*2.0f-1.0f;\r\n    vertices[p]+=(-dy*side+dx*endSide)/length*support/(float)width*vertices[p+3];\r\n    vertices[p+1]+=(dx*side+dy*endSide)/length*support/(float)height*vertices[p+3];\r\n    for(unsigned int k=0;k<3;k++)varyings[d+k]=view0[k]+t*(view1[k]-view0[k]);\r\n    // Shader euclideanDepth is evaluated at each original endpoint, then\r\n    // interpolated by clipping. Length of the clipped position is different.\r\n    float depth0=0.0f,depth1=0.0f,positionLength=0.0f;\r\n    for(unsigned int k=0;k<3;k++) {\r\n        depth0+=view0[k]*view0[k];depth1+=view1[k]*view1[k];\r\n        positionLength+=varyings[d+k]*varyings[d+k];\r\n    }\r\n    depth0=sqrtf(depth0);depth1=sqrtf(depth1);\r\n    varyings[d+9]=depth0+t*(depth1-depth0);\r\n    // Sphere mapping instead requires the actual clipped-position direction.\r\n    float eyeLength=fmaxf(sqrtf(positionLength),0.000000000001f),dot=0.0f;\r\n    float eye[3],normal[3],reflected[3];\r\n    for(unsigned int k=0;k<3;k++) {\r\n        eye[k]=varyings[d+k]/eyeLength;normal[k]=varyings[d+23+k];dot+=eye[k]*normal[k];\r\n    }\r\n    for(unsigned int k=0;k<3;k++)reflected[k]=eye[k]-2.0f*dot*normal[k];\r\n    float denominator=2.0f*sqrtf(fmaxf(0.000000000001f,reflected[0]*reflected[0]+reflected[1]*reflected[1]\r\n        +(reflected[2]+1.0f)*(reflected[2]+1.0f)));\r\n    varyings[d+21]=reflected[0]/denominator+0.5f;varyings[d+22]=reflected[1]/denominator+0.5f;\r\n    if(mode==7.0f) {\r\n        for(unsigned int k=0;k<4;k++)vertices[p+4+k]=source[p+4+k]+t*(attributes[d+18+k]-source[p+4+k]);\r\n        float u=source[p+8]+t*(attributes[d+22]-source[p+8]);\r\n        vertices[p+8]=u;vertices[p+9]=0.5f;varyings[d+16]=u;varyings[d+17]=0.5f;\r\n    } else {vertices[p+8]=t;vertices[p+9]=t;varyings[d+16]=t;varyings[d+17]=t;}\r\n}\r\n",
+    "entry": "expand_particles",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "source",
+        "type": "buffer"
+      },
+      {
+        "name": "attributes",
+        "type": "buffer"
+      },
+      {
+        "name": "matrices",
+        "type": "buffer"
+      },
+      {
+        "name": "matrix_ids",
+        "type": "buffer"
+      },
+      {
+        "name": "vertex_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0,
+    "storage": "openmw-paged-64m-v1"
+  }
+}

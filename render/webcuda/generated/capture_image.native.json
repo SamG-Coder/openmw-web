@@ -1,0 +1,57 @@
+{
+  "name": "capture_image",
+  "native": {
+    "version": 1,
+    "source": "// Crop, bilinear resize and byte conversion for screenshot/readback images.\r\n// Output is packed RGBA8 in bottom-up row order for osg::Image consumers.\r\n__device__ float capture_component(const float* source,unsigned int width,unsigned int height,int x,int y,unsigned int c) {\r\n    if(x<0||y<0||x>=(int)width||y>=(int)height)return 0.0f;\r\n    return source[((unsigned int)y*width+(unsigned int)x)*9u+c];\r\n}\r\n__global__ void capture_image(const float* source,unsigned int* pixels,\r\n    unsigned int source_width,unsigned int source_height,unsigned int width,unsigned int height,\r\n    int region_x,int region_y,unsigned int region_width,unsigned int region_height) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=width*height)return;\r\n    float aspect=(float)width/(float)height;\r\n    int left=(int)((float)region_width-(float)region_height*aspect)/2;\r\n    int top=(int)((float)region_height-(float)region_width/aspect)/2;\r\n    if(left<0)left=0;if(top<0)top=0;\r\n    unsigned int crop_width=region_width-2u*(unsigned int)left,crop_height=region_height-2u*(unsigned int)top;\r\n    float x=(float)left+((float)(i%width)+0.5f)*(float)crop_width/(float)width-0.5f;\r\n    float y=(float)top+((float)(height-1u-i/width)+0.5f)*(float)crop_height/(float)height-0.5f;\r\n    x=fminf((float)(region_width-1u-(unsigned int)left),fmaxf((float)left,x));\r\n    y=fminf((float)(region_height-1u-(unsigned int)top),fmaxf((float)top,y));\r\n    int local_x=(int)floorf(x),local_y=(int)floorf(y);\r\n    float fx=x-(float)local_x,fy=y-(float)local_y;\r\n    int x0=region_x+local_x,y0=(int)source_height-region_y-(int)region_height+local_y;\r\n    int x1=local_x+1<(int)region_width?x0+1:x0;\r\n    int y1=local_y+1<(int)region_height?y0+1:y0;\r\n    unsigned int packed=0u;\r\n    for(unsigned int c=0;c<4;c++) {\r\n        float a=capture_component(source,source_width,source_height,x0,y0,c),b=capture_component(source,source_width,source_height,x1,y0,c);\r\n        float d=capture_component(source,source_width,source_height,x0,y1,c),e=capture_component(source,source_width,source_height,x1,y1,c);\r\n        float value=(a+(b-a)*fx)*(1.0f-fy)+(d+(e-d)*fx)*fy;\r\n        unsigned int byte=(unsigned int)floorf(fminf(1.0f,fmaxf(0.0f,value))*255.0f+0.5f);\r\n        packed|=byte<<(c*8u);\r\n    }\r\n    pixels[i]=packed;\r\n}\r\n",
+    "entry": "capture_image",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "source",
+        "type": "buffer"
+      },
+      {
+        "name": "pixels",
+        "type": "buffer"
+      },
+      {
+        "name": "source_width",
+        "type": "u32"
+      },
+      {
+        "name": "source_height",
+        "type": "u32"
+      },
+      {
+        "name": "width",
+        "type": "u32"
+      },
+      {
+        "name": "height",
+        "type": "u32"
+      },
+      {
+        "name": "region_x",
+        "type": "i32"
+      },
+      {
+        "name": "region_y",
+        "type": "i32"
+      },
+      {
+        "name": "region_width",
+        "type": "u32"
+      },
+      {
+        "name": "region_height",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

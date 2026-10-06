@@ -1,0 +1,154 @@
+{
+  "version": "0.1.1",
+  "name": "deform_groundcover",
+  "entryPoint": "main",
+  "wgsl": "// CUDA WebShader 0.1.1. Generated from kernel deform_groundcover.\n@group(0) @binding(0) var<storage, read_write> b_vertices: array<f32>;\n@group(0) @binding(1) var<storage, read_write> b_attributes: array<f32>;\n@group(0) @binding(2) var<storage, read> b_records: array<u32>;\n@group(0) @binding(3) var<storage, read> b_instances: array<f32>;\n@group(0) @binding(4) var<storage, read> b_params: array<f32>;\n@group(0) @binding(5) var<storage, read> b_matrices: array<f32>;\n@group(0) @binding(6) var<storage, read> b_matrix_ids: array<u32>;\nstruct CWParams {\n  p_record_count: u32,\n  cw_pad_4: u32,\n  cw_pad_8: u32,\n  cw_pad_12: u32,\n}\n@group(0) @binding(7) var<uniform> cw_params: CWParams;\nconst cw_block_size: vec3<u32> = vec3<u32>(64u, 1u, 1u);\n\nfn cw_divide_f32(a: f32, b: f32) -> f32 { let q = a / b; if ((bitcast<u32>(q) & 0x7f800000u) == 0x7f800000u || (bitcast<u32>(q) & 0x7fffffffu) == 0u || (bitcast<u32>(b) & 0x7f800000u) == 0x7f800000u) { return q; } let residual = fma(-q, b, a); return q + residual / b; }\n\n@compute @workgroup_size(64, 1, 1)\nfn main(\n  @builtin(local_invocation_id) cw_thread: vec3<u32>,\n  @builtin(workgroup_id) cw_block: vec3<u32>,\n  @builtin(num_workgroups) cw_grid: vec3<u32>\n) {\n  var v_i: u32 = (((cw_block.x + (cw_block.y * cw_grid.x)) * cw_block_size.x) + cw_thread.x);\n  if ((v_i >= cw_params.p_record_count)) {\n    return;\n  }\n  var v_vertex: u32 = b_records[(v_i * u32(3i))];\n  var v_instance: u32 = (b_records[((v_i * u32(3i)) + u32(1i))] * u32(7i));\n  var v_p: u32 = (b_records[((v_i * u32(3i)) + u32(2i))] * u32(40i));\n  var v_v: u32 = (v_vertex * u32(10i));\n  var v_a: u32 = (v_vertex * u32(34i));\n  var v_m: u32 = (b_matrix_ids[v_vertex] * u32(32i));\n  let cw_argument_index_0 = (v_instance + u32(4i));\n  var v_sx: f32 = sin(b_instances[cw_argument_index_0]);\n  let cw_argument_index_1 = (v_instance + u32(4i));\n  var v_cx: f32 = cos(b_instances[cw_argument_index_1]);\n  let cw_argument_index_2 = (v_instance + u32(5i));\n  var v_sy: f32 = sin(b_instances[cw_argument_index_2]);\n  let cw_argument_index_3 = (v_instance + u32(5i));\n  var v_cy: f32 = cos(b_instances[cw_argument_index_3]);\n  let cw_argument_index_4 = (v_instance + u32(6i));\n  var v_sz: f32 = sin(b_instances[cw_argument_index_4]);\n  let cw_argument_index_5 = (v_instance + u32(6i));\n  var v_cz: f32 = cos(b_instances[cw_argument_index_5]);\n  var v_rotation: array<f32, 9>;\n  v_rotation[0i] = ((v_cz * v_cy) + ((v_sx * v_sy) * v_sz));\n  v_rotation[1i] = ((-v_sz) * v_cx);\n  v_rotation[2i] = ((v_cz * v_sy) + ((v_sz * v_sx) * v_cy));\n  v_rotation[3i] = ((v_sz * v_cy) + ((v_cz * v_sx) * v_sy));\n  v_rotation[4i] = (v_cz * v_cx);\n  v_rotation[5i] = ((v_sz * v_sy) - ((v_cz * v_sx) * v_cy));\n  v_rotation[6i] = ((-v_sy) * v_cx);\n  v_rotation[7i] = v_sx;\n  v_rotation[8i] = (v_cx * v_cy);\n  var v_height: f32 = b_vertices[(v_v + u32(2i))];\n  var v_position: array<f32, 4>;\n  var v_normal: array<f32, 3>;\n  var v_tangent: array<f32, 3>;\n  {\n    var v_row: u32 = u32(0i);\n    loop {\n      if (!(v_row < u32(3i))) { break; }\n      v_position[v_row] = b_instances[(v_instance + v_row)];\n      v_normal[v_row] = 0.0f;\n      v_tangent[v_row] = 0.0f;\n      {\n        var v_col: u32 = u32(0i);\n        loop {\n          if (!(v_col < u32(3i))) { break; }\n          v_position[v_row] = (v_position[v_row] + ((v_rotation[((v_col * u32(3i)) + v_row)] * b_instances[(v_instance + u32(3i))]) * b_vertices[(v_v + v_col)]));\n          v_normal[v_row] = (v_normal[v_row] + (v_rotation[((v_col * u32(3i)) + v_row)] * b_attributes[((v_a + u32(3i)) + v_col)]));\n          v_tangent[v_row] = (v_tangent[v_row] + (b_attributes[((v_a + u32(6i)) + v_col)] * v_rotation[((v_row * u32(3i)) + v_col)]));\n          continuing {\n            v_col += u32(1);\n          }\n        }\n      }\n      continuing {\n        v_row += u32(1);\n      }\n    }\n  }\n  v_position[3i] = 1.0f;\n  var v_view: array<f32, 4>;\n  var v_world: array<f32, 4>;\n  var v_center: array<f32, 4>;\n  {\n    var v_row: u32 = u32(0i);\n    loop {\n      if (!(v_row < u32(4i))) { break; }\n      v_view[v_row] = 0.0f;\n      v_center[v_row] = b_matrices[((v_m + u32(12i)) + v_row)];\n      {\n        var v_col: u32 = u32(0i);\n        loop {\n          if (!(v_col < u32(4i))) { break; }\n          v_view[v_row] = (v_view[v_row] + (b_matrices[((v_m + (v_col * u32(4i))) + v_row)] * v_position[v_col]));\n          continuing {\n            v_col += u32(1);\n          }\n        }\n      }\n      {\n        var v_col: u32 = u32(0i);\n        loop {\n          if (!(v_col < u32(3i))) { break; }\n          v_center[v_row] = (v_center[v_row] + (b_matrices[((v_m + (v_col * u32(4i))) + v_row)] * b_instances[(v_instance + v_col)]));\n          continuing {\n            v_col += u32(1);\n          }\n        }\n      }\n      continuing {\n        v_row += u32(1);\n      }\n    }\n  }\n  var v_distance: f32 = sqrt(((((v_center[0i] * v_center[0i]) + (v_center[1i] * v_center[1i])) + (v_center[2i] * v_center[2i])) + (v_center[3i] * v_center[3i])));\n  if ((v_distance > b_params[(v_p + u32(39i))])) {\n    {\n      var v_row: u32 = u32(0i);\n      loop {\n        if (!(v_row < u32(3i))) { break; }\n        b_vertices[(v_v + v_row)] = b_instances[(v_instance + v_row)];\n        continuing {\n          v_row += u32(1);\n        }\n      }\n    }\n    b_vertices[(v_v + u32(3i))] = 1.0f;\n    return;\n  }\n  var v_va: f32 = b_params[v_p];\n  var v_vb: f32 = b_params[(v_p + u32(4i))];\n  var v_vc: f32 = b_params[(v_p + u32(8i))];\n  var v_vd: f32 = b_params[(v_p + u32(1i))];\n  var v_ve: f32 = b_params[(v_p + u32(5i))];\n  var v_vf: f32 = b_params[(v_p + u32(9i))];\n  var v_vg: f32 = b_params[(v_p + u32(2i))];\n  var v_vh: f32 = b_params[(v_p + u32(6i))];\n  var v_vj: f32 = b_params[(v_p + u32(10i))];\n  var v_viewDet: f32 = (((v_va * ((v_ve * v_vj) - (v_vf * v_vh))) - (v_vb * ((v_vd * v_vj) - (v_vf * v_vg)))) + (v_vc * ((v_vd * v_vh) - (v_ve * v_vg))));\n  var cw_tmp_6: f32;\n  if ((abs(v_viewDet) > 1e-12f)) {\n    cw_tmp_6 = cw_divide_f32(1.0f, v_viewDet);\n  } else {\n    cw_tmp_6 = 0.0f;\n  }\n  var v_viewInverse: f32 = cw_tmp_6;\n  var v_vx: f32 = (v_view[0i] - (b_params[(v_p + u32(12i))] * v_view[3i]));\n  var v_vy: f32 = (v_view[1i] - (b_params[(v_p + u32(13i))] * v_view[3i]));\n  var v_vz: f32 = (v_view[2i] - (b_params[(v_p + u32(14i))] * v_view[3i]));\n  v_world[0i] = ((((((v_ve * v_vj) - (v_vf * v_vh)) * v_vx) + (((v_vc * v_vh) - (v_vb * v_vj)) * v_vy)) + (((v_vb * v_vf) - (v_vc * v_ve)) * v_vz)) * v_viewInverse);\n  v_world[1i] = ((((((v_vf * v_vg) - (v_vd * v_vj)) * v_vx) + (((v_va * v_vj) - (v_vc * v_vg)) * v_vy)) + (((v_vc * v_vd) - (v_va * v_vf)) * v_vz)) * v_viewInverse);\n  v_world[2i] = ((((((v_vd * v_vh) - (v_ve * v_vg)) * v_vx) + (((v_vb * v_vg) - (v_va * v_vh)) * v_vy)) + (((v_va * v_ve) - (v_vb * v_vd)) * v_vz)) * v_viewInverse);\n  v_world[3i] = v_view[3i];\n  var v_wind: f32 = b_params[(v_p + u32(32i))];\n  var v_time: f32 = b_params[(v_p + u32(33i))];\n  var v_speed: f32 = sqrt((((2.0f * v_wind) * v_wind) + 1.0f));\n  var v_dx: f32 = (v_world[0i] - b_params[(v_p + u32(34i))]);\n  var v_dy: f32 = (v_world[1i] - b_params[(v_p + u32(35i))]);\n  var v_footDistance: f32 = sqrt(((v_dx * v_dx) + (v_dy * v_dy)));\n  var v_stomp: f32 = 0.0f;\n  if ((b_params[(v_p + u32(37i))] > 0.5f)) {\n    var cw_tmp_8: f32;\n    if ((b_params[(v_p + u32(38i))] < 0.5f)) {\n      cw_tmp_8 = 50.0f;\n    } else {\n      var cw_tmp_7: f32;\n      if ((b_params[(v_p + u32(38i))] < 1.5f)) {\n        cw_tmp_7 = 80.0f;\n      } else {\n        cw_tmp_7 = 150.0f;\n      }\n      cw_tmp_8 = cw_tmp_7;\n    }\n    var v_range: f32 = cw_tmp_8;\n    var cw_tmp_10: f32;\n    if ((b_params[(v_p + u32(38i))] < 0.5f)) {\n      cw_tmp_10 = 20.0f;\n    } else {\n      var cw_tmp_9: f32;\n      if ((b_params[(v_p + u32(38i))] < 1.5f)) {\n        cw_tmp_9 = 40.0f;\n      } else {\n        cw_tmp_9 = 60.0f;\n      }\n      cw_tmp_10 = cw_tmp_9;\n    }\n    var v_reach: f32 = cw_tmp_10;\n    if (((v_footDistance > 0.0f) && (v_footDistance < v_range))) {\n      v_stomp = (cw_divide_f32(v_reach, v_footDistance) - cw_divide_f32(v_reach, v_range));\n    }\n    if ((b_params[(v_p + u32(37i))] > 1.5f)) {\n      var cw_tmp_11: f32;\n      if ((v_height != 0.0f)) {\n        cw_tmp_11 = cw_divide_f32((v_world[2i] - b_params[(v_p + u32(36i))]), v_height);\n      } else {\n        cw_tmp_11 = 0.0f;\n      }\n      var v_relative: f32 = cw_tmp_11;\n      v_stomp = (v_stomp * min(1.0f, max(0.0f, v_relative)));\n    }\n  }\n  var v_bend: f32 = min(1.0f, max(0.0f, (0.02f * v_height)));\n  {\n    var v_axis: u32 = u32(0i);\n    loop {\n      if (!(v_axis < u32(2i))) { break; }\n      var v_coordinate: f32 = v_world[v_axis];\n      var v_harmonics: f32 = (((((1.0f - (0.1f * v_speed)) * sin((v_time + cw_divide_f32(v_coordinate, 1100.0f)))) + ((1.0f - (0.04f * v_speed)) * cos(((2.0f * v_time) + cw_divide_f32(v_coordinate, 750.0f))))) + ((1.0f + (0.14f * v_speed)) * sin(((3.0f * v_time) + cw_divide_f32(v_coordinate, 500.0f))))) + ((1.0f + (0.28f * v_speed)) * sin(((5.0f * v_time) + cw_divide_f32(v_coordinate, 200.0f)))));\n      var cw_tmp_12: f32;\n      if ((v_axis == u32(0i))) {\n        cw_tmp_12 = v_dx;\n      } else {\n        cw_tmp_12 = v_dy;\n      }\n      v_world[v_axis] = (v_world[v_axis] + (v_bend * ((v_harmonics * ((2.0f * v_wind) + 0.1f)) + (v_stomp * cw_tmp_12))));\n      continuing {\n        v_axis += u32(1);\n      }\n    }\n  }\n  {\n    var v_row: u32 = u32(0i);\n    loop {\n      if (!(v_row < u32(4i))) { break; }\n      v_view[v_row] = 0.0f;\n      {\n        var v_col: u32 = u32(0i);\n        loop {\n          if (!(v_col < u32(4i))) { break; }\n          v_view[v_row] = (v_view[v_row] + (b_params[(((v_p + u32(16i)) + (v_col * u32(4i))) + v_row)] * v_world[v_col]));\n          continuing {\n            v_col += u32(1);\n          }\n        }\n      }\n      continuing {\n        v_row += u32(1);\n      }\n    }\n  }\n  var v_aa: f32 = b_matrices[v_m];\n  var v_b: f32 = b_matrices[(v_m + u32(4i))];\n  var v_c: f32 = b_matrices[(v_m + u32(8i))];\n  var v_d: f32 = b_matrices[(v_m + u32(1i))];\n  var v_e: f32 = b_matrices[(v_m + u32(5i))];\n  var v_f: f32 = b_matrices[(v_m + u32(9i))];\n  var v_g: f32 = b_matrices[(v_m + u32(2i))];\n  var v_h: f32 = b_matrices[(v_m + u32(6i))];\n  var v_j: f32 = b_matrices[(v_m + u32(10i))];\n  var v_det: f32 = (((v_aa * ((v_e * v_j) - (v_f * v_h))) - (v_b * ((v_d * v_j) - (v_f * v_g)))) + (v_c * ((v_d * v_h) - (v_e * v_g))));\n  var cw_tmp_13: f32;\n  if ((abs(v_det) > 1e-12f)) {\n    cw_tmp_13 = cw_divide_f32(1.0f, v_det);\n  } else {\n    cw_tmp_13 = 0.0f;\n  }\n  var v_inverse: f32 = cw_tmp_13;\n  var v_x: f32 = (v_view[0i] - (b_matrices[(v_m + u32(12i))] * v_view[3i]));\n  var v_y: f32 = (v_view[1i] - (b_matrices[(v_m + u32(13i))] * v_view[3i]));\n  var v_z: f32 = (v_view[2i] - (b_matrices[(v_m + u32(14i))] * v_view[3i]));\n  b_vertices[v_v] = ((((((v_e * v_j) - (v_f * v_h)) * v_x) + (((v_c * v_h) - (v_b * v_j)) * v_y)) + (((v_b * v_f) - (v_c * v_e)) * v_z)) * v_inverse);\n  b_vertices[(v_v + u32(1i))] = ((((((v_f * v_g) - (v_d * v_j)) * v_x) + (((v_aa * v_j) - (v_c * v_g)) * v_y)) + (((v_c * v_d) - (v_aa * v_f)) * v_z)) * v_inverse);\n  b_vertices[(v_v + u32(2i))] = ((((((v_d * v_h) - (v_e * v_g)) * v_x) + (((v_b * v_g) - (v_aa * v_h)) * v_y)) + (((v_aa * v_e) - (v_b * v_d)) * v_z)) * v_inverse);\n  b_vertices[(v_v + u32(3i))] = v_view[3i];\n  {\n    var v_axis: u32 = u32(0i);\n    loop {\n      if (!(v_axis < u32(3i))) { break; }\n      b_attributes[((v_a + u32(3i)) + v_axis)] = v_normal[v_axis];\n      b_attributes[((v_a + u32(6i)) + v_axis)] = v_tangent[v_axis];\n      continuing {\n        v_axis += u32(1);\n      }\n    }\n  }\n}\n",
+  "metadata": {
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "bindings": [
+      {
+        "name": "vertices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 0,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "attributes",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 1,
+        "readOnly": false,
+        "atomic": false
+      },
+      {
+        "name": "records",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 2,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "instances",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 3,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "params",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 4,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "matrices",
+        "elementType": "f32",
+        "stride": 4,
+        "binding": 5,
+        "readOnly": true,
+        "atomic": false
+      },
+      {
+        "name": "matrix_ids",
+        "elementType": "u32",
+        "stride": 4,
+        "binding": 6,
+        "readOnly": true,
+        "atomic": false
+      }
+    ],
+    "scalars": [
+      {
+        "name": "record_count",
+        "type": "u32",
+        "offset": 0
+      }
+    ],
+    "uniformSize": 16,
+    "uniformBinding": 7,
+    "workgroupStorageBytes": 0,
+    "barrier": "workgroup-and-storage",
+    "optimization": {
+      "mode": "dependencies",
+      "baselineBytes": 11528,
+      "beforeBytes": 11528,
+      "afterBytes": 11528,
+      "functionsBefore": 2,
+      "functionsAfter": 2,
+      "removedFunctions": [],
+      "roots": [
+        "main"
+      ],
+      "largestDependencies": [
+        {
+          "name": "main",
+          "ownBytes": 10510,
+          "transitiveBytes": 10780,
+          "reachableFunctions": 2
+        },
+        {
+          "name": "cw_divide_f32",
+          "ownBytes": 270,
+          "transitiveBytes": 270,
+          "reachableFunctions": 1
+        }
+      ]
+    }
+  },
+  "native": {
+    "version": 1,
+    "source": "// SPDX-License-Identifier: GPL-3.0-or-later\r\n// Groundcover instance/wind/stomp port of compatibility/groundcover.vert.\r\n// records: vertex, instance, parameter-block. instances: offset.xyz, scale,\r\n// rotation.xyz. params40: viewToInvert16, view16, wind, time, player.xyz,\r\n// stompMode, stompIntensity, fadeEnd. Matrix IDs address ordinary MV/P32.\r\n__global__ void deform_groundcover(float* vertices,float* attributes,const unsigned int* records,\r\n    const float* instances,const float* params,const float* matrices,const unsigned int* matrix_ids,\r\n    unsigned int record_count) {\r\n    unsigned int i=(blockIdx.x+blockIdx.y*gridDim.x)*blockDim.x+threadIdx.x;\r\n    if(i>=record_count)return;\r\n    unsigned int vertex=records[i*3],instance=records[i*3+1]*7,p=records[i*3+2]*40;\r\n    unsigned int v=vertex*10,a=vertex*34,m=matrix_ids[vertex]*32;\r\n    float sx=sinf(instances[instance+4]),cx=cosf(instances[instance+4]);\r\n    float sy=sinf(instances[instance+5]),cy=cosf(instances[instance+5]);\r\n    float sz=sinf(instances[instance+6]),cz=cosf(instances[instance+6]);\r\n    float rotation[9];\r\n    rotation[0]=cz*cy+sx*sy*sz;rotation[1]=-sz*cx;rotation[2]=cz*sy+sz*sx*cy;\r\n    rotation[3]=sz*cy+cz*sx*sy;rotation[4]=cz*cx;rotation[5]=sz*sy-cz*sx*cy;\r\n    rotation[6]=-sy*cx;rotation[7]=sx;rotation[8]=cx*cy;\r\n    float height=vertices[v+2],position[4],normal[3],tangent[3];\r\n    for(unsigned int row=0;row<3;row++) {\r\n        position[row]=instances[instance+row];normal[row]=0.0f;tangent[row]=0.0f;\r\n        for(unsigned int col=0;col<3;col++) {\r\n            position[row]+=rotation[col*3+row]*instances[instance+3]*vertices[v+col];\r\n            normal[row]+=rotation[col*3+row]*attributes[a+3+col];\r\n            // The original tangent expression is a row-vector times rotation.\r\n            tangent[row]+=attributes[a+6+col]*rotation[row*3+col];\r\n        }\r\n    }\r\n    position[3]=1.0f;\r\n    float view[4],world[4],center[4];\r\n    for(unsigned int row=0;row<4;row++) {\r\n        view[row]=0.0f;center[row]=matrices[m+12+row];\r\n        for(unsigned int col=0;col<4;col++)view[row]+=matrices[m+col*4+row]*position[col];\r\n        for(unsigned int col=0;col<3;col++)center[row]+=matrices[m+col*4+row]*instances[instance+col];\r\n    }\r\n    float distance=sqrtf(center[0]*center[0]+center[1]*center[1]+center[2]*center[2]+center[3]*center[3]);\r\n    if(distance>params[p+39]) {\r\n        // Collapse every vertex of this instance to the same position. The\r\n        // reference shader also emits a degenerate primitive beyond fadeEnd.\r\n        for(unsigned int row=0;row<3;row++)vertices[v+row]=instances[instance+row];\r\n        vertices[v+3]=1.0f;return;\r\n    }\r\n    float va=params[p],vb=params[p+4],vc=params[p+8];\r\n    float vd=params[p+1],ve=params[p+5],vf=params[p+9];\r\n    float vg=params[p+2],vh=params[p+6],vj=params[p+10];\r\n    float viewDet=va*(ve*vj-vf*vh)-vb*(vd*vj-vf*vg)+vc*(vd*vh-ve*vg);\r\n    float viewInverse=fabsf(viewDet)>0.000000000001f?1.0f/viewDet:0.0f;\r\n    float vx=view[0]-params[p+12]*view[3],vy=view[1]-params[p+13]*view[3],vz=view[2]-params[p+14]*view[3];\r\n    world[0]=((ve*vj-vf*vh)*vx+(vc*vh-vb*vj)*vy+(vb*vf-vc*ve)*vz)*viewInverse;\r\n    world[1]=((vf*vg-vd*vj)*vx+(va*vj-vc*vg)*vy+(vc*vd-va*vf)*vz)*viewInverse;\r\n    world[2]=((vd*vh-ve*vg)*vx+(vb*vg-va*vh)*vy+(va*ve-vb*vd)*vz)*viewInverse;\r\n    world[3]=view[3];\r\n    float wind=params[p+32],time=params[p+33];\r\n    float speed=sqrtf(2.0f*wind*wind+1.0f);\r\n    float dx=world[0]-params[p+34],dy=world[1]-params[p+35];\r\n    float footDistance=sqrtf(dx*dx+dy*dy),stomp=0.0f;\r\n    if(params[p+37]>0.5f) {\r\n        float range=params[p+38]<0.5f?50.0f:(params[p+38]<1.5f?80.0f:150.0f);\r\n        float reach=params[p+38]<0.5f?20.0f:(params[p+38]<1.5f?40.0f:60.0f);\r\n        if(footDistance>0.0f&&footDistance<range)stomp=reach/footDistance-reach/range;\r\n        if(params[p+37]>1.5f) {\r\n            float relative=height!=0.0f?(world[2]-params[p+36])/height:0.0f;\r\n            stomp*=fminf(1.0f,fmaxf(0.0f,relative));\r\n        }\r\n    }\r\n    float bend=fminf(1.0f,fmaxf(0.0f,0.02f*height));\r\n    for(unsigned int axis=0;axis<2;axis++) {\r\n        float coordinate=world[axis];\r\n        float harmonics=(1.0f-0.10f*speed)*sinf(time+coordinate/1100.0f)\r\n            +(1.0f-0.04f*speed)*cosf(2.0f*time+coordinate/750.0f)\r\n            +(1.0f+0.14f*speed)*sinf(3.0f*time+coordinate/500.0f)\r\n            +(1.0f+0.28f*speed)*sinf(5.0f*time+coordinate/200.0f);\r\n        world[axis]+=bend*(harmonics*(2.0f*wind+0.1f)+stomp*(axis==0?dx:dy));\r\n    }\r\n    for(unsigned int row=0;row<4;row++) {\r\n        view[row]=0.0f;\r\n        for(unsigned int col=0;col<4;col++)view[row]+=params[p+16+col*4+row]*world[col];\r\n    }\r\n    // Return to model coordinates for the shared lighting/shadow/clip path.\r\n    // Inverting the affine MV is rendering arithmetic and stays on the GPU.\r\n    float aa=matrices[m],b=matrices[m+4],c=matrices[m+8];\r\n    float d=matrices[m+1],e=matrices[m+5],f=matrices[m+9];\r\n    float g=matrices[m+2],h=matrices[m+6],j=matrices[m+10];\r\n    float det=aa*(e*j-f*h)-b*(d*j-f*g)+c*(d*h-e*g);\r\n    float inverse=fabsf(det)>0.000000000001f?1.0f/det:0.0f;\r\n    float x=view[0]-matrices[m+12]*view[3],y=view[1]-matrices[m+13]*view[3],z=view[2]-matrices[m+14]*view[3];\r\n    vertices[v]=((e*j-f*h)*x+(c*h-b*j)*y+(b*f-c*e)*z)*inverse;\r\n    vertices[v+1]=((f*g-d*j)*x+(aa*j-c*g)*y+(c*d-aa*f)*z)*inverse;\r\n    vertices[v+2]=((d*h-e*g)*x+(b*g-aa*h)*y+(aa*e-b*d)*z)*inverse;\r\n    vertices[v+3]=view[3];\r\n    for(unsigned int axis=0;axis<3;axis++){attributes[a+3+axis]=normal[axis];attributes[a+6+axis]=tangent[axis];}\r\n}\r\n",
+    "entry": "deform_groundcover",
+    "workgroupSize": [
+      64,
+      1,
+      1
+    ],
+    "parameters": [
+      {
+        "name": "vertices",
+        "type": "buffer"
+      },
+      {
+        "name": "attributes",
+        "type": "buffer"
+      },
+      {
+        "name": "records",
+        "type": "buffer"
+      },
+      {
+        "name": "instances",
+        "type": "buffer"
+      },
+      {
+        "name": "params",
+        "type": "buffer"
+      },
+      {
+        "name": "matrices",
+        "type": "buffer"
+      },
+      {
+        "name": "matrix_ids",
+        "type": "buffer"
+      },
+      {
+        "name": "record_count",
+        "type": "u32"
+      }
+    ],
+    "defaults": {},
+    "sharedMemoryBytes": 0
+  }
+}

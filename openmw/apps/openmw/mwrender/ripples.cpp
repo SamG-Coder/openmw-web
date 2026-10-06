@@ -1,6 +1,9 @@
 // Modified by Virtastic (https://virtastic.app) for the OpenMW-Web port, 2025-2026.
 // See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 #include "ripples.hpp"
+#include <components/webcuda/viewer.hpp>
+#include <stdexcept>
+#include <vector>
 
 #include <osg/Geometry>
 #include <osg/Texture2D>
@@ -157,6 +160,7 @@ namespace MWRender
 
     void RipplesSurface::updateState(const osg::FrameStamp& frameStamp, State& state)
     {
+        state.mTime=static_cast<float>(frameStamp.getSimulationTime());
         state.mPaused = mPaused;
 
         if (mPaused)
@@ -216,6 +220,20 @@ namespace MWRender
             updateState(*frameStamp, mState[frameStamp->getFrameNumber() % 2]);
 
         osg::Geometry::traverse(nv);
+    }
+
+    void RipplesSurface::submitWebCuda(WebCuda::SubmissionSink& sink,const WebCuda::DrawContext&) const
+    {
+        const auto& state=mState[sink.frameNumber()%2];
+        int count=0;state.mStateset->getUniform("positionCount")->get(count);
+        if(count<0||count>100)throw std::runtime_error("Invalid ripple position count");
+        std::vector<float> positions;positions.reserve(count*3);
+        for(int i=0;i<count;++i) {
+            osg::Vec3f p;state.mStateset->getUniform("positions")->getElement(i,p);
+            positions.insert(positions.end(),{p.x(),p.y(),p.z()});
+        }
+        osg::Vec2f offset;state.mStateset->getUniform("offset")->get(offset);
+        sink.ripples(*mTextures[0],positions.data(),count,offset.x(),offset.y(),state.mTime,!state.mPaused);
     }
 
     void RipplesSurface::drawImplementation(osg::RenderInfo& renderInfo) const
@@ -339,6 +357,7 @@ namespace MWRender
         addChild(mRipples);
         setCullingActive(false);
         setImplicitBufferAttachmentMask(0, 0);
+        if(WebCuda::Viewer::requested())attach(osg::Camera::COLOR_BUFFER0,mRipples->getColorTexture());
     }
 
     osg::Texture* Ripples::getColorTexture() const
