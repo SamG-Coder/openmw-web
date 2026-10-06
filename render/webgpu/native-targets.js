@@ -87,7 +87,7 @@ fn bilinear(tex:texture_2d<f32>,uv:vec2<f32>,size:vec2<u32>)->vec4<f32>{
 @fragment fn post(@builtin(position) p:vec4<f32>)->@location(0) vec4<f32>{
   var uv=p.xy/vec2<f32>(params.destinationSize);
   uv*=params.scale;
-  let direct=params.sourceSize==params.destinationSize&&params.scale.x==1.0&&params.scale.y==1.0;
+  let direct=all(params.sourceSize==params.destinationSize)&&params.scale.x==1.0&&params.scale.y==1.0;
   var original:vec4<f32>;
   if(direct){
     let xy=clamp(vec2<i32>(p.xy),vec2<i32>(0),vec2<i32>(params.sourceSize)-vec2<i32>(1));
