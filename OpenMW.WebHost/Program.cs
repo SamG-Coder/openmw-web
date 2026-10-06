@@ -442,7 +442,7 @@ sealed class GameDataManager
                 {
                     foreach (var line in File.ReadLines(vdf))
                     {
-                        var match = System.Text.RegularExpressions.Regex.Match(line, @"^\s*\""path\""s+\""(.+)\""s*$");
+                        var match = System.Text.RegularExpressions.Regex.Match(line, "^\\s*\\\"path\\\"\\s+\\\"(.+)\\\"\\s*$");
                         if (!match.Success) continue;
                         var library = match.Groups[1].Value.Replace(@"\\", @"\");
                         Add(Path.Combine(library, "steamapps", "common", "Morrowind", "Data Files"));
