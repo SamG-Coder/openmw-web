@@ -529,11 +529,21 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
           const source=targets.get(0);
           const destination=planeStorage(pass.targetId,pass.width,pass.height,1);
           destination.colorFormat=0x1907;
-          const emptySource=source?null:runtime.createBuffer(40,{label:'Empty previous frame'});
-          runtime.batch().dispatch(pipeline.kernels.snapshot_frame.bind({source:source?.buffer??emptySource,target:destination.buffer},
-            {source_width:source?.width??0,source_height:source?.height??0,width:pass.width,height:pass.height}),
-            dispatchGroups(pass.width*pass.height,runtime.device.limits)).submit();
-          if(emptySource)pipeline.retireBuffer(emptySource);
+          if(source?.native?.color&&source.native.color.samples===1) {
+            nativeTargets.ensureColor(destination,0x1907,1,'color');
+            await nativeTargets.resolveColor(source.native,destination.native,{clear:true});
+            destination.authority='native';
+          } else {
+            const destinationBuffer=await ensureCompatibility(destination);
+            let sourceBuffer=null,emptySource=null;
+            if(source)sourceBuffer=await ensureCompatibility(source);
+            else {emptySource=runtime.createBuffer(40,{label:'Empty previous frame'});sourceBuffer=emptySource;}
+            runtime.batch().dispatch(pipeline.kernels.snapshot_frame.bind({source:sourceBuffer,target:destinationBuffer},
+              {source_width:source?.width??0,source_height:source?.height??0,width:pass.width,height:pass.height}),
+              dispatchGroups(pass.width*pass.height,runtime.device.limits)).submit();
+            destination.authority='compat';
+            if(emptySource)pipeline.retireBuffer(emptySource);
+          }
           stats.passes++;continue;
         }
         if(pass.kind==='image-capture') {
@@ -546,9 +556,10 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
             ||region[2]>runtime.device.limits.maxTextureDimension2D||region[3]>runtime.device.limits.maxTextureDimension2D)
             throw RangeError('Invalid image capture viewport');
           const [region_x,region_y,region_width,region_height]=region;
+          const sourceBuffer=await ensureCompatibility(source);
           const pixels=runtime.createBuffer(pass.width*pass.height*4,{label:'OpenMW image capture'});
           try {
-            runtime.batch().dispatch(pipeline.kernels.capture_image.bind({source:source.buffer,pixels},
+            runtime.batch().dispatch(pipeline.kernels.capture_image.bind({source:sourceBuffer,pixels},
               {source_width:source.width,source_height:source.height,width:pass.width,height:pass.height,region_x,region_y,region_width,region_height}),
               dispatchGroups(pass.width*pass.height,runtime.device.limits)).submit();
             const packed=await runtime.read(pixels,Uint32Array,pass.width*pass.height*4);
@@ -565,14 +576,33 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
           if(!Array.isArray(v)||v.length!==4||!v.every(Number.isSafeInteger)||v[2]<=0||v[3]<=0)throw Error('Invalid resolve viewport');
           const destination=planeStorage(pass.targetId,pass.width,pass.height,1,1,pass.plane===1?true:undefined);
           if((source.compactDepth||destination.compactDepth)&&pass.plane!==1)throw Error('Compact depth resolve requires the depth plane');
-          const color=pass.plane===0||pass.plane===2?colorStorage(pass.format):{channels:4,storage:0};
-          const depth=pass.plane===1||pass.plane===4?depthStorage(pass.format):24;
-          if(pass.plane===0)destination.colorFormat=pass.format;
-          if(pass.plane===2)destination.normalFormat=pass.format;
-          runtime.batch().dispatch(pipeline.kernels.copy_resolved_attachment.bind({source:source.buffer,target:destination.buffer},
-            {width:pass.width,height:pass.height,plane:pass.plane,color_channels:color.channels,color_storage:color.storage,depth_bits:depth,
-             viewport_x:v[0],viewport_y:v[1],viewport_width:v[2],viewport_height:v[3],source_compact:source.compactDepth?1:0,target_compact:destination.compactDepth?1:0}),
-            dispatchGroups(pass.width*pass.height,runtime.device.limits)).submit();
+          const full=v[0]===0&&v[1]===0&&v[2]===pass.width&&v[3]===pass.height;
+          let nativeResolved=false;
+          if(full&&pass.plane===0&&source.native?.color?.samples===1) {
+            destination.colorFormat=pass.format;nativeTargets.ensureColor(destination,pass.format,1,'color');
+            await nativeTargets.resolveColor(source.native,destination.native,{clear:true});
+            destination.authority='native';nativeResolved=true;
+          } else if(full&&pass.plane===2&&source.native?.normal?.samples===1) {
+            destination.normalFormat=pass.format;nativeTargets.ensureColor(destination,pass.format,1,'normal');
+            await nativeTargets.resolveColor({color:source.native.normal},{color:destination.native.normal},{clear:true});
+            destination.authority='native';nativeResolved=true;
+          } else if(full&&(pass.plane===1||pass.plane===4)&&source.native?.depth?.samples===1) {
+            destination.depthFormat=pass.format;nativeTargets.ensureDepth(destination,pass.format,1,false);
+            await nativeTargets.copyDepth(source.native,destination.native);
+            destination.authority='native';nativeResolved=true;
+          }
+          if(!nativeResolved) {
+            const sourceBuffer=await ensureCompatibility(source),destinationBuffer=await ensureCompatibility(destination);
+            const color=pass.plane===0||pass.plane===2?colorStorage(pass.format):{channels:4,storage:0};
+            const depth=pass.plane===1||pass.plane===4?depthStorage(pass.format):24;
+            if(pass.plane===0)destination.colorFormat=pass.format;
+            if(pass.plane===2)destination.normalFormat=pass.format;
+            runtime.batch().dispatch(pipeline.kernels.copy_resolved_attachment.bind({source:sourceBuffer,target:destinationBuffer},
+              {width:pass.width,height:pass.height,plane:pass.plane,color_channels:color.channels,color_storage:color.storage,depth_bits:depth,
+               viewport_x:v[0],viewport_y:v[1],viewport_width:v[2],viewport_height:v[3],source_compact:source.compactDepth?1:0,target_compact:destination.compactDepth?1:0}),
+              dispatchGroups(pass.width*pass.height,runtime.device.limits)).submit();
+            destination.authority='compat';
+          }
           if(pass.plane===0||pass.plane===2)markScreenWritten(pass.targetId,destination);
           stats.passes++;continue;
         }
@@ -580,9 +610,13 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
           const source=targets.get(pass.sourceId);
           if(!source||source.width!==pass.width||source.height!==pass.height)throw Error('Depth capture source dimensions differ');
           let destination=targets.get(pass.targetId);
-          if(destination?.buffer===source.buffer)throw Error('Depth capture cannot alias scene attachment');
+          if(destination===source)throw Error('Depth capture cannot alias scene attachment');
           destination=planeStorage(pass.targetId,pass.width,pass.height,1,1,true);
-          copyPlane(source,destination,'copy_depth');
+          destination.depthFormat=source.depthFormat??0x81a6;
+          if(source.native?.depth?.samples===1) {
+            nativeTargets.ensureDepth(destination,destination.depthFormat,1,false);
+            await nativeTargets.copyDepth(source.native,destination.native);destination.authority='native';
+          } else await copyPlane(source,destination,'copy_depth');
           stats.passes++;continue;
         }
         if(pass.kind==='scene-luminance') {
@@ -590,8 +624,9 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
           if(!source)throw Error('Luminance source is unavailable');
           let w=pass.width,h=pass.height;
           if(w>runtime.device.limits.maxTextureDimension2D||h>runtime.device.limits.maxTextureDimension2D)throw Error('Luminance dimensions exceed device limits');
+          const sourceBuffer=await ensureCompatibility(source);
           let input=pipeline.buffer('luminanceLevel0',w*h*4),level=0;
-          runtime.batch().dispatch(pipeline.kernels.scene_log_luminance.bind({source:source.buffer,output:input},
+          runtime.batch().dispatch(pipeline.kernels.scene_log_luminance.bind({source:sourceBuffer,output:input},
             {width:w,height:h,source_width:source.width,source_height:source.height,sx:pass.sx,sy:pass.sy,viewport_width:pass.viewportWidth,viewport_height:pass.viewportHeight}),
             dispatchGroups(w*h,runtime.device.limits)).submit();
           while(w>1||h>1) {
