@@ -149,14 +149,14 @@ struct Params { width:u32,height:u32,offset:u32,pad:u32 }
 const COMPAT_COLOR_WGSL=`
 struct Params { width:u32,height:u32,base:u32,pad:u32 }
 @group(0) @binding(0) var sourceTex:texture_2d<f32>;
-@group(0) @binding(1) var<storage,read_write> target:array<f32>;
+@group(0) @binding(1) var<storage,read_write> compatibilityBuffer:array<f32>;
 @group(0) @binding(2) var<uniform> params:Params;
 @compute @workgroup_size(8,8,1) fn main(@builtin(global_invocation_id) id:vec3<u32>){
   if(id.x>=params.width||id.y>=params.height){return;}
   let pixel=id.y*params.width+id.x;
   let rgba=textureLoad(sourceTex,vec2<i32>(id.xy),0);
   let dst=pixel*9u+params.base;
-  target[dst]=rgba.x;target[dst+1u]=rgba.y;target[dst+2u]=rgba.z;target[dst+3u]=rgba.w;
+  compatibilityBuffer[dst]=rgba.x;compatibilityBuffer[dst+1u]=rgba.y;compatibilityBuffer[dst+2u]=rgba.z;compatibilityBuffer[dst+3u]=rgba.w;
 }`;
 
 const COMPAT_DEPTH_WGSL=`
@@ -168,7 +168,7 @@ struct Params { width:u32,height:u32,compact:u32,pad:u32 }
   if(id.x>=params.width||id.y>=params.height){return;}
   let pixel=id.y*params.width+id.x;
   let z=textureLoad(sourceTex,vec2<i32>(id.xy),0);
-  if(params.compact!=0u){target[pixel]=z;}else{target[pixel*9u+4u]=z;}
+  if(params.compact!=0u){compatibilityBuffer[pixel]=z;}else{compatibilityBuffer[pixel*9u+4u]=z;}
 }`;
 
 export class NativeAttachmentStore {
