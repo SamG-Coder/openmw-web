@@ -843,6 +843,7 @@ namespace WebCuda
             throw std::runtime_error("Unsupported text gradient mode");
         const osg::Matrixd placement(text.getMatrix());
         auto draw=context;draw.localTransform=&placement;draw.textGradient=nullptr;
+        ResolvedStateScope resolved(draw);
         std::array<float,18> textPlacement{};
         if(text.getCharacterSizeMode()!=osgText::TextBase::OBJECT_COORDS||text.getAutoRotateToScreen()) {
             textPlacement[0]=static_cast<float>(text.getCharacterSizeMode());
@@ -942,6 +943,7 @@ namespace WebCuda
     {
         if (!mTable) throw std::logic_error("WebCuda GUI outside stage");
         writableMaterialTable(mTable);
-        appendGui(mPacket,array,count,context,mTable->encode(context,texture,true));
+        auto draw=context;ResolvedStateScope resolved(draw);
+        appendGui(mPacket,array,count,draw,mTable->encode(draw,texture,true));
     }
 }

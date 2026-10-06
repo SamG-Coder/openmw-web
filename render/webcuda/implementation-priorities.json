@@ -1,7 +1,7 @@
 {
   "objective": "All rendering in authored .cu via WebCuda/WGSL/WebGPU",
   "workflow": "Complete implementation, including generation and compilation, on this PC; run behavioral and gameplay tests afterward.",
-  "currentPriority": "P0: reduce remaining material/state capture, geometry validation/transfers and GPU frame cost. Inherited light and eye-linear TexGen matrix composition now runs in authored CUDA; capture transports raw application/post matrices. Rebuilt engine b32cdb0ea5be reaches 335 exterior presentations without errors and releases all 120 sampled completed packets. Median submission interval is 256.990 ms in this streaming debug run with concurrent shader compilation; this is not a matched performance comparison. Broad gameplay, native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
+  "currentPriority": "P0: reduce remaining capture, geometry validation/transfers and GPU frame cost. Repeated inherited state merges now share one synchronous draw scope while preserving callbacks and variant stacks. Identical 640-draw WASM64 fixtures retain matching packet checksums and cut CPU capture time by 54-62 percent. Rebuilt engine 0e6ae74dd863 reaches 251 exterior presentations without errors and releases all 120 sampled completed packets. Median submission interval is 212.565 ms in this streaming debug run, not a matched performance comparison. Broad gameplay, native-browser exterior/allocation peaks and smooth 60-180 Hz play remain incomplete.",
   "tasks": [
     {
       "priority": "P0",
@@ -55,7 +55,7 @@
       ]
     }
   ],
-  "nextAction": "Follow the user's code-first direction; do not request further screenshots. An ordinary geometry leaf currently resolves the same state separately in PositionalState::capture, captureCurrentColor, MaterialTable::encode and appendGeometry. Reduce this repeated work within a synchronous draw while preserving callback/override mutation and independent variant state. Continue auditing geometry validation and topology/deformation transport. Positioned light/TexGen composition now consumes captured raw matrix pairs in CUDA. Preserve triangle order, interpolation and native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
+  "nextAction": "Follow the user's code-first direction; do not request further screenshots. Repeated draw-state merges are now scoped and verified, including custom-draw mutation boundaries. Continue auditing remaining geometry validation, material descriptors, topology/deformation transport and GPU raster cost; isolate the next repeated work without weakening input checks or ordering. Keep numerical rendering in authored CUDA and preserve native resource ownership. Treat current native-browser gameplay, allocation peaks and 60-180 Hz presentation as separate unverified acceptance gates.",
   "acceptanceBoundary": "CUDA-derived WebGPU and native CUDA visibly render the ship interior and HUD. Native has 83 browser kernel compilations and 20 GPU storage/raster/presentation checks. A post-fix screenshot shows 16 native presentations, but about 565 ms between them. Submission coalescing awaits a new run. Broad gameplay, lifecycle recovery and measured 60-180 Hz presentation remain incomplete.",
   "focusedSourceReview": {
     "basis": "Source inspection only; no generation, build or tests",
@@ -1545,5 +1545,66 @@
       "medianPresentationSubmitIntervalMs": 256.99,
       "limits": "Streaming debug scene with concurrent validator shader compilation; not a matched performance comparison or native-browser acceptance. Buffer capacity does not measure physical VRAM/RSS."
     }
+  },
+  "drawStateReuse": {
+    "engine": "0e6ae74dd863",
+    "sourceFinding": "Ordinary geometry merged inherited state independently for positional attributes, current color, material capture and geometry capture. One scoped const merge is now reused within the synchronous draw.",
+    "ownership": "No state cache survives a capture scope. The full source stack must match. Callbacks precede the scope; custom drawables receive uncached contexts so source StateSet structural changes between submissions remain visible. Attribute values are consumed synchronously.",
+    "validation": {
+      "wasm64IntegrationSuites": 9,
+      "freshOsgStateAndRasterEquivalence": "passed",
+      "callbackAndCustomDrawMutationBoundaries": "passed",
+      "fullEngineBuildAndHttpStaging": "passed",
+      "cudaGeneratedAndBrowserHostModules": "unchanged",
+      "trackedSdkChanges": false
+    },
+    "benchmark": {
+      "scope": "Isolated WASM64 O3 stage submission and packet capture, 640 draws, 48 vertices per draw, six state layers, two warmups and nine measured samples per case. Process order alternates; game closed. Not whole-game FPS.",
+      "reference": "9fd7fb4da9f1d5b2c08e3b938bba4642193236d8",
+      "equivalentPacketChecksums": true,
+      "cases": [
+        {
+          "scenario": "fixed-triangles",
+          "beforeMs": 21.086976,
+          "afterMs": 8.110336,
+          "checksum": "68a5da58544a6a13"
+        },
+        {
+          "scenario": "object-shader",
+          "beforeMs": 23.303424,
+          "afterMs": 9.48736,
+          "checksum": "79754ceb5dd1d96a"
+        },
+        {
+          "scenario": "mixed-primitives",
+          "beforeMs": 32.682752,
+          "afterMs": 14.947328,
+          "checksum": "f21ab78fb661a122"
+        }
+      ]
+    },
+    "exteriorWebgpu": {
+      "savedPresentations": 251,
+      "rendererErrors": 0,
+      "abortedCaptures": 0,
+      "legacyDrawAttempts": 0,
+      "sampledSceneFrames": 120,
+      "allSampleFramesReleasePackets": true,
+      "runtimeBufferCapacityBytes": 1816679200,
+      "medianCaptureMs": 69.5675,
+      "medianMaterialEncodeMs": 36.882688,
+      "medianGeometryEncodeMs": 16.768512,
+      "medianRendererWallMs": 133.3675,
+      "medianPresentationSubmitIntervalMs": 212.565,
+      "limits": "Debug WebGPU scene with streaming, not a matched benchmark or native-browser acceptance. Buffer capacity does not measure physical VRAM or process RSS."
+    },
+    "reports": [
+      "D:/OpenMW-local/webcuda-draw-state-integration.log",
+      "D:/OpenMW-local/webcuda-draw-state-benchmark.json",
+      "D:/OpenMW-local/webcuda-draw-state-engine-link.log",
+      "D:/OpenMW-local/webcuda-draw-state-stage.json",
+      "D:/OpenMW-local/webcuda-seyda-neen-draw-state-2026-10-07-summary.json"
+    ],
+    "limits": "Source StateSet map structure must remain immutable within a scope. This removes repeated CPU bookkeeping; rendering kernels are unchanged. Whole-game native-browser performance and physical 60-180 Hz presentation remain unverified."
   }
 }

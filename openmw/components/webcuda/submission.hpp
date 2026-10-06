@@ -21,6 +21,7 @@ namespace osgParticle { class ParticleSystem; }
 
 namespace WebCuda
 {
+    class ResolvedStateScope;
     // Borrowed for the duration of each synchronous submission call. The sink
     // must upload/copy changed data before returning, never retain WASM pointers
     // across asynchronous browser callbacks or a possible heap growth.
@@ -30,6 +31,9 @@ namespace WebCuda
         const osg::Matrixd* modelView = nullptr;
         const osg::Matrixd* localTransform = nullptr; // optional raw drawable placement, applied in CUDA
         std::vector<const osg::StateSet*> states;
+        // Borrowed only within an immutable, synchronous capture scope. Stack
+        // variants are checked by resolveState; custom drawables start fresh.
+        const ResolvedStateScope* resolvedState = nullptr;
         const osg::Matrixd* view = nullptr;
         const float* textPlacement = nullptr; // borrowed camera-dependent text parameters18
         const float* textGradient = nullptr; // borrowed TL/BL/BR/TR RGBA constants

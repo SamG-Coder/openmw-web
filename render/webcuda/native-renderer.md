@@ -737,6 +737,60 @@ To repeat the independent native matrix check, set
 `render/webcuda/positioned-state-kernel.test.cpp` with ordinary C++17 or NVCC
 using the flags below, then pass that fixture path to the executable.
 
+## Share resolved state during draw capture
+
+An ordinary geometry leaf previously merged the same inherited OSG state in
+`PositionalState::capture`, current-color capture, material encoding and
+geometry encoding. A synchronous `ResolvedStateScope` now shares one const
+merged StateSet across those consumers. Text glyphs and decorations, GUI and
+particle capture use the same mechanism. Point/line override stacks resolve
+their own state and share it among their consumers.
+
+The scope compares the complete source-state pointer sequence before reuse.
+Appending, replacing, reordering or clearing the stack forces a fresh merge.
+It never persists across draw callbacks or scene updates. Custom drawables
+receive an uncached context so their successive submissions can change source
+StateSets. Source map structure must remain immutable while a capture scope
+is active; shared attribute/uniform values are consumed synchronously. This
+changes capture bookkeeping only; CUDA rendering and packet layouts are
+unchanged.
+
+All nine WASM64 integration suites pass. The new draw-state fixture compares
+with an independent fresh OSG merge for override/protected rules, uniforms,
+defines, textures, empty programs, changed stacks, nested scopes and exception
+cleanup. Actual stage submission checks callback edits between leaves and a
+custom drawable changing blend state between its submissions.
+
+The unchanged `draw-state.bench.cpp` fixture was built against `9fd7fb4d` and
+the new capture sources with WASM64 `-O3`, the same dependency libraries and
+six state layers. Each scenario submits 640 draws with 48 vertices each and
+changes culling/alpha inputs per draw. After two warmups, nine timed samples
+produce these medians; captured geometry/material checksums match in every
+scenario. Process order alternates by scenario, and the game was closed.
+
+| Capture fixture | Previous | Scoped reuse | Reduction |
+|---|---:|---:|---:|
+| Fixed-function triangles | 21.087 ms | 8.110 ms | 61.54% |
+| Objects shader | 23.303 ms | 9.487 ms | 59.29% |
+| Mixed triangles, lines and points | 32.683 ms | 14.947 ms | 54.27% |
+
+These are isolated CPU capture timings, not whole-game FPS. The benchmark
+report is `D:/OpenMW-local/webcuda-draw-state-benchmark.json`.
+
+The full engine build and HTTP staging pass for engine `0e6ae74dd863`.
+Its Seyda Neen WebGPU smoke run records 251 presentations, no renderer/pass
+errors, no aborted captures and no legacy draw attempts. All 120 sampled
+completed scene frames release their packets. Median capture is 69.567 ms,
+material encoding 36.883 ms, geometry encoding 16.769 ms, renderer wall time
+133.368 ms and presentation submission interval 212.565 ms. Streaming makes
+this a health check, not a matched comparison with the prior exterior run.
+Reported buffer capacity is 1,816,679,200 bytes; this is not physical VRAM or
+process RSS. Reports use `D:/OpenMW-local/webcuda-draw-state-*` and
+`D:/OpenMW-local/webcuda-seyda-neen-draw-state-2026-10-07-summary.json`.
+CUDA sources, generated artifacts, browser host modules and the tracked SDK
+remain unchanged. Smooth 60-180 Hz play and current native-browser gameplay
+remain unverified.
+
 ## Running
 
 Open the staged game in ChromiumRTXCuda with `?backend=native`. The normal

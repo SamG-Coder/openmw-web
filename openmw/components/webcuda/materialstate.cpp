@@ -242,8 +242,16 @@ namespace WebCuda
         }
         return result;
     }
-    osg::ref_ptr<osg::StateSet> resolveState(const DrawContext& context)
+    ResolvedStateScope::ResolvedStateScope(DrawContext& context)
+        :mContext(context),mPrevious(context.resolvedState),mStack(context.states),mState(resolveState(context))
     {
+        context.resolvedState=this;
+    }
+    ResolvedStateScope::~ResolvedStateScope() { mContext.resolvedState=mPrevious; }
+
+    osg::ref_ptr<const osg::StateSet> resolveState(const DrawContext& context)
+    {
+        if(const auto* scope=context.resolvedState;scope&&scope->mStack==context.states)return scope->mState;
         osg::ref_ptr<osg::StateSet> result = new osg::StateSet;
         for (const auto* state : context.states) if (state) result->merge(*state);
         // OSG Program::apply uses an empty shader list to disable the inherited

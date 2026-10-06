@@ -15,7 +15,25 @@ namespace WebCuda
     bool isBuiltinParticleProgram(const osg::Program&);
     bool isBuiltinDefaultProgram(const osg::Program&);
     bool usesZeroToOneDepth(const osg::StateSet&);
-    osg::ref_ptr<osg::StateSet> resolveState(const DrawContext&);
+    osg::ref_ptr<const osg::StateSet> resolveState(const DrawContext&);
+    // Share the OSG merge within one synchronous capture. Do not structurally
+    // mutate source StateSets in this scope; callbacks/custom drawables run
+    // outside it. Attributes remain shared and are consumed before scene updates.
+    // Copied contexts may use the result only while the scope remains alive.
+    class ResolvedStateScope
+    {
+    public:
+        explicit ResolvedStateScope(DrawContext&);
+        ~ResolvedStateScope();
+        ResolvedStateScope(const ResolvedStateScope&)=delete;
+        ResolvedStateScope& operator=(const ResolvedStateScope&)=delete;
+    private:
+        friend osg::ref_ptr<const osg::StateSet> resolveState(const DrawContext&);
+        DrawContext& mContext;
+        const ResolvedStateScope* mPrevious;
+        std::vector<const osg::StateSet*> mStack;
+        osg::ref_ptr<const osg::StateSet> mState;
+    };
     // Encode fixed raster state; texture fields 0..2 are filled by the resource
     // table. Shader/material lighting and uniforms remain a separate translation.
     std::array<std::uint32_t,12> encodeRasterState(const osg::StateSet&, std::uint32_t width,

@@ -251,6 +251,7 @@ namespace WebCuda
                 callbackState=capture->captureWebCudaState();
                 if(callbackState)context.states.push_back(callbackState.get());
             }
+            ResolvedStateScope resolved(context);
             planes.capture(context);
             captureCurrentColor(context,sink);
             for(unsigned int k=0;k<3;k++) {
@@ -274,8 +275,12 @@ namespace WebCuda
                 // Its .cu cluster jobs run before consumers in each GPU pass.
                 return;
             }
-            if (const auto* custom = dynamic_cast<const CustomDrawable*>(&drawable))
-                custom->submitWebCuda(sink, context);
+            if (const auto* custom = dynamic_cast<const CustomDrawable*>(&drawable)) {
+                // A custom drawable can change a source StateSet between its
+                // submissions. Each capture below it must see those changes.
+                auto customContext=context;customContext.resolvedState=nullptr;
+                custom->submitWebCuda(sink, customContext);
+            }
             else if (const auto* particles = dynamic_cast<const osgParticle::ParticleSystem*>(&drawable))
                 submitParticles(*particles,sink,context);
             else if(const auto* text=dynamic_cast<const osgText::Text*>(&drawable))sink.text(*text,context);
