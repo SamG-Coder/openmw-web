@@ -64,7 +64,8 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   }
   let frame=null, state=null, lastState=null, busy=false, failed=false, disposed=false;
   let inflightFrames=0,lastFence=Promise.resolve();
-  const maxInflightFrames=2;
+  const maxInflightFrames=2,maxBufferedFrames=2;
+  const renderQueue=[];
   let disposalPromise=null,recoveryCancelled=false;
   const imageRequests=new Set();
   Module.webcudaImageError=null;
@@ -315,8 +316,13 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   Module.webcudaBeginFrame=()=>{
     if(disposed||failed||Module.webcudaRecoveryPending)return false;
     if(frame)throw Error('Nested WebGPU frame');
-    if(busy||inflightFrames>=maxInflightFrames){stats.skipped++;publishDiagnostics();return false;}
-    frame=[]; state=null;lastState=null;colorTargetStack.length=0;acceptedAt=performance.now();stats.accepted++;armFirst3DWatchdog();return true;
+    // Keep one frame being prepared/rendered and one frame being captured or
+    // queued. This overlaps OpenMW's cull/packet CPU work with WebGPU without
+    // allowing an unbounded retained-WASM backlog.
+    if(renderQueue.length+(busy?1:0)>=maxBufferedFrames){stats.skipped++;publishDiagnostics();return false;}
+    frame=[];frame.acceptedAt=performance.now();
+    state=null;lastState=null;colorTargetStack.length=0;acceptedAt=frame.acceptedAt;
+    stats.accepted++;armFirst3DWatchdog();return true;
   };
   Module.webcudaPassState=value=>{
     if(!frame||state)throw Error('Unexpected WebGPU camera state');
@@ -324,12 +330,11 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   };
   Module.webcudaRetireTarget=id=>{
     id=canonicalTargetId(id);
-    if(busy||!frame||frame.length||state||!Number.isInteger(id)||id<=0||id>0xffffffff)
+    if(!frame||state||lastState||!Number.isInteger(id)||id<=0||id>0xffffffff)
       throw Error('Unexpected target retirement boundary');
-    const attachment=targets.get(id);
-    if(attachment){retireAttachment(attachment);targets.delete(id);}
-    luminanceHistory.delete(id);
-    pipeline.releaseBuffer(`exposure${id}`);
+    // Capture is allowed to overlap the previous render. Apply retirement in
+    // render order instead of touching GPU-owned state from the capture phase.
+    frame.push({kind:'retire-target',targetId:id});
   };
   Module.webcudaResolveAttachment=command=>{
     command=targetCommand(command);
@@ -508,10 +513,10 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         distortion_width:effect.width,distortion_height:effect.height,use_distortion:pass.distortionId?1:0,scale_x:pass.scaleX??1,scale_y:pass.scaleY??1}),groups).submit();
     stats.passes++;
   }
-  async function render(passes) {
+  async function render(passes,frameAcceptedAt) {
     const start=performance.now();
     const uploadsBefore=runtime.stats.dataBytesUploaded;
-    const timing={acceptedAt,packetCaptureMs:start-acceptedAt,dispatchPhaseMs:0,validationWaitMs:0,
+    const timing={acceptedAt:frameAcceptedAt,packetCaptureMs:start-frameAcceptedAt,dispatchPhaseMs:0,validationWaitMs:0,
       completionWaitMs:0,frameWallMs:0,presentationSubmitAt:null,presentationSubmitIntervalMs:null,
       skippedSincePrevious:stats.skipped-(stats.lastFrame?.skippedTotal??0),skippedTotal:stats.skipped};
     timing.engineCapture=Module.webcudaCaptureTimings?{...Module.webcudaCaptureTimings}:null;
@@ -529,6 +534,13 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       const depthStack=[], completedQueries=new Map(),queryCompletions=[],passDiagnostics=[];
       for(let passIndex=0;passIndex<passes.length;passIndex++) {
         const pass=passes[passIndex];
+        if(pass.kind==='retire-target') {
+          const attachment=targets.get(pass.targetId);
+          if(attachment){retireAttachment(attachment);targets.delete(pass.targetId);}
+          luminanceHistory.delete(pass.targetId);
+          pipeline.releaseBuffer(`exposure${pass.targetId}`);
+          continue;
+        }
         if(pass.kind==='frame-snapshot') {
           const source=targets.get(0);
           const destination=planeStorage(pass.targetId,pass.width,pass.height,1);
@@ -907,6 +919,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         inflightFrames=Math.max(0,inflightFrames-1);
         Module.webcudaRecoveryAttempts=0;
         publishDiagnostics();
+        void pumpRenderQueue();
       }).catch(error=>{inflightFrames=Math.max(0,inflightFrames-1);fail(error);});
       if(result&&!failed&&!disposed){canvas.style.display='block';stats.presented++;if(first3DWatchdog){clearTimeout(first3DWatchdog);first3DWatchdog=null;}}
       timing.frameWallMs=performance.now()-start;
@@ -924,8 +937,17 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       timing.retainedPassesAfterFrame=Module.webcudaTransportStats?.retainedPasses??null;
       if(stats.lastFrame?.acceptedAt===timing.acceptedAt)
         stats.lastFrame.retainedPassesAfterFrame=timing.retainedPassesAfterFrame;
-      busy=false;
       publishDiagnostics(failed||disposed);
+    }
+  }
+  async function pumpRenderQueue(){
+    if(busy||disposed||failed||!renderQueue.length||inflightFrames>=maxInflightFrames)return;
+    busy=true;
+    const item=renderQueue.shift();
+    try { await render(item.passes,item.acceptedAt); }
+    finally {
+      busy=false;
+      if(!disposed&&!failed)queueMicrotask(pumpRenderQueue);
     }
   }
   Module.webcudaEndFrame=commit=>{
@@ -936,7 +958,10 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     // handler can still release it and reject its capture requests.
     if(colorTargetStack.length)throw Error('Unclosed color target');
     if(state)throw Error('WebGPU camera did not finish');
-    frame=null;busy=true;void render(passes);
+    const frameAcceptedAt=frame.acceptedAt??performance.now();
+    frame=null;
+    renderQueue.push({passes,acceptedAt:frameAcceptedAt});
+    void pumpRenderQueue();
   };
   Module.webcudaDeviceGeneration=((Module.webcudaDeviceGeneration??0)+1)>>>0;
   if(Module.webcudaDeviceGeneration===0)Module.webcudaDeviceGeneration=1;
@@ -951,6 +976,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     disposalPromise=(async()=>{
     disposed=true;Module.webgpuEnabled=false;Module.webcudaEnabled=false;
     releasePackets(frame);frame=null;state=null;
+    while(renderQueue.length)releasePackets(renderQueue.shift().passes);
     Module.webcudaImageError='WebGPU host disposed';
     for(const request of [...imageRequests])request.reject(Error(Module.webcudaImageError));
     observer.disconnect();window.removeEventListener('scroll',position,true);
