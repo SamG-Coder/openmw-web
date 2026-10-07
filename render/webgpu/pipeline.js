@@ -315,7 +315,7 @@ export class MaterialPipeline {
     if (this.busy) return null; // Bounded submission: engine can drop a stale frame.
     this.busy=true;
     try {
-      const r=this.runtime, k=this.kernels;
+      const r=this.runtime, k=this.kernels, strictValidation=Boolean(pass.strictValidation);
       const viewport=pass.viewport??[0,0,width,height];
       if(!Array.isArray(viewport)||viewport.length!==4||!viewport.every(Number.isSafeInteger)
         ||viewport[2]<=0||viewport[3]<=0||viewport.some(v=>Math.abs(v)>0x7fffffff))
@@ -340,7 +340,7 @@ export class MaterialPipeline {
       if(!(scene.groundcoverRanges instanceof Uint32Array)||scene.groundcoverRanges.length%3
         ||!(scene.groundcoverInstances instanceof Float32Array)||scene.groundcoverInstances.length%7
         ||!(scene.groundcoverParams instanceof Float32Array)||scene.groundcoverParams.length%40
-        ||!allFinite(scene.groundcoverInstances)||!allFinite(scene.groundcoverParams))
+        ||(strictValidation&&(!allFinite(scene.groundcoverInstances)||!allFinite(scene.groundcoverParams))))
         throw RangeError('Invalid groundcover input');
       const groundcoverVertices=new Set();
       for(let i=0;i<scene.groundcoverRanges.length;i+=3) {
@@ -356,10 +356,10 @@ export class MaterialPipeline {
       }
       scene.secondaryColors??=new Float32Array(compactVertices?0:vertexCount*3);
       if(!(scene.secondaryColors instanceof Float32Array)||scene.secondaryColors.length!==(compactVertices?0:vertexCount*3)
-        ||!allFinite(scene.secondaryColors))throw RangeError('Invalid secondary color input');
+        ||(strictValidation&&!allFinite(scene.secondaryColors)))throw RangeError('Invalid secondary color input');
       scene.textGradientRanges??=new Uint32Array();scene.textGradientColors??=new Float32Array();
       if(!(scene.textGradientRanges instanceof Uint32Array)||scene.textGradientRanges.length%3
-        ||!(scene.textGradientColors instanceof Float32Array)||scene.textGradientColors.length%16||!allFinite(scene.textGradientColors))
+        ||!(scene.textGradientColors instanceof Float32Array)||scene.textGradientColors.length%16||(strictValidation&&!allFinite(scene.textGradientColors)))
         throw RangeError('Invalid text gradient data');
       let previousGradientEnd=0;
       for(let i=0;i<scene.textGradientRanges.length;i+=3) {
@@ -368,7 +368,7 @@ export class MaterialPipeline {
         previousGradientEnd=first+count;
       }
       scene.localTransforms??=new Float32Array(scene.matrices.length/32*35);
-      if(!(scene.localTransforms instanceof Float32Array)||scene.localTransforms.length!==scene.matrices.length/32*35||!allFinite(scene.localTransforms))
+      if(!(scene.localTransforms instanceof Float32Array)||scene.localTransforms.length!==scene.matrices.length/32*35||(strictValidation&&!allFinite(scene.localTransforms)))
         throw RangeError('Invalid drawable local transforms');
       for(let p=0;p<scene.localTransforms.length;p+=35) {
         const values=scene.localTransforms;
@@ -380,7 +380,7 @@ export class MaterialPipeline {
         }
       }
       scene.debugParams??=new Float32Array(scene.matrices.length/32*16);
-      if(!(scene.debugParams instanceof Float32Array)||scene.debugParams.length!==scene.matrices.length/32*16||!allFinite(scene.debugParams))
+      if(!(scene.debugParams instanceof Float32Array)||scene.debugParams.length!==scene.matrices.length/32*16||(strictValidation&&!allFinite(scene.debugParams)))
         throw RangeError('Invalid debug shader parameters');
       for(let p=0;p<scene.debugParams.length;p+=16)if(![0,1,2,3,4].includes(scene.debugParams[p])||![0,1].includes(scene.debugParams[p+1]))
         throw RangeError('Invalid debug shader mode');
@@ -411,7 +411,7 @@ export class MaterialPipeline {
       scene.screenPrimitives??=new Uint32Array();
       if(!(scene.screenPrimitives instanceof Uint32Array)||scene.screenPrimitives.length%12)
         throw RangeError('Invalid screen primitive records');
-      if (!allFinite(scene.vertices)||!allFinite(scene.matrices)) throw RangeError('Non-finite vertex or matrix');
+      if (strictValidation&&(!allFinite(scene.vertices)||!allFinite(scene.matrices))) throw RangeError('Non-finite vertex or matrix');
       if (scene.matrixIds.some(v=>v>=scene.matrices.length/32)) throw RangeError('Invalid matrix index');
       if(scene.attributes==null&&!compactVertices) {
         scene.attributes=new Float32Array(vertexCount*34);
@@ -429,18 +429,18 @@ export class MaterialPipeline {
       for(let offset=0;offset<scene.texgen.length;offset+=36) {
         const [mask,mode,flags]=scene.texgen.subarray(offset,offset+3);
         if(mask>15||mode>5||flags>3||(mask&&!mode)||(mode===2&&(mask&12))||((mode===3||mode===4)&&(mask&8))
-          ||!allFinite(texgenFloats,offset+4,offset+36))throw RangeError('Invalid texture generation descriptor');
+          ||(strictValidation&&!allFinite(texgenFloats,offset+4,offset+36)))throw RangeError('Invalid texture generation descriptor');
         hasTexgen||=mask!==0;
       }
       scene.positionedState??=new Uint32Array();
       const positionedTransforms=validatePositionedState(scene);
       scene.morphRanges??=new Uint32Array();scene.morphOffsets??=new Float32Array();
       if(!(scene.morphRanges instanceof Uint32Array)||scene.morphRanges.length%3||!(scene.morphOffsets instanceof Float32Array)
-        ||scene.morphOffsets.length%4||!allFinite(scene.morphOffsets))throw RangeError('Invalid morph packet');
+        ||scene.morphOffsets.length%4||(strictValidation&&!allFinite(scene.morphOffsets)))throw RangeError('Invalid morph packet');
       const morphedVertices=new Set();
       scene.skinRanges??=new Uint32Array();scene.skinWeights??=new Uint32Array();scene.skinBones??=new Float32Array();scene.skinTransforms??=new Float32Array();
       for(const [name,Type,stride] of [['skinRanges',Uint32Array,4],['skinWeights',Uint32Array,2],['skinBones',Float32Array,32],['skinTransforms',Float32Array,32]])
-        if(!(scene[name] instanceof Type)||scene[name].length%stride||!allFinite(scene[name]))throw RangeError(`Invalid ${name}`);
+        if(!(scene[name] instanceof Type)||scene[name].length%stride||(strictValidation&&!allFinite(scene[name])))throw RangeError(`Invalid ${name}`);
       const skinWeightFloats=new Float32Array(scene.skinWeights.buffer,scene.skinWeights.byteOffset,scene.skinWeights.length),skinnedVertices=new Set();
       for(let i=0;i<scene.skinWeights.length;i+=2)if(scene.skinWeights[i]>=scene.skinBones.length/32||!Number.isFinite(skinWeightFloats[i+1]))throw RangeError('Invalid skin influence');
       for(let i=0;i<scene.skinRanges.length;i+=4) {
@@ -453,7 +453,7 @@ export class MaterialPipeline {
         if(vertex>=vertexCount||first+count>scene.morphOffsets.length/4||morphedVertices.has(vertex))throw RangeError('Invalid or overlapping morph range');
         morphedVertices.add(vertex);
       }
-      const attributeFlags=compactVertices?validateVertexInputs(scene):validateVertexAttributes(scene.attributes,vertexCount);
+      const attributeFlags=compactVertices?validateVertexInputs(scene,{deep:strictValidation}):validateVertexAttributes(scene.attributes,vertexCount,strictValidation);
       if(!scene.rasterParams) {
         scene.rasterParams=new Float32Array(scene.materials.length/12*50);
         for(let i=0;i<scene.rasterParams.length;i+=50) {
@@ -474,7 +474,7 @@ export class MaterialPipeline {
         const field=index%50;return field!==23&&(field>=2&&field<=7?Number.isNaN(v):!Number.isFinite(v));
       }))
         throw RangeError('Invalid raster parameters');
-      if(scene.uvMatrices && (!(scene.uvMatrices instanceof Float32Array)||scene.uvMatrices.length!==scene.matrices.length/2||!allFinite(scene.uvMatrices)))
+      if(scene.uvMatrices && (!(scene.uvMatrices instanceof Float32Array)||scene.uvMatrices.length!==scene.matrices.length/2||(strictValidation&&!allFinite(scene.uvMatrices))))
         throw RangeError('Invalid UV matrices');
       for (let t=0;t<triangleCount;t++) {
         for (let c=0;c<3;c++) if (scene.triangles[t*4+c]>=vertexCount) throw RangeError('Invalid vertex index');
@@ -864,7 +864,7 @@ export class MaterialPipeline {
       this.textureResidency.capture(texturePlan,texels);
       scene.ribbonRanges??=new Uint32Array();scene.ribbonParticles??=new Float32Array();
       if(!(scene.ribbonRanges instanceof Uint32Array)||scene.ribbonRanges.length%13
-        ||!(scene.ribbonParticles instanceof Float32Array)||scene.ribbonParticles.length%10||!allFinite(scene.ribbonParticles))
+        ||!(scene.ribbonParticles instanceof Float32Array)||scene.ribbonParticles.length%10||(strictValidation&&!allFinite(scene.ribbonParticles)))
         throw RangeError('Invalid ribbon packet');
       const ribbonVertices=new Set(),ribbonTriangles=new Set();
       for(let offset=0;offset<scene.ribbonRanges.length;offset+=13) {
