@@ -310,7 +310,7 @@ namespace WebCuda
             try {request.completion(nullptr,"WebCuda device replaced");}catch(...) {}
         }
         mTargets.clear();mStencilTargets.clear();mDepthRenderbuffers.clear();mColorRenderbuffers.clear();
-        mRetiredTargets.clear();mColorTargetsWritten.clear();mTargetStack.clear();mResolveAttachments.clear();
+        mRetiredTargets.clear();mColorTargetsWritten.clear();mTargetStack.clear();mStageStack.clear();mResolveAttachments.clear();
         mCurrentTarget=0;mResolveSource=0;mPassCamera=nullptr;
         mFrameSnapshots.clear();
         for(auto it=mSnapshotTextures.begin();it!=mSnapshotTextures.end();) {
@@ -375,7 +375,7 @@ namespace WebCuda
             mFrameSnapshots.clear();
         } catch (...) {
             mPacket=GeometryPacket(true);
-            mTargetStack.clear();
+            mTargetStack.clear();mStageStack.clear();
             mFrameCompletionCameras.clear();
             omw_webcuda_end_frame(0);
             // Only requests recorded in this aborted frame can be retried. The
@@ -395,7 +395,22 @@ namespace WebCuda
     void Viewer::beginPass(const osgUtil::RenderStage& stage)
     {
         collectExpiredTargets();
-        if (mTable) throw std::logic_error("Nested WebCuda render stage");
+        if (mTable) {
+            if(!mTargetStack.empty())throw std::logic_error("Nested WebCuda render stage entered inside a color target");
+            // Some OSG loading/post-process cameras are rendered re-entrantly.
+            // Flush the parent packet at the ordering boundary, preserve its
+            // camera state, render the child stage, then restore the parent.
+            SavedStage saved;
+            saved.table=mTable;saved.width=mWidth;saved.height=mHeight;
+            saved.currentTarget=mCurrentTarget;saved.resolveSource=mResolveSource;
+            saved.resolveX=mResolveX;saved.resolveY=mResolveY;
+            saved.resolveWidth=mResolveWidth;saved.resolveHeight=mResolveHeight;
+            saved.passCamera=mPassCamera;saved.resolveAttachments=std::move(mResolveAttachments);
+            if(!submitBrowserPass(std::move(mPacket),saved.table,mWidth,mHeight))
+                throw std::runtime_error("Nested WebCuda parent stage boundary rejected");
+            mStageStack.push_back(std::move(saved));
+            mTable.reset();mPacket=GeometryPacket(true);mPassCamera=nullptr;mResolveAttachments.clear();
+        }
         const auto* viewport=stage.getViewport();
         if (!viewport || viewport->width()<=0 || viewport->height()<=0)
             throw std::runtime_error("WebCuda stage has no viewport");
@@ -653,6 +668,14 @@ namespace WebCuda
             mFrameCompletionCameras.emplace_back(const_cast<osg::Camera*>(mPassCamera));
         mResolveAttachments.clear();
         mTable.reset(); mPacket=GeometryPacket(true);
+        if(!mStageStack.empty()) {
+            auto saved=std::move(mStageStack.back());mStageStack.pop_back();
+            mTable=std::move(saved.table);mWidth=saved.width;mHeight=saved.height;
+            mCurrentTarget=saved.currentTarget;mResolveSource=saved.resolveSource;
+            mResolveX=saved.resolveX;mResolveY=saved.resolveY;
+            mResolveWidth=saved.resolveWidth;mResolveHeight=saved.resolveHeight;
+            mPassCamera=saved.passCamera;mResolveAttachments=std::move(saved.resolveAttachments);
+        }
     }
     void Viewer::geometry(const osg::Geometry& geometry,const DrawContext& context)
     {
