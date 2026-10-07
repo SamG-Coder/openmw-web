@@ -134,7 +134,7 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
     WGPUBuffer directBuffer,size_t directBytes,const unsigned int* directRanges,size_t directRangeWords,
     unsigned int width, unsigned int height), {
     let released=false,accounted=false,viewBytes=0;
-    const stats=Module.webcudaTransportStats??={capturedPasses:0,releasedPasses:0,retainedPasses:0,retainedViewBytes:0,copiedSceneBytes:0,heapCapacityBytes:0};
+    const stats=Module.webcudaTransportStats??={capturedPasses:0,releasedPasses:0,retainedPasses:0,retainedViewBytes:0,copiedSceneBytes:0,heapCapacityBytes:0,directGpuPasses:0,directGpuBytes:0};
     const release=()=>{
         if(released)return;
         released=true;
@@ -166,6 +166,8 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
         if(bytes)ranges[DIRECT_GPU_NAMES[i]]={offset,bytes};
       }
       directGPU={buffer:gpuBuffer,byteLength:Number(directBytes),ranges};
+      stats.directGpuPasses=(stats.directGpuPasses||0)+1;
+      stats.directGpuBytes=(stats.directGpuBytes||0)+Number(directBytes);
     }
     const packet={version:2,storage:'wasm-retained',release,width:width,height:height,scene:{directGPU,
         vertexEncoding:vertexEncoding,vertexLayouts:view(HEAPU32,vertexLayouts,vertexLayoutWords),vertexInputs:view(HEAPF32,vertexInputs,vertexInputFloats),
