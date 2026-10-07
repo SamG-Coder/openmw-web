@@ -3708,29 +3708,61 @@ window.omw = (function(){
          fetch('mwdata-manifest.json')
          .then(function(r){ if (!r.ok) return noGameData('no manifest (HTTP '+r.status+')'); return r.json(); },
                function(){ return noGameData('no manifest'); })
-         .then(function(list){
+         .then(async function(list){
            if (!list.length) noGameData('mwdata/ is empty');
-           // A missing streaming layer is fatal: continuing would report a
-           // successful mount and start the engine with an empty data directory.
            if (typeof StreamFS === 'undefined') throw new Error('Streaming filesystem failed to load (streamfs.js)');
            StreamFS.init();
            var tars = [], bytes = 0;
-           list.forEach(function(f){
+           var localHosted = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname)
+             && !/[?&]streambsa=1\b/.test(location.search);
+           var fullCache = localHosted && typeof caches !== 'undefined'
+             ? await caches.open('openmw-local-gamefiles-v1') : null;
+
+           async function mountHostedFile(f){
+             var lower=f.p.toLowerCase(), url='mwdata/'+f.p, dest='/mwdata/'+f.p;
+             // The Visual Studio host serves files from the user's local SSD.
+             // Warm archives once into a disk-backed Blob so OpenMW's later
+             // synchronous BSA reads never wait on HTTP/worker range fetches.
+             if (localHosted && /\.bsa$/.test(lower)) {
+               var key='/__openmw_local_gamefile__/'+encodeURIComponent(f.p)+'?s='+f.s+'&m='+(f.m||0);
+               var response=fullCache ? await fullCache.match(key) : null;
+               if (!response) {
+                 append('[mw] warming '+f.p+' for hitch-free local play…');
+                 response=await fetch(url,{cache:'no-store'});
+                 if(!response.ok)throw new Error('Could not preload '+f.p+' (HTTP '+response.status+')');
+                 if(fullCache) {
+                   try { await fullCache.put(key,response.clone()); } catch(e) { append('[mw] cache put failed for '+f.p+': '+e); }
+                 }
+               }
+               var blob=await response.blob();
+               StreamFS.mountBlob(dest,blob,f.s);
+               return;
+             }
+             // Plugins are small enough to keep in MEMFS on localhost. This
+             // removes synchronous StreamFS reads from record lookup entirely.
+             if (localHosted && /\.(esm|esp|omwaddon)$/.test(lower)) {
+               var pluginResponse=await fetch(url,{cache:'no-store'});
+               if(!pluginResponse.ok)throw new Error('Could not preload '+f.p+' (HTTP '+pluginResponse.status+')');
+               FS.writeFile(dest,new Uint8Array(await pluginResponse.arrayBuffer()));
+               return;
+             }
+             StreamFS.mount(dest,url,f.s,f.m);
+           }
+
+           for (const f of list) {
              bytes += f.s;
              var lower = f.p.toLowerCase();
-             if (/\.tar$/.test(lower)) { tars.push(f.p); return; }
-             if (lower.indexOf('/') < 0) window.__mwRootFiles.set(lower, f.p);   // top level = load order
+             if (/\.tar$/.test(lower)) { tars.push(f.p); continue; }
+             if (lower.indexOf('/') < 0) window.__mwRootFiles.set(lower, f.p);
              if (/^video\/.*\.bik$/.test(lower)) window.__mwHasVideoBik = true;
              var dir = f.p.lastIndexOf('/');
              if (dir > 0) { try { FS.mkdirTree('/mwdata/' + f.p.slice(0, dir)); } catch(e){} }
-             // No mtime in the key here: retail files are immutable (mwdata-routes.ts), and
-             // folding `m` in would throw away every player's cached base game once for nothing.
-             try { StreamFS.mount('/mwdata/' + f.p, 'mwdata/' + f.p, f.s); }
+             try { await mountHostedFile(f); }
              catch(e){ throw new Error('Could not mount '+f.p+': '+e); }
-           });
+           }
            append('[mw] mounted '+(list.length-tars.length)+' files from mwdata/ ('
-                  +Math.round(bytes/1048576)+'MB, streamed on demand)');
-           return tars.reduce(function(p, name){   // legacy packed sets: each holds many loose files
+                  +Math.round(bytes/1048576)+'MB, '+(localHosted?'local archives prewarmed':'streamed on demand')+')');
+           return tars.reduce(function(p, name){
              return p.then(function(){
                append('[mw] unpacking '+name+'…');
                return grab('mwdata/'+name).then(untarInto(name.replace(/\.tar$/,'')));
