@@ -344,7 +344,13 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   Module.webcudaSubmitPass=packet=>{
     if(!frame||!state||packet.version!==2||packet.storage!=='wasm-retained'||typeof packet.release!=='function')
       throw Error('Unexpected WebGPU pass packet');
-    frame.push({...packet,...state});lastState=state;state=null;return true;
+    const captured={...packet,...state};
+    // Start compiling any cold fixed-state pipelines while OpenMW continues
+    // capturing the rest of the frame. This removes first-use material stalls
+    // from the actual render critical path.
+    captured.prewarm=pipeline.prewarm(packet.scene,packet.width,packet.height,captured);
+    captured.prewarm.catch(()=>{});
+    frame.push(captured);lastState=state;state=null;return true;
   };
   Module.webcudaDepthIsolation=(begin,depth)=>{
     if(!frame||state||!lastState||!Number.isFinite(depth)||depth<0||depth>1)throw Error('Unexpected depth isolation boundary');
@@ -756,6 +762,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
           }
           continue;
         }
+        if(pass.prewarm)await pass.prewarm;
         if(![pass.width,pass.height].every(n=>Number.isInteger(n)&&n>0&&n<=runtime.device.limits.maxTextureDimension2D))throw Error('Invalid camera target dimensions');
         const id=pass.targetId??0;
         const compactDepth=(id&0x80000000)!==0&&(pass.sampleCount??1)===1&&!pass.normalTargetId&&!pass.stencilTargetId&&!(pass.stencilBits??0)&&![0x88f0,0x8cad].includes(pass.depthFormat);
