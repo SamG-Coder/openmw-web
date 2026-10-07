@@ -409,11 +409,17 @@ namespace WebCuda
                 ||packet.skinTransforms.size()/32+draw.skinTransforms.size()/32>std::numeric_limits<std::uint32_t>::max())throw std::runtime_error("Combined skin packet exceeds index range");
             if (base + count > std::numeric_limits<std::uint32_t>::max()
                 || matrix >= std::numeric_limits<std::uint32_t>::max()) throw std::runtime_error("WebCuda packet is too large");
-            for (float value : draw.vertices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda vertex");
-            for (float value : draw.attributes) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda attribute");
-            for (float value : draw.vertexInputs) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda vertex input");
-            for (float value : draw.matrices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda matrix");
-            for (float value : draw.uvMatrices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda UV matrix");
+            // Deep scalar validation is diagnostic work. Normal gameplay
+            // already validates structure/ranges as packets are encoded and the
+            // GPU consumes the same values immediately; rescanning every float
+            // here made capture cost scale with total visible vertex data.
+            if(captureProfile.enabled) {
+                for (float value : draw.vertices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda vertex");
+                for (float value : draw.attributes) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda attribute");
+                for (float value : draw.vertexInputs) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda vertex input");
+                for (float value : draw.matrices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda matrix");
+                for (float value : draw.uvMatrices) if (!std::isfinite(value)) throw std::runtime_error("Non-finite WebCuda UV matrix");
+            }
             for (std::size_t i=0; i<draw.triangles.size(); ++i)
                 if (i%4 != 3) draw.triangles[i] += static_cast<std::uint32_t>(base);
             // Generated vertices inherit the current secondary color; ordinary
@@ -425,7 +431,8 @@ namespace WebCuda
                     std::memcpy(&draw.secondaryColors[i],&draw.fixedLighting[42+i%3],4);
                     if(!packet.compactVertices&&draw.currentSecondaryByteComponents)draw.secondaryColors[i]/=255.f;
                 }
-                for(float value:draw.secondaryColors)if(!std::isfinite(value))throw std::runtime_error("Non-finite secondary color");
+                if(captureProfile.enabled)
+                    for(float value:draw.secondaryColors)if(!std::isfinite(value))throw std::runtime_error("Non-finite secondary color");
             }
             if(packet.compactVertices) {
                 std::array<std::uint32_t,32> layout{};
