@@ -27,8 +27,6 @@ namespace WebCuda
         void setSimulationTime(float value) { mSimulationTime=value; }
         const std::vector<std::uint32_t>& textureCopies() const { return mTextureCopies; }
         const std::vector<std::uint32_t>& textureResources() const { return mTextureResources; }
-        const std::vector<std::uint32_t>& attachmentDescriptors() const { return mAttachmentDescriptors; }
-        std::uint32_t attachmentWords() const { return mAttachmentWords; }
         const std::vector<std::uint32_t>& depthMipSources() const { return mDepthMipSources; }
         std::uint32_t encode(const DrawContext&, const osg::Texture2D* guiTexture = nullptr, bool gui = false);
         std::uint32_t encodeGlyph(const DrawContext&,const osg::Texture2D*,bool redCoverage,bool distanceField=false,float glyphDimension=32.f,float textureDimension=1024.f,const float* backdrop=nullptr);
@@ -46,7 +44,7 @@ namespace WebCuda
         const std::vector<float>& clusterLights() const { return mClusterLights; }
         const std::vector<float>& clusterProjections() const { return mClusterProjections; }
     private:
-        friend std::shared_ptr<const MaterialTable> captureMaterialTable(std::shared_ptr<const MaterialTable>);
+        friend std::shared_ptr<const MaterialTable> captureMaterialTable(std::shared_ptr<MaterialTable>);
         std::uint32_t reserveAttachmentWords(std::uint64_t count);
         void resolveAttachmentAddresses();
         void resizeAtlas(std::size_t size) { CaptureScope scope(CapturePhase::AtlasResize);mTexels.resize(size); }
