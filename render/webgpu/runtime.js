@@ -180,11 +180,29 @@ export class WebGPURuntime {
     const size = Math.max(4, byteLength);
     const bufferUsage = B.STORAGE | B.COPY_SRC | B.COPY_DST | B.VERTEX | B.INDEX | B.INDIRECT | usage;
     const gpuBuffer = this.device.createBuffer({label, size, usage: bufferUsage});
-    const resource = {runtime: this, gpuBuffer, byteLength, size, label, usage: bufferUsage, destroyed: false};
+    const resource = {runtime: this, gpuBuffer, byteLength, size, offset:0, label, usage: bufferUsage, destroyed: false, external:false};
     this.buffers.add(resource);
     try { if (data?.byteLength) this.write(resource, data); }
     catch (error) { this.buffers.delete(resource); resource.destroyed = true; gpuBuffer.destroy(); throw error; }
     return resource;
+  }
+
+  importExternalBuffer(gpuBuffer, byteLength, {offset = 0, label = 'OpenMW direct WASM packet'} = {}) {
+    this.assertAlive();
+    if (!gpuBuffer || typeof gpuBuffer.size !== 'number' || !integer(offset) || !integer(byteLength)
+        || offset % 4 || byteLength % 4 || offset + byteLength > gpuBuffer.size)
+      throw new RangeError('Invalid external WebGPU buffer range');
+    const resource={runtime:this,gpuBuffer,byteLength,size:byteLength,offset,label,
+      usage:B.STORAGE|B.COPY_SRC|B.COPY_DST|B.VERTEX|B.INDEX|B.INDIRECT,destroyed:false,external:true};
+    this.buffers.add(resource);
+    return resource;
+  }
+
+  releaseExternalBuffer(resource) {
+    if (!resource || resource.runtime !== this || !resource.external || resource.destroyed) return;
+    this.bindGroupCache.invalidate(resource.gpuBuffer);
+    resource.destroyed=true;
+    this.buffers.delete(resource);
   }
 
   growBuffer(previous, byteLength, {label = previous?.label, usage = 0} = {}) {
@@ -201,6 +219,7 @@ export class WebGPURuntime {
     this.checkResource(resource);
     if (!ArrayBuffer.isView(data)) throw new TypeError('Expected a buffer upload view');
     range(resource, offset, data.byteLength);
+    if (resource.external) throw new Error('External WASM packet buffers are immutable in JavaScript');
     if (!data.byteLength) return;
     this.flush();
     // writeBuffer snapshots the supplied bytes immediately. Passing the WASM
@@ -233,7 +252,7 @@ export class WebGPURuntime {
     const task = (async () => {
       try {
         const encoder = this.device.createCommandEncoder({label: 'OpenMW ordered readback'});
-        encoder.copyBufferToBuffer(resource.gpuBuffer, offset, readback, 0, byteLength);
+        encoder.copyBufferToBuffer(resource.gpuBuffer, (resource.offset??0)+offset, readback, 0, byteLength);
         this.device.queue.submit([encoder.finish()]); this.stats.submissions++;
         await readback.mapAsync(MAP_READ, 0, byteLength);
         mapped = true;
@@ -387,7 +406,8 @@ export class WebGPURuntime {
       throw new RangeError('Invalid presentation buffer layout');
     this.flush();
     const encoder = this.device.createCommandEncoder({label: 'OpenMW canvas presentation'});
-    encoder.copyBufferToTexture({buffer: resource.gpuBuffer, bytesPerRow: rowPixels * 4, rowsPerImage: height},
+    encoder.copyBufferToTexture({buffer: resource.gpuBuffer, offset:resource.offset??0,
+      bytesPerRow: rowPixels * 4, rowsPerImage: height},
       {texture: context.getCurrentTexture()}, [width, height, 1]);
     this.device.queue.submit([encoder.finish()]); this.stats.submissions++;
   }
@@ -506,8 +526,8 @@ class WebGPUBatch {
     for (const operation of pending) {
       if (operation.type === 'copy') {
         this.closePass();
-        this.commandEncoder.copyBufferToBuffer(operation.source.gpuBuffer, operation.sourceOffset,
-          operation.target.gpuBuffer, operation.targetOffset, operation.byteLength);
+        this.commandEncoder.copyBufferToBuffer(operation.source.gpuBuffer, (operation.source.offset??0)+operation.sourceOffset,
+          operation.target.gpuBuffer, (operation.target.offset??0)+operation.targetOffset, operation.byteLength);
         continue;
       }
       if (!this.pass) {
@@ -524,7 +544,8 @@ class WebGPUBatch {
       }
       const group = runtime.bindGroupCache.get(kernel, resources, arena);
       this.pass.setPipeline(kernel.pipeline); this.pass.setBindGroup(0, group, offsets);
-      if (operation.indirect) this.pass.dispatchWorkgroupsIndirect(operation.indirect.buffer.gpuBuffer, operation.indirect.offset);
+      if (operation.indirect) this.pass.dispatchWorkgroupsIndirect(operation.indirect.buffer.gpuBuffer,
+        (operation.indirect.buffer.offset??0)+operation.indirect.offset);
       else this.pass.dispatchWorkgroups(...operation.groups);
       runtime.stats.dispatches++;
     }
