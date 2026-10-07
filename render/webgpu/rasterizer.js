@@ -2,6 +2,7 @@
 // WebGPU's graphics pipeline owns triangle coverage, homogeneous clipping,
 // depth/stencil tests, color masks, and attachment blending. Compute is used
 // only to bridge the existing engine attachment buffers and query ABI.
+import {specializeMaterialSource} from './shader-specialization.js';
 
 import {ExactVisibilityCounter,MAX_VISIBILITY_TRIANGLES} from './visibility-counter.js';
 import {nativeCameraAttachments,attachmentBridgeKey} from './attachment-policy.js';
@@ -194,10 +195,10 @@ export class HardwareRasterizer {
         source=await response.text();
       }
       renderer.materialSource=source;
-      renderer.materialModule=renderer.device.createShaderModule({label:'OpenMW native material vertex/fragment',code:source});
-      const info=await renderer.materialModule.getCompilationInfo();
-      const errors=info.messages.filter(message=>message.type==='error');
-      if(errors.length)throw Error(errors.map(message=>`material.wgsl:${message.lineNum}:${message.linePos} ${message.message}`).join('\n'));
+      // Do not compile the complete material library here. It contains every
+      // render family and makes Dawn/ANGLE spend seconds compiling code a given
+      // pass cannot call. Small family modules are created lazily below.
+      renderer.materialModule=null;
       const stages=GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT;
       renderer.materialLayout=renderer.device.createBindGroupLayout({label:'OpenMW native material bindings',entries:[
         ...[0,1,2,3,4].map(binding=>({binding,visibility:stages,buffer:{type:'read-only-storage'}})),
@@ -368,8 +369,8 @@ export class HardwareRasterizer {
       :config.compact?[]:[{format:config.colorFormat,writeMask:colorMask,...(colorBlend?{blend}:{})},
       ...(config.normal?[{format:config.normalFormat,writeMask:normalMask,...(normalBlend?{blend}:{})}]:[])];
     const entryPoint=query?'fragment_query':config.compact?'fragment_depth':config.normal?'fragment_normal':'fragment_color';
-    const descriptor={layout:this.pipelineLayout,vertex:{module:this.materialModule,entryPoint:'vertex_main'},
-      fragment:{module:this.materialModule,entryPoint,targets},
+    const descriptor={layout:this.pipelineLayout,vertex:{entryPoint:'vertex_main'},
+      fragment:{entryPoint,targets},
       primitive:{topology:'triangle-list',frontFace:(control&65536)?'cw':'ccw',cullMode:cull===1?'front':cull===2?'back':'none',
         ...(clampDepth?{unclippedDepth:true}:{})},depthStencil,multisample:{count:config.samples}};
     // Shader feature bits are dynamic uniforms, not pipeline specialization.
@@ -377,12 +378,36 @@ export class HardwareRasterizer {
     const key=JSON.stringify({targets,entryPoint,depthStencil,primitive:descriptor.primitive,samples:config.samples});
     return {descriptor,key,shaderParams,query,scissor,blendConstant,stencilReference,splitFaces};
   }
+  async materialFamily(entryPoint) {
+    let pending=this.shaderModules.get(entryPoint);
+    if(!pending) {
+      pending=(async()=>{
+        // Prune unreachable render families, but keep material feature decisions
+        // dynamic through RasterParams uniforms. This yields a handful of stable
+        // modules instead of one giant module or one module per material.
+        const code=specializeMaterialSource(this.materialSource,{},entryPoint);
+        const module=this.device.createShaderModule({label:`OpenMW material family ${entryPoint}`,code});
+        const info=await module.getCompilationInfo();
+        const errors=info.messages.filter(message=>message.type==='error');
+        if(errors.length)throw Error(errors.map(message=>
+          `Material family ${entryPoint}:${message.lineNum}:${message.linePos} ${message.message}`).join('\n'));
+        return module;
+      })();
+      this.shaderModules.set(entryPoint,pending);
+    }
+    try{return await pending;}catch(error){this.shaderModules.delete(entryPoint);throw error;}
+  }
   async pipeline(state) {
     let pending=this.pipelines.get(state.key);
     if(!pending) {
-      // Reuse the single validated material WGSL module. New materials no
-      // longer compile/prune another shader module on the gameplay thread.
-      pending=this.device.createRenderPipelineAsync({label:'OpenMW native material draw',...state.descriptor});
+      pending=(async()=>{
+        const entryPoint=state.descriptor.fragment.entryPoint;
+        const module=await this.materialFamily(entryPoint);
+        return this.device.createRenderPipelineAsync({label:`OpenMW native material ${entryPoint}`,
+          ...state.descriptor,
+          vertex:{...state.descriptor.vertex,module},
+          fragment:{...state.descriptor.fragment,module}});
+      })();
       this.pipelines.set(state.key,pending);
     }
     try{return await pending;}catch(error){this.pipelines.delete(state.key);throw error;}
@@ -697,7 +722,7 @@ export class HardwareRasterizer {
       active:!this.disposed,
       busy:this.busy,
       cachedRenderPipelines:this.pipelines.size,
-      cachedShaderVariants:this.shaderModules.size,
+      cachedShaderFamilies:this.shaderModules.size,
       cachedAttachmentBridges:this.bridgePipelines.size,
       cachedRenderTargets:this.targets.size,
       cachedBuffers:this.buffers.size,
