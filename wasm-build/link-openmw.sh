@@ -268,6 +268,7 @@ BOOST_IOSTREAMS="$(boost_archive iostreams)"
   -I"$ROOT/deps/src/bullet3/src" -I"$INC" -I"$ROOT/deps/src/boost_1_85_0" \
   -O3 -DNDEBUG \
   -lopenal \
+  --use-port=emdawnwebgpu \
   --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
   --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
   -sALLOW_MEMORY_GROWTH=1 -sGROWABLE_ARRAYBUFFERS=1 \
