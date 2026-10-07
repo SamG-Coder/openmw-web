@@ -211,10 +211,15 @@ app.MapGet("/mwdata-manifest.json", () =>
             return !name.StartsWith(".", StringComparison.Ordinal) &&
                    !name.EndsWith(".br", StringComparison.OrdinalIgnoreCase);
         })
-        .Select(path => new
+        .Select(path =>
         {
-            p = Path.GetRelativePath(root, path).Replace('\\', '/'),
-            s = new FileInfo(path).Length
+            var info = new FileInfo(path);
+            return new
+            {
+                p = Path.GetRelativePath(root, path).Replace('\\', '/'),
+                s = info.Length,
+                m = new DateTimeOffset(info.LastWriteTimeUtc).ToUnixTimeMilliseconds()
+            };
         })
         .OrderBy(file => file.p, StringComparer.OrdinalIgnoreCase)
         .ToArray();
