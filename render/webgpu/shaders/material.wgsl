@@ -5,15 +5,8 @@
 // Coverage, clipping, depth/stencil testing, and blending use GPU render passes.
 // Buffer textures retain the engine's atlas/material ABI and explicit gradients.
 
-// Pipeline specialization keeps inactive material families out of driver
-// compilation; these descriptors are immutable CPU packet metadata.
-override MATERIAL_FLAGS: u32 = 0u;
-override MATERIAL_FEATURES: u32 = 0u;
-override MATERIAL_LAYERS: u32 = 0u;
-override MATERIAL_MODE: u32 = 0u;
-override SKY_PASS: u32 = 0u;
-override HAS_SHADOWS: u32 = 0u;
-
+// Material feature selection is dynamic. Keeping one shader module avoids
+// compiling a new WGSL program whenever a new Morrowind material appears.
 @group(0) @binding(0) var<storage, read> b_vertices: array<f32>;
 @group(0) @binding(1) var<storage, read> b_triangles: array<u32>;
 @group(0) @binding(2) var<storage, read> b_materials: array<u32>;
@@ -25,6 +18,8 @@ struct RasterParams {
   fixed_offset: u32, falloff_offset: u32, fixed_enabled: u32, normal_enabled: u32,
   normal_channels: u32, normal_storage: u32, color_channels: u32, color_storage: u32,
   depth_bits: u32, stencil_enabled: u32, sample_count: u32, draw_material: u32,
+  material_flags: u32, material_features: u32, material_layers: u32, material_mode: u32,
+  sky_pass: u32, has_shadows: u32, shader_pad0: u32, shader_pad1: u32,
 }
 @group(0) @binding(5) var<uniform> params: RasterParams;
 
@@ -39,7 +34,7 @@ struct RasterVaryings {
   let corner = index % 3u;
   let base = b_triangles[triangle * 4u + corner] * 10u;
   let material = b_triangles[triangle * 4u + 3u];
-  let flags = MATERIAL_FLAGS;
+  let flags = params.material_flags;
   var out: RasterVaryings;
   out.position = vec4<f32>(b_vertices[base], b_vertices[base+1u], b_vertices[base+2u], b_vertices[base+3u]);
   // GL clip depths are [-w,w], unless the packet explicitly selects [0,w].
@@ -1274,8 +1269,8 @@ fn environment_coordinate(cw_buffer_arg_0: i32, cw_buffer_arg_1: i32, cw_arg_dat
   var v_dcy: f32 = cw_arg_dcy;
   var v_inv: f32 = cw_arg_inv;
   var v_axis: u32 = cw_arg_axis;
-  var v_layers: u32 = MATERIAL_LAYERS;
-  var v_features: u32 = MATERIAL_FEATURES;
+  var v_layers: u32 = params.material_layers;
+  var v_features: u32 = params.material_features;
   var v_mapped: u32 = select(u32(0), u32(1), ((v_layers & u32(16i)) != u32(0i)));
   var cw_tmp_459: f32;
   if ((v_mapped != u32(0i))) {
@@ -1507,9 +1502,9 @@ fn material_alpha(cw_buffer_arg_0: i32, cw_buffer_arg_1: i32, cw_buffer_arg_2: i
   var v_dby: f32 = cw_arg_dby;
   var v_dcy: f32 = cw_arg_dcy;
   var v_inv: f32 = cw_arg_inv;
-  var v_features: u32 = MATERIAL_FEATURES;
-  var v_layers: u32 = MATERIAL_LAYERS;
-  var v_mode: u32 = MATERIAL_MODE;
+  var v_features: u32 = params.material_features;
+  var v_layers: u32 = params.material_layers;
+  var v_mode: u32 = params.material_mode;
   var v_offsets: array<f32, 6>;
   {
     var v_k: u32 = u32(0i);
@@ -3257,7 +3252,7 @@ fn normalize_four(v_v: ptr<function, array<f32, 4>>) {
 fn shade_material(input: RasterVaryings, front: bool, sample: u32) -> MaterialResult {
   let v_t = input.triangle * 4u;
   let v_m = b_triangles[v_t + 3u] * 12u;
-  let v_flags = MATERIAL_FLAGS;
+  let v_flags = params.material_flags;
   let v_control = b_materials[v_m + 9u];
   let v_raster = params.raster_offset + (v_m / 12u) * 50u;
   let v_ia = b_triangles[v_t] * 10u;
@@ -4257,8 +4252,8 @@ fn shade_material(input: RasterVaryings, front: bool, sample: u32) -> MaterialRe
       }
       if (((v_flags & u32(2048i)) != u32(0i))) {
         var v_data: u32 = b_materials[v_m];
-        var v_features: u32 = MATERIAL_FEATURES;
-        var v_mode: u32 = MATERIAL_MODE;
+        var v_features: u32 = params.material_features;
+        var v_mode: u32 = params.material_mode;
         var cw_tmp_182: u32;
         if (((v_features & u32(16777216i)) != u32(0i))) {
           cw_tmp_182 = b_texels[(params.cluster_offset + (v_m / u32(12i)))];
@@ -4266,7 +4261,7 @@ fn shade_material(input: RasterVaryings, front: bool, sample: u32) -> MaterialRe
           cw_tmp_182 = u32(0i);
         }
         var v_cluster: u32 = cw_tmp_182;
-        var v_layers: u32 = MATERIAL_LAYERS;
+        var v_layers: u32 = params.material_layers;
         var v_offsets: array<f32, 6>;
         {
           var v_k: u32 = u32(0i);
@@ -4501,7 +4496,7 @@ fn shade_material(input: RasterVaryings, front: bool, sample: u32) -> MaterialRe
         }
         // The packet declares whether this material has any shadow cascades.
         // Avoid compiling the full comparison-sampler graph for zero shadows.
-        if (HAS_SHADOWS != 0u) {
+        if (params.has_shadows != 0u) {
         var v_shadowDone: u32 = u32(0i);
         {
           var v_cascade: u32 = u32(0i);
@@ -5282,7 +5277,7 @@ fn shade_material(input: RasterVaryings, front: bool, sample: u32) -> MaterialRe
       }
       if (((v_flags & u32(1024i)) != u32(0i))) {
         var v_data: u32 = b_materials[v_m];
-        var v_pass: u32 = SKY_PASS;
+        var v_pass: u32 = params.sky_pass;
         if ((v_pass == u32(5i))) {
           let cw_argument_index_319 = v_data;
           let cw_argument_index_320 = (v_data + u32(1i));
