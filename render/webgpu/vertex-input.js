@@ -2,10 +2,10 @@ import {allFinite,validateVertexAttributes} from './packet-validation.js';
 
 // Validate the transport before allocating or dispatching. The GPU owns the
 // construction of expanded vertex/attribute records; JS never expands them.
-export function validateVertexInputs(scene) {
+export function validateVertexInputs(scene,{deep=true}={}) {
   const {vertexInputs:inputs,vertexLayouts:layouts,matrixIds,matrices}=scene;
   if(scene.vertexEncoding!==1||!(inputs instanceof Float32Array)||!(layouts instanceof Uint32Array)
-    ||layouts.length!==matrices.length||!allFinite(inputs)||inputs.length>0xffffffff)
+    ||layouts.length!==matrices.length||(deep&&!allFinite(inputs))||inputs.length>0xffffffff)
     throw RangeError('Invalid compact vertex inputs');
   if(scene.vertices.length||scene.attributes?.length||scene.secondaryColors?.length)
     throw RangeError('Compact vertex inputs cannot also carry expanded records');
@@ -14,6 +14,7 @@ export function validateVertexInputs(scene) {
     if(offset+words>inputs.length)throw RangeError('Compact vertex stream exceeds input storage');
   };
   const byteColors=(offset,count,stride,channels)=>{
+    if(!deep)return;
     for(let i=0;i<(stride?count:1);i++)for(let k=0;k<channels;k++) {
       const value=inputs[offset+i*stride+k];
       if(!Number.isInteger(value)||value<0||value>255)throw RangeError('Invalid vertex color byte');
@@ -32,7 +33,7 @@ export function validateVertexInputs(scene) {
     if(kind===0) {
       if(source!==count||mode||fallback)throw RangeError('Invalid dense vertex input descriptor');
       range(layouts[d+6],count*10);range(layouts[d+7],count*34);range(layouts[d+8],count*3);
-      const flags=validateVertexAttributes(inputs.subarray(layouts[d+7],layouts[d+7]+count*34),count);
+      const flags=validateVertexAttributes(inputs.subarray(layouts[d+7],layouts[d+7]+count*34),count,deep);
       projectedParticles||=flags.projectedParticles;lineParticles||=flags.lineParticles;
       for(let k=9;k<28;k++)if(layouts[d+k])throw RangeError('Invalid dense vertex input reserved word');
       if(secondaryBytes)byteColors(layouts[d+8],count,3,secondaryBytes);
