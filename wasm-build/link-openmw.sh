@@ -270,8 +270,13 @@ BOOST_IOSTREAMS="$(boost_archive iostreams)"
   -lopenal \
   --use-port=sdl2 --use-port=freetype --use-port=harfbuzz --use-port=libpng \
   --use-port=libjpeg --use-port=zlib --use-port=ogg --use-port=vorbis \
-  -sALLOW_MEMORY_GROWTH=1 -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
+  -sALLOW_MEMORY_GROWTH=1 -sGROWABLE_ARRAYBUFFERS=1 \
+  -sMAX_WEBGL_VERSION=2 -sMIN_WEBGL_VERSION=2 -sFULL_ES3=1 \
   -sEXIT_RUNTIME=0 -sPTHREAD_POOL_SIZE=8 -sINITIAL_MEMORY=1610612736 \
+  `# GROWABLE_ARRAYBUFFERS=1 is important with pthreads: supported browsers keep growable` \
+  `# Wasm memory views resizable instead of forcing slow JS heap-view refresh/check paths. Our` \
+  `# WebGPU bridge reads retained HEAPU32/HEAPF32 views every camera packet, so this directly` \
+  `# affects the engine-to-renderer hot path while preserving lazy memory growth.` \
   `# MAXIMUM_MEMORY defaults to 2GB (emsdk src/settings.js:211), so ALLOW_MEMORY_GROWTH over a` \
   `# 1.5GB initial had only ~512MB of headroom -- the shadow map alone was ~1GB before it was` \
   `# halved. wasm32 addresses 4GB, which the wasm32 build takes in full -- and that is the` \
