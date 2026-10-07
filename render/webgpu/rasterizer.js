@@ -3,7 +3,6 @@
 // depth/stencil tests, color masks, and attachment blending. Compute is used
 // only to bridge the existing engine attachment buffers and query ABI.
 
-import {specializeMaterialSource} from './shader-specialization.js';
 import {ExactVisibilityCounter,MAX_VISIBILITY_TRIANGLES} from './visibility-counter.js';
 import {nativeCameraAttachments,attachmentBridgeKey} from './attachment-policy.js';
 
@@ -202,7 +201,7 @@ export class HardwareRasterizer {
       const stages=GPUShaderStage.VERTEX|GPUShaderStage.FRAGMENT;
       renderer.materialLayout=renderer.device.createBindGroupLayout({label:'OpenMW native material bindings',entries:[
         ...[0,1,2,3,4].map(binding=>({binding,visibility:stages,buffer:{type:'read-only-storage'}})),
-        {binding:5,visibility:stages,buffer:{type:'uniform',hasDynamicOffset:true,minBindingSize:80}},
+        {binding:5,visibility:stages,buffer:{type:'uniform',hasDynamicOffset:true,minBindingSize:112}},
       ]});
       renderer.pipelineLayout=renderer.device.createPipelineLayout({bindGroupLayouts:[renderer.materialLayout]});
       return renderer;
@@ -330,8 +329,8 @@ export class HardwareRasterizer {
     const layers=(flags&2048)?scene.texels[materials[m]+72]:0;
     const mode=(flags&2048)?scene.texels[materials[m]+5]:0;
     const skyPass=(flags&1024)?scene.texels[materials[m]+8]:0;
-    const constants={MATERIAL_FLAGS:flags,MATERIAL_FEATURES:features,MATERIAL_LAYERS:layers,MATERIAL_MODE:mode,SKY_PASS:skyPass,
-      HAS_SHADOWS:(flags&2048)&&scene.texels[materials[m]+324]?1:0};
+    const shaderParams={flags,features,layers,mode,skyPass,
+      hasShadows:(flags&2048)&&scene.texels[materials[m]+324]?1:0};
     const writeNormal=config.normal&&(flags&2048)!==0&&(features&131072)!==0&&(features&4194304)===0;
     const colorMask=query?0:normalizedChannels(params.color_channels)&(extended?(~(control>>>17))&15:15);
     const normalMask=query||!writeNormal?0:normalizedChannels(params.normal_channels)&(extended?(~rp[r+22])&15:15);
@@ -369,39 +368,21 @@ export class HardwareRasterizer {
       :config.compact?[]:[{format:config.colorFormat,writeMask:colorMask,...(colorBlend?{blend}:{})},
       ...(config.normal?[{format:config.normalFormat,writeMask:normalMask,...(normalBlend?{blend}:{})}]:[])];
     const entryPoint=query?'fragment_query':config.compact?'fragment_depth':config.normal?'fragment_normal':'fragment_color';
-    const descriptor={layout:this.pipelineLayout,vertex:{module:this.materialModule,entryPoint:'vertex_main',constants:{MATERIAL_FLAGS:flags}},
-      fragment:{module:this.materialModule,entryPoint,constants,targets},
+    const descriptor={layout:this.pipelineLayout,vertex:{module:this.materialModule,entryPoint:'vertex_main'},
+      fragment:{module:this.materialModule,entryPoint,targets},
       primitive:{topology:'triangle-list',frontFace:(control&65536)?'cw':'ccw',cullMode:cull===1?'front':cull===2?'back':'none',
         ...(clampDepth?{unclippedDepth:true}:{})},depthStencil,multisample:{count:config.samples}};
-    const key=JSON.stringify({targets,entryPoint,depthStencil,primitive:descriptor.primitive,samples:config.samples,constants});
-    return {descriptor,key,constants,query,scissor,blendConstant,stencilReference,splitFaces};
+    // Shader feature bits are dynamic uniforms, not pipeline specialization.
+    // Only real fixed-function WebGPU state creates a pipeline variant.
+    const key=JSON.stringify({targets,entryPoint,depthStencil,primitive:descriptor.primitive,samples:config.samples});
+    return {descriptor,key,shaderParams,query,scissor,blendConstant,stencilReference,splitFaces};
   }
   async pipeline(state) {
     let pending=this.pipelines.get(state.key);
     if(!pending) {
-      pending=(async()=>{
-        // A module only needs the fragment family used by this pipeline.
-        // Keeping every material entry point made the first real 3D frame ask
-        // the browser to compile all shading families for every variant.
-        const variantKey=JSON.stringify({constants:state.constants,entryPoint:state.descriptor.fragment.entryPoint});
-        let variant=this.shaderModules.get(variantKey);
-        if(!variant) {
-          variant=(async()=>{
-            const code=specializeMaterialSource(this.materialSource,state.constants,state.descriptor.fragment.entryPoint);
-            const module=this.device.createShaderModule({label:`OpenMW native material ${variantKey}`,code});
-            const info=await module.getCompilationInfo();
-            const errors=info.messages.filter(message=>message.type==='error');
-            if(errors.length)throw Error(errors.map(message=>`Specialized material:${message.lineNum}:${message.linePos} ${message.message}`).join('\n'));
-            return module;
-          })();
-          this.shaderModules.set(variantKey,variant);
-        }
-        const module=await variant;
-        const {constants:vertexConstants,...vertex}=state.descriptor.vertex;
-        const {constants:fragmentConstants,...fragment}=state.descriptor.fragment;
-        return this.device.createRenderPipelineAsync({label:'OpenMW native material draw',...state.descriptor,
-          vertex:{...vertex,module},fragment:{...fragment,module}});
-      })();
+      // Reuse the single validated material WGSL module. New materials no
+      // longer compile/prune another shader module on the gameplay thread.
+      pending=this.device.createRenderPipelineAsync({label:'OpenMW native material draw',...state.descriptor});
       this.pipelines.set(state.key,pending);
     }
     try{return await pending;}catch(error){this.pipelines.delete(state.key);throw error;}
@@ -495,10 +476,12 @@ export class HardwareRasterizer {
     this.runtime.flush?.();
     // Per-camera params are identical for repeated runs of the same material.
     // Keep their draw order, but share one uniform slot (also for query reduction).
-    const uniformMaterials=new Map();
+    const uniformMaterials=new Map(),uniformStates=new Map();
     for(const run of runs) {
       let index=uniformMaterials.get(run.material);
-      if(index===undefined){index=uniformMaterials.size;uniformMaterials.set(run.material,index);}
+      if(index===undefined){
+        index=uniformMaterials.size;uniformMaterials.set(run.material,index);uniformStates.set(run.material,run.state);
+      }
       run.uniformIndex=index;
     }
     const uniformBytes=Math.max(1,uniformMaterials.size)*this.uniformStride;
@@ -508,13 +491,24 @@ export class HardwareRasterizer {
       this.performanceStats.uniformHostAllocations++;
     }
     const uniformData=this.materialUniformData;
-    for(const [material,index] of uniformMaterials)for(let field=0;field<PARAM_FIELDS.length;field++)
-      uniformData[index*this.uniformStride/4+field]=field===19?material:field===18?config.samples:(params[PARAM_FIELDS[field]]??0);
+    for(const [material,index] of uniformMaterials) {
+      const base=index*this.uniformStride/4,state=uniformStates.get(material);
+      for(let field=0;field<PARAM_FIELDS.length;field++)
+        uniformData[base+field]=field===19?material:field===18?config.samples:(params[PARAM_FIELDS[field]]??0);
+      const shader=state.shaderParams;
+      uniformData[base+20]=shader.flags;
+      uniformData[base+21]=shader.features;
+      uniformData[base+22]=shader.layers;
+      uniformData[base+23]=shader.mode;
+      uniformData[base+24]=shader.skyPass;
+      uniformData[base+25]=shader.hasShadows;
+      uniformData[base+26]=0;uniformData[base+27]=0;
+    }
     device.queue.writeBuffer(uniforms,0,uniformData.buffer,0,uniformBytes);
     this.performanceStats.uniformUploadBytes+=uniformBytes;
     const bindGroup=device.createBindGroup({label:'OpenMW native material draw buffers',layout:this.materialLayout,entries:[
       ...['vertices','triangles','materials','texels','attributes'].map((key,binding)=>({binding,resource:{buffer:native[key]}})),
-      {binding:5,resource:{buffer:uniforms,size:80}},
+      {binding:5,resource:{buffer:uniforms,size:112}},
     ]});
     let bridgeUniform=null,bridgeBindings=null;
     if(bridge) {
