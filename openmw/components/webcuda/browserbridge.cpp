@@ -1,5 +1,10 @@
 #include "browserbridge.hpp"
+#include "directwebgpu.hpp"
+#include <algorithm>
+#include <cstring>
+#include <limits>
 #include <stdexcept>
+#include <vector>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 namespace
@@ -8,12 +13,92 @@ namespace
     {
         WebCuda::GeometryPacket geometry;
         std::shared_ptr<const WebCuda::MaterialTable> table;
+        WGPUBuffer directBuffer = nullptr;
+        std::vector<unsigned int> directRanges;
+        std::size_t directBytes = 0;
     };
+
+    constexpr std::size_t DirectRangeCount = 31;
+    template<class T>
+    bool appendDirectRange(std::vector<unsigned char>& bytes, std::vector<unsigned int>& ranges,
+        std::size_t index, const std::vector<T>& source)
+    {
+        static_assert(sizeof(T)==4);
+        constexpr std::size_t alignment=256; // WebGPU storage-buffer offset alignment.
+        const auto aligned=(bytes.size()+alignment-1)&~(alignment-1);
+        const auto length=source.size()*sizeof(T);
+        if(aligned>std::numeric_limits<unsigned int>::max()
+            ||length>std::numeric_limits<unsigned int>::max()
+            ||aligned+length>std::numeric_limits<unsigned int>::max())
+            return false;
+        bytes.resize(aligned+length);
+        if(length)std::memcpy(bytes.data()+aligned,source.data(),length);
+        ranges[index*2]=static_cast<unsigned int>(aligned);
+        ranges[index*2+1]=static_cast<unsigned int>(length);
+        return true;
+    }
+
+    void buildDirectPacket(RetainedPass& retained)
+    {
+        auto& direct=WebCuda::DirectWebGPU::instance();
+        if(!direct.ready())return;
+        std::vector<unsigned char> bytes;
+        std::vector<unsigned int> ranges(DirectRangeCount*2,0);
+        // Keep the order synchronized with DIRECT_GPU_NAMES in the JS bridge.
+        const auto& g=retained.geometry;const auto& t=*retained.table;
+        std::size_t i=0;
+        const bool ok=
+            appendDirectRange(bytes,ranges,i++,g.vertexLayouts)
+            &&appendDirectRange(bytes,ranges,i++,g.vertexInputs)
+            &&appendDirectRange(bytes,ranges,i++,g.vertices)
+            &&appendDirectRange(bytes,ranges,i++,g.matrices)
+            &&appendDirectRange(bytes,ranges,i++,g.matrixIds)
+            &&appendDirectRange(bytes,ranges,i++,g.triangles)
+            &&appendDirectRange(bytes,ranges,i++,t.materials())
+            &&appendDirectRange(bytes,ranges,i++,g.attributes)
+            &&appendDirectRange(bytes,ranges,i++,g.morphRanges)
+            &&appendDirectRange(bytes,ranges,i++,g.morphOffsets)
+            &&appendDirectRange(bytes,ranges,i++,g.skinRanges)
+            &&appendDirectRange(bytes,ranges,i++,g.skinWeights)
+            &&appendDirectRange(bytes,ranges,i++,g.skinBones)
+            &&appendDirectRange(bytes,ranges,i++,g.skinTransforms)
+            &&appendDirectRange(bytes,ranges,i++,g.groundcoverRanges)
+            &&appendDirectRange(bytes,ranges,i++,g.groundcoverInstances)
+            &&appendDirectRange(bytes,ranges,i++,g.groundcoverParams)
+            &&appendDirectRange(bytes,ranges,i++,g.debugParams)
+            &&appendDirectRange(bytes,ranges,i++,g.textGradientRanges)
+            &&appendDirectRange(bytes,ranges,i++,g.textGradientColors)
+            &&appendDirectRange(bytes,ranges,i++,g.localTransforms)
+            &&appendDirectRange(bytes,ranges,i++,g.positionedState)
+            &&appendDirectRange(bytes,ranges,i++,g.fixedLighting)
+            &&appendDirectRange(bytes,ranges,i++,g.secondaryColors)
+            &&appendDirectRange(bytes,ranges,i++,g.texgen)
+            &&appendDirectRange(bytes,ranges,i++,g.uvMatrices)
+            &&appendDirectRange(bytes,ranges,i++,g.screenPrimitives)
+            &&appendDirectRange(bytes,ranges,i++,g.flatColors)
+            &&appendDirectRange(bytes,ranges,i++,g.polygonEdges)
+            &&appendDirectRange(bytes,ranges,i++,t.compressedBlocks())
+            &&appendDirectRange(bytes,ranges,i++,g.vertexResources);
+        if(!ok||i!=DirectRangeCount||bytes.empty())return;
+        try {
+            const auto usage=static_cast<WGPUBufferUsage>(WGPUBufferUsage_CopyDst|WGPUBufferUsage_CopySrc
+                |WGPUBufferUsage_Storage|WGPUBufferUsage_Vertex|WGPUBufferUsage_Index|WGPUBufferUsage_Indirect);
+            retained.directBuffer=direct.createBuffer(bytes.size(),usage,"OpenMW direct WASM packet");
+            direct.writeBuffer(retained.directBuffer,0,bytes.data(),bytes.size());
+            retained.directRanges=std::move(ranges);retained.directBytes=bytes.size();
+        } catch(...) {
+            if(retained.directBuffer){wgpuBufferRelease(retained.directBuffer);retained.directBuffer=nullptr;}
+            retained.directRanges.clear();retained.directBytes=0;
+        }
+    }
     std::map<unsigned int, RetainedPass> retainedPasses;
     unsigned int nextPassToken=0;
 }
 extern "C" EMSCRIPTEN_KEEPALIVE void omw_webcuda_release_pass(unsigned int token)
 {
+    const auto found=retainedPasses.find(token);
+    if(found!=retainedPasses.end()&&found->second.directBuffer)
+        wgpuBufferRelease(found->second.directBuffer);
     retainedPasses.erase(token);
 }
 EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEncoding,
@@ -46,6 +131,7 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
     const unsigned int* depthMipSources,size_t depthMipWords,
     const unsigned int* clusterRecords,size_t clusterRecordWords,const unsigned int* clusterMaterials,size_t clusterMaterialWords,
     const float* clusterLights,size_t clusterLightFloats,const float* clusterProjections,size_t clusterProjectionFloats,
+    WGPUBuffer directBuffer,size_t directBytes,const unsigned int* directRanges,size_t directRangeWords,
     unsigned int width, unsigned int height), {
     let released=false,accounted=false,viewBytes=0;
     const stats=Module.webcudaTransportStats??={capturedPasses:0,releasedPasses:0,retainedPasses:0,retainedViewBytes:0,copiedSceneBytes:0,heapCapacityBytes:0};
@@ -65,7 +151,23 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
         viewBytes+=length*4;
         return heap.subarray(start,start+length);
     }
-    const packet={version:2,storage:'wasm-retained',release,width:width,height:height,scene:{
+    const DIRECT_GPU_NAMES=['vertexLayouts','vertexInputs','vertices','matrices','matrixIds','triangles','materials','attributes',
+      'morphRanges','morphOffsets','skinRanges','skinWeights','skinBones','skinTransforms','groundcoverRanges',
+      'groundcoverInstances','groundcoverParams','debugParams','textGradientRanges','textGradientColors','localTransforms',
+      'positionedState','fixedLighting','secondaryColors','texgen','uvMatrices','screenPrimitives','flatColors','polygonEdges',
+      'compressedBlocks','vertexResources'];
+    let directGPU=null;
+    if(directBuffer&&directRangeWords===DIRECT_GPU_NAMES.length*2){
+      const gpuBuffer=WebGPU.getJsObject(directBuffer);
+      const raw=view(HEAPU32,directRanges,directRangeWords);
+      const ranges={};
+      for(let i=0;i<DIRECT_GPU_NAMES.length;i++){
+        const offset=raw[i*2],bytes=raw[i*2+1];
+        if(bytes)ranges[DIRECT_GPU_NAMES[i]]={offset,bytes};
+      }
+      directGPU={buffer:gpuBuffer,byteLength:Number(directBytes),ranges};
+    }
+    const packet={version:2,storage:'wasm-retained',release,width:width,height:height,scene:{directGPU,
         vertexEncoding:vertexEncoding,vertexLayouts:view(HEAPU32,vertexLayouts,vertexLayoutWords),vertexInputs:view(HEAPF32,vertexInputs,vertexInputFloats),
         vertexResources:view(HEAPU32,vertexResources,vertexResourceWords),
         vertices:view(HEAPF32,vertices,vertexFloats),matrices:view(HEAPF32,matrices,matrixFloats),
@@ -111,7 +213,8 @@ namespace WebCuda
         do { ++nextPassToken; } while(!nextPassToken||retainedPasses.count(nextPassToken));
         const auto token=nextPassToken;
         auto tableOwner=sourceGeometry.triangles.empty()?emptyTable:captureMaterialTable(std::move(sourceTable));
-        const auto& retained=retainedPasses.emplace(token,RetainedPass{std::move(sourceGeometry),std::move(tableOwner)}).first->second;
+        auto& retained=retainedPasses.emplace(token,RetainedPass{std::move(sourceGeometry),std::move(tableOwner)}).first->second;
+        buildDirectPacket(retained);
         const auto& geometry=retained.geometry;
         const auto& table=*retained.table;
         // The JS wrapper owns release on success, rejection and JS exceptions.
@@ -133,7 +236,8 @@ namespace WebCuda
             geometry.ribbonRanges.data(),geometry.ribbonRanges.size(),geometry.ribbonParticles.data(),geometry.ribbonParticles.size(),
             geometry.screenPrimitives.data(),geometry.screenPrimitives.size(),geometry.flatColors.data(),geometry.flatColors.size(),geometry.polygonEdges.data(),geometry.polygonEdges.size(),geometry.texgen.data(),geometry.texgen.size(),geometry.fixedLighting.data(),geometry.fixedLighting.size(),geometry.positionedState.data(),geometry.positionedState.size(),geometry.textGradientRanges.data(),geometry.textGradientRanges.size(),geometry.textGradientColors.data(),geometry.textGradientColors.size(),geometry.localTransforms.data(),geometry.localTransforms.size(),geometry.debugParams.data(),geometry.debugParams.size(),geometry.secondaryColors.data(),geometry.secondaryColors.size(),geometry.groundcoverRanges.data(),geometry.groundcoverRanges.size(),geometry.groundcoverInstances.data(),geometry.groundcoverInstances.size(),geometry.groundcoverParams.data(),geometry.groundcoverParams.size(),table.depthMipSources().data(),table.depthMipSources().size(),
             table.clusterRecords().data(),table.clusterRecords().size(),table.clusterMaterials().data(),table.clusterMaterials().size(),
-            table.clusterLights().data(),table.clusterLights().size(),table.clusterProjections().data(),table.clusterProjections().size(),width,height)!=0;
+            table.clusterLights().data(),table.clusterLights().size(),table.clusterProjections().data(),table.clusterProjections().size(),
+            retained.directBuffer,retained.directBytes,retained.directRanges.data(),retained.directRanges.size(),width,height)!=0;
 #else
         throw std::runtime_error("WebCuda browser transport requires WebAssembly");
 #endif
