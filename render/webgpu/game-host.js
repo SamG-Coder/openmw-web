@@ -97,16 +97,19 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   }
   Module.webcudaProfileCapture=inspectPasses;
   // Wall-clock observations, not GPU timestamps or physical display scanout.
-  const stats={accepted:0,presented:0,skipped:0,aborted:0,passes:0,error:null,gpuFrameMs:0,lastFrame:null};
+  const stats={accepted:0,presented:0,skipped:0,aborted:0,passes:0,error:null,gpuFrameMs:0,lastFrame:null,
+    slowFirstFrame:false};
   let first3DWatchdog=null;
   const armFirst3DWatchdog=()=>{
     if(first3DWatchdog||stats.presented>0)return;
     first3DWatchdog=setTimeout(()=>{
       first3DWatchdog=null;
       if(stats.presented>0||failed||disposed)return;
-      const detail='The first captured 3D WebGPU frame has not completed after 15 seconds. '
-        +'Open the debug log for WebGPU diagnostics; this is a renderer stall, not game-data loading.';
-      stats.error=detail;publishDiagnostics(true);onError(Error(detail));
+      const detail='The first captured WebGPU frame is taking more than 15 seconds. '
+        +'Rendering will continue; this is usually first-use shader/pipeline compilation.';
+      stats.slowFirstFrame=true;
+      console.warn('[OpenMW WebGPU]',detail);
+      publishDiagnostics(true);
     },15000);
   };
   // Expose completed-frame evidence on the presentation element for browser
