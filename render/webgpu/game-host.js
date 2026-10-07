@@ -353,6 +353,24 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   Module.webcudaSubmitPass=packet=>{
     if(!frame||!state||packet.version!==2||packet.storage!=='wasm-retained'||typeof packet.release!=='function')
       throw Error('Unexpected WebGPU pass packet');
+    const direct=packet.scene.directGPU;
+    if(direct?.buffer&&direct.ranges) {
+      const imported={};
+      for(const [name,range] of Object.entries(direct.ranges)) {
+        if(!range||!Number.isSafeInteger(range.offset)||!Number.isSafeInteger(range.bytes)||range.offset<0||range.bytes<=0)
+          throw RangeError('Invalid direct WASM GPU packet range');
+        imported[name]=runtime.importExternalBuffer(direct.buffer,range.bytes,
+          {offset:range.offset,label:`OpenMW direct ${name}`});
+      }
+      packet.scene.directGpuResources=imported;
+      const release=packet.release;
+      let released=false;
+      packet.release=()=>{
+        if(released)return;released=true;
+        for(const resource of Object.values(imported))runtime.releaseExternalBuffer(resource);
+        release();
+      };
+    }
     const captured={...packet,...state};
     // Start compiling any cold fixed-state pipelines while OpenMW continues
     // capturing the rest of the frame. This removes first-use material stalls
