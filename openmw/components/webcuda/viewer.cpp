@@ -4,6 +4,7 @@
 #include <osg/Geometry>
 #include "renderer.hpp"
 #include "browserbridge.hpp"
+#include "shaderanalysis.hpp"
 #include <osgUtil/RenderStage>
 #include <osg/FrameBufferObject>
 #include <osg/GraphicsContext>
@@ -70,6 +71,9 @@ EM_JS(void, omw_webcuda_capture_timings, (const double* values), {
     const v=HEAPF64.subarray(start,start+8);
     Module.webcudaCaptureTimings={materialCopyMs:v[0],materialEncodeMs:v[1],geometryEncodeMs:v[2],atlasResizeMs:v[3],
         materialCopies:v[4],materialEncodes:v[5],geometryEncodes:v[6],atlasResizes:v[7]};
+})
+EM_JS(void, omw_webcuda_shader_analysis_stats, (double hits,double misses,double bypasses), {
+    Module.webcudaShaderAnalysisStats={hits:hits,misses:misses,bypasses:bypasses};
 })
 EM_JS(void, omw_webcuda_snapshot, (unsigned int target,unsigned int width,unsigned int height), {
     Module.webcudaSnapshotPreviousFrame(target,width,height);
@@ -356,7 +360,12 @@ namespace WebCuda
                 omw_webcuda_capture_image(id,request.width,request.height,1);
                 request.submitted=true;mFrameImageRequests.push_back(id);
             }
-            if(captureProfile.enabled)omw_webcuda_capture_timings(captureProfile.values.data());
+            if(captureProfile.enabled) {
+                omw_webcuda_capture_timings(captureProfile.values.data());
+                const auto shaderStats=ShaderAnalysisDetail::cache().stats();
+                omw_webcuda_shader_analysis_stats(static_cast<double>(shaderStats.hits),
+                    static_cast<double>(shaderStats.misses),static_cast<double>(shaderStats.bypasses));
+            }
             omw_webcuda_end_frame(1);
             mSubmittedCompletionCameras=std::move(mFrameCompletionCameras);
             mFrameSnapshots.clear();
