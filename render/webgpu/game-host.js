@@ -131,6 +131,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
       wasmHeapCapacityBytes:Module.webcudaTransportStats?.heapCapacityBytes??Module.wasmMemory?.buffer.byteLength??null,
       transport:Module.webcudaTransportStats?{...Module.webcudaTransportStats}:null,
       legacyDrawAttempts:Module.webcudaLegacyDrawStats?.attempts??0,
+      rendererBusy:busy,captureQueueDepth:renderQueue.length,gpuFramesInFlight:inflightFrames,
       maxStorageBufferBindingSize:runtime.device.limits.maxStorageBufferBindingSize,
       maxBufferSize:runtime.device.limits.maxBufferSize,
       observedAt:now,
