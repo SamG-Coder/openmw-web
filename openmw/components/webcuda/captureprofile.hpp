@@ -3,7 +3,8 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
- namespace WebCuda
+
+namespace WebCuda
 {
     // Diagnostic counters for the single render-submission thread. Nested
     // material encoding counts once in the inclusive material total; atlas
