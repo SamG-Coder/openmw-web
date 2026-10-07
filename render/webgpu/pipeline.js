@@ -673,10 +673,15 @@ export class MaterialPipeline {
           for(let shift=0;shift<16;shift+=4)if(((factors>>shift)&15)>14)throw RangeError('Invalid blend factor');
         }
       }
-      const upload=name=>this.buffer(name,scene[name].byteLength,scene[name]);
+      const directGpu=scene.directGpuResources??{};
+      // Most immutable camera inputs are already in one WASM-owned WebGPU
+      // buffer written by C++. Bind its aligned ranges directly instead of
+      // issuing dozens of JS queue.writeBuffer calls.
+      const upload=name=>directGpu[name]??this.buffer(name,scene[name].byteLength,scene[name]);
       if(scene.textureDecodes.length%5)throw RangeError('Invalid texture decode records');
       const texturePlan=this.textureResidency.plan(scene.textureResources??new Uint32Array(),scene.texels.length);
-      const vertexPlan=compactVertices?this.vertexResidency.plan(scene.vertexResources??new Uint32Array(),scene.vertexInputs.length):null;
+      const vertexPlan=compactVertices&&!directGpu.vertexInputs
+        ?this.vertexResidency.plan(scene.vertexResources??new Uint32Array(),scene.vertexInputs.length):null;
       const decodePlans=[];
       const validatedMapInputs=new Map();
       const validatedTerrainInputs=new Map();
@@ -739,11 +744,13 @@ export class MaterialPipeline {
       const sourceAttributes=compactVertices?this.buffer('attributes',vertexCount*136):upload('attributes');
       const secondaryColors=compactVertices?this.buffer('secondaryColors',vertexCount*12):null;
       if(compactVertices&&vertexCount) {
-        const inputs=this.buffer('vertexInputs',scene.vertexInputs.byteLength);
-        for(const [first,last] of atlasUploadRanges(scene.vertexInputs.length,undefined,scene.vertexInputs.length,vertexPlan.hitRanges))
-          this.upload(inputs,scene.vertexInputs.subarray(first,last),first*4);
-        this.vertexResidency.restore(vertexPlan,inputs);
-        this.vertexResidency.capture(vertexPlan,inputs);
+        const inputs=directGpu.vertexInputs??this.buffer('vertexInputs',scene.vertexInputs.byteLength);
+        if(!directGpu.vertexInputs) {
+          for(const [first,last] of atlasUploadRanges(scene.vertexInputs.length,undefined,scene.vertexInputs.length,vertexPlan.hitRanges))
+            this.upload(inputs,scene.vertexInputs.subarray(first,last),first*4);
+          this.vertexResidency.restore(vertexPlan,inputs);
+          this.vertexResidency.capture(vertexPlan,inputs);
+        }
         r.batch().dispatch(k.unpack_vertex_inputs.bind({inputs,layouts:upload('vertexLayouts'),matrix_ids,
           vertices:source,attributes:sourceAttributes,secondary_colors:secondaryColors},{vertex_count:vertexCount}),dispatchGroups(vertexCount,r.device.limits)).submit();
       }
@@ -778,9 +785,10 @@ export class MaterialPipeline {
         this.validateMultisampleStorage(target,rasterTarget,width,height,sample_count);
       }
       const groups=n=>dispatchGroups(n,r.device.limits);
-      const blocks=this.buffer('compressedBlocks',scene.compressedBlocks.byteLength);
-      for(const [first,last] of mergeWordRanges(decodePlans.filter(plan=>!plan.cached).map(plan=>[plan.offset,plan.offset+plan.words]),scene.compressedBlocks.length))
-        this.upload(blocks,scene.compressedBlocks.subarray(first,last),first*4);
+      const blocks=directGpu.compressedBlocks??this.buffer('compressedBlocks',scene.compressedBlocks.byteLength);
+      if(!directGpu.compressedBlocks)
+        for(const [first,last] of mergeWordRanges(decodePlans.filter(plan=>!plan.cached).map(plan=>[plan.offset,plan.offset+plan.words]),scene.compressedBlocks.length))
+          this.upload(blocks,scene.compressedBlocks.subarray(first,last),first*4);
       const decodeBatch=boundedBatch(r),floatMipOffsets=new Set(),floatMipStorage=new Map(),depthMipStorage=new Map();
       for(let i=0;i<scene.textureDecodes.length;i+=5) {
         const [block_offset,pixel_offset,w,h,format]=scene.textureDecodes.subarray(i,i+5);
