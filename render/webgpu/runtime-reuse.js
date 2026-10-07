@@ -27,7 +27,7 @@ export class ComputeBindGroupCache {
     let key = `${this.id(kernel)}`;
     for (const binding of metadata.bindings) {
       const resource = resources[binding.name];
-      key += `/${this.id(resource.gpuBuffer)}:${resource.size}`;
+      key += `/${this.id(resource.gpuBuffer)}:${resource.offset??0}:${resource.size}`;
     }
     if (metadata.uniformSize) key += `/u${this.id(arena)}`;
     const hit = this.entries.get(key);
@@ -37,7 +37,8 @@ export class ComputeBindGroupCache {
       return hit.group;
     }
     const entries = metadata.bindings.map(binding => ({binding: binding.binding,
-      resource: {buffer: resources[binding.name].gpuBuffer, size: resources[binding.name].size}}));
+      resource: {buffer: resources[binding.name].gpuBuffer, offset:resources[binding.name].offset??0,
+        size: resources[binding.name].size}}));
     if (metadata.uniformSize) entries.push({binding: metadata.uniformBinding,
       resource: {buffer: arena, size: metadata.uniformSize}});
     const group = this.device.createBindGroup({label: kernel.artifact.name,
