@@ -76,7 +76,9 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   const queryLastSeen=new Map();let queryFrame=0;
   const colorTargetStack=[];
   let presentation=null;
-  const inspectPasses=new URLSearchParams(location.search).has('renderdebug');
+  const query=new URLSearchParams(location.search);
+  const inspectPasses=query.has('renderdebug');
+  const engineProfile=query.has('engineprofile');
   let diagnosticPanel=null,diagnosticLabel=null;
   if(inspectPasses) {
     diagnosticPanel=document.createElement('div');diagnosticLabel=document.createElement('span');
@@ -839,7 +841,8 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
         const renderCallStart=performance.now();
         const rendered=await pipeline.render(pass.scene,pass.width,pass.height,null,{...pass,
           ...(nativeDirect?{nativeTarget,targetHolder:attachment}:{target:targetBuffer,sampleTarget:sampleBuffer}),
-          targets,compactDepth:attachment.compactDepth,deferCompletion:true,profileGpu:inspectPasses,readback,
+          targets,compactDepth:attachment.compactDepth,deferCompletion:true,profileGpu:inspectPasses,
+          strictValidation:inspectPasses||engineProfile,readback,
           copyNativePlaneToAtlas:(holder,plane,texels,offset,options)=>nativeTargets.copyPlaneToAtlas(holder,plane,texels,offset,options)
         });
         const renderCallWallMs=performance.now()-renderCallStart;
