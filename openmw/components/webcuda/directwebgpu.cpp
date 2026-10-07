@@ -12,7 +12,15 @@ EM_JS(WGPUDevice, omw_webgpu_import_boot_device, (), {
     if (Module['webcudaJsDevice']) {
         if (typeof WebGPU === 'undefined' || typeof WebGPU.importJsDevice !== 'function')
             throw new Error('Emdawnwebgpu object interop is unavailable');
+#if __wasm64__
+        // emdawnwebgpu's importJsDevice() default parentPtr is the JS Number 0.
+        // MEMORY64 pointer imports are Wasm i64 values, so the generated
+        // _emwgpuCreateQueue/_emwgpuCreateDevice imports require a BigInt.
+        // Pass an explicit null pointer with the correct JS representation.
+        pointer = WebGPU.importJsDevice(Module['webcudaJsDevice'], BigInt(0));
+#else
         pointer = WebGPU.importJsDevice(Module['webcudaJsDevice']);
+#endif
     }
 #if __wasm64__
     return BigInt(pointer);
