@@ -57,6 +57,9 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     context=canvas.getContext('webgpu');
     if(!context)throw Error('WebGPU presentation context is unavailable');
     context.configure({device:runtime.device,format:'rgba8unorm',usage:GPUTextureUsage.COPY_DST|GPUTextureUsage.RENDER_ATTACHMENT,alphaMode:'opaque'});
+    // Emdawnwebgpu imports this device once into WASM. Per-frame GPU commands
+    // can then be issued through webgpu.h instead of reconstructing them in JS.
+    Module.webcudaJsDevice=runtime.device;
   } catch(error) {
     try { context?.unconfigure(); }
     finally { canvas.remove();pipeline.dispose();if(runtime.dispose)await runtime.dispose();else runtime.device.destroy(); }
@@ -989,6 +992,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     if(disposalPromise)return disposalPromise;
     disposalPromise=(async()=>{
     disposed=true;Module.webgpuEnabled=false;Module.webcudaEnabled=false;
+    if(Module.webcudaJsDevice===runtime.device)delete Module.webcudaJsDevice;
     releasePackets(frame);frame=null;state=null;
     while(renderQueue.length)releasePackets(renderQueue.shift().passes);
     Module.webcudaImageError='WebGPU host disposed';
