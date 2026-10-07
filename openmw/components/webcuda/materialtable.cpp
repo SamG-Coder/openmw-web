@@ -91,13 +91,23 @@ namespace WebCuda
         mAttachmentsResolved=true;
     }
 
-    std::shared_ptr<const MaterialTable> captureMaterialTable(std::shared_ptr<const MaterialTable> source)
+    std::shared_ptr<const MaterialTable> captureMaterialTable(std::shared_ptr<MaterialTable> source)
     {
         if(!source)throw std::invalid_argument("Missing material snapshot source");
-        // Keep deferred render-attachment addresses encoded in the immutable
-        // packet. The WebGPU preparation pass resolves them directly in the GPU
-        // atlas, avoiding a full MaterialTable clone on every camera boundary.
-        return source;
+        if(!source->mAttachmentWords||source->mAttachmentsResolved)return source;
+        CaptureScope captureScope(CapturePhase::MaterialCopy);
+        // A terminal camera submission can transfer its sole MaterialTable
+        // owner into the browser bridge. Resolve that table in place instead of
+        // cloning every vector in the table. Mid-camera boundaries keep another
+        // owner and still snapshot, because capture must remain immutable while
+        // the resumed camera continues appending state.
+        if(source.use_count()==1) {
+            source->resolveAttachmentAddresses();
+            return source;
+        }
+        auto snapshot=std::make_shared<MaterialTable>(*source);
+        snapshot->resolveAttachmentAddresses();
+        return snapshot;
     }
 
     std::uint32_t MaterialTable::encodeGlyph(const DrawContext& context,const osg::Texture2D* texture,bool redCoverage,bool distanceField,float glyphDimension,float textureDimension,const float* backdrop)
