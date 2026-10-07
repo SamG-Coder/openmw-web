@@ -370,7 +370,7 @@ namespace WebCuda
             mSubmittedCompletionCameras=std::move(mFrameCompletionCameras);
             mFrameSnapshots.clear();
         } catch (...) {
-            mTable.reset(); mPacket=GeometryPacket(true);
+            mPacket=GeometryPacket(true);
             mTargetStack.clear();
             mFrameCompletionCameras.clear();
             omw_webcuda_end_frame(0);
@@ -628,7 +628,10 @@ namespace WebCuda
     {
         if(!mTargetStack.empty())throw std::logic_error("Unclosed WebCuda color target");
         if (!mTable) throw std::logic_error("WebCuda stage not started");
-        if (!submitBrowserPass(std::move(mPacket),mTable,mWidth,mHeight))
+        // This camera is finished: transfer the MaterialTable owner into the
+        // retained browser packet. When it is unique the bridge can finalize
+        // deferred attachment addresses in place instead of cloning the table.
+        if (!submitBrowserPass(std::move(mPacket),std::move(mTable),mWidth,mHeight))
             throw std::runtime_error("WebCuda frame host rejected an accepted frame");
 #ifdef __EMSCRIPTEN__
         for(const auto& attachment:mResolveAttachments)
