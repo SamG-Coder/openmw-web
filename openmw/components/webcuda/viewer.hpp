@@ -108,6 +108,15 @@ namespace WebCuda
         int mResolveX=0,mResolveY=0;
         unsigned int mResolveWidth=0,mResolveHeight=0;
         const osg::Camera* mPassCamera=nullptr;
+        // Current browser pass state. A nested OSG RenderStage temporarily
+        // replaces it and must reopen this exact parent state afterwards.
+        std::uint32_t mActiveDepthTarget=0,mActiveNormalTarget=0,mActiveStencilTarget=0;
+        unsigned int mActiveColorFormat=0x8058,mActiveDepthFormat=0x81A6,mActiveNormalFormat=0x8058;
+        unsigned int mActiveStencilBits=0,mActiveClearColorMask=15,mActiveSampleCount=1;
+        int mActiveViewportX=0,mActiveViewportY=0;
+        unsigned int mActiveViewportWidth=0,mActiveViewportHeight=0;
+        float mActiveClearDepth=1.f;
+        int mActiveClearStencil=0;
         struct SavedStage {
             std::shared_ptr<MaterialTable> table;
             unsigned int width=0,height=0;
