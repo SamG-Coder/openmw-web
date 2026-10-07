@@ -167,6 +167,52 @@ test('shared WASM heap views upload using their byte offset and snapshot before 
   assert.equal(r.stats.copiedUploadBytes, 0); await r.dispose();
 });
 
+test('direct WASM buffer ranges copy and read at their absolute GPU offset without host reuploads',async()=>{
+  const f=fixture(),r=f.runtime;
+  const owner=f.device.createBuffer({size:1024,usage:128|4|8,label:'WASM frame owner'});
+  f.device.queue.writeBuffer(owner,256,new Uint32Array([17,23,31]));
+  const direct=r.importExternalBuffer(owner,12,{offset:256});
+  const destination=r.createBuffer(16),uploads=r.stats.dataBytesUploaded;
+  r.batch().copy(direct,destination,{sourceOffset:4,targetOffset:4,byteLength:8}).submit();
+  assert.deepEqual(await r.read(destination,Uint32Array),new Uint32Array([0,23,31,0]));
+  assert.deepEqual(await r.read(direct,Uint32Array,4,8),new Uint32Array([31]));
+  assert.equal(r.stats.dataBytesUploaded,uploads);
+  const readonly={...artifact,metadata:{...artifact.metadata,
+    bindings:artifact.metadata.bindings.map(binding=>({...binding,readOnly:true}))}};
+  const kernel=await r.kernel(readonly);
+  assert.doesNotThrow(()=>kernel.bind({target:direct},{value:0}));
+  const group=r.bindGroupCache.get(kernel,{target:direct},f.device.createBuffer({size:256,usage:64|8}));
+  const binding=group.entries.find(entry=>entry.binding===0).resource;
+  assert.equal(binding.buffer,owner);assert.equal(binding.offset,256);assert.equal(binding.size,12);
+  r.releaseExternalBuffer(direct);r.releaseExternalBuffer(direct);
+  assert.equal(owner.destroyCount,0);assert.equal(r.buffers.has(direct),false);
+  await r.dispose();assert.equal(owner.destroyCount,0);
+});
+
+test('WASM-owned buffers cannot be mutated or destroyed through imported aliases',async()=>{
+  const f=fixture(),r=f.runtime,owner=f.device.createBuffer({size:1024,usage:128|4|8});
+  const first=r.importExternalBuffer(owner,4),second=r.importExternalBuffer(owner,4,{offset:256});
+  const kernel=await r.kernel(artifact),source=r.createBuffer(4);
+  assert.throws(()=>kernel.bind({target:first},{value:5}),/immutable/);
+  assert.throws(()=>r.write(first,new Uint32Array([5])),/immutable/);
+  const batch=r.batch();assert.throws(()=>batch.copy(source,first),/immutable/);batch.discard();
+  r.destroyBuffer(first);r.destroyBufferCompleted(second);
+  assert.equal(owner.destroyCount,0);assert.equal(r.buffers.size,1);
+  r.importExternalBuffer(owner,4,{offset:512});
+  await r.dispose();assert.equal(owner.destroyCount,0);
+});
+
+test('direct imports enforce device storage alignment, limits and actual buffer usage',async()=>{
+  const f=fixture(),r=f.runtime,owner=f.device.createBuffer({size:1024,usage:128|4|8});
+  for(const [bytes,options] of [[4,{offset:4}],[0,{}],[3,{}],[8,{offset:1024}],[1028,{}]])
+    assert.throws(()=>r.importExternalBuffer(owner,bytes,options),/external WebGPU buffer range/);
+  assert.throws(()=>r.importExternalBuffer({...owner,usage:8},4),/external/);
+  f.device.limits.minStorageBufferOffsetAlignment=512;
+  assert.throws(()=>r.importExternalBuffer(owner,4,{offset:256}),/external/);
+  assert.doesNotThrow(()=>r.importExternalBuffer(owner,4,{offset:512}));
+  await r.dispose();assert.equal(owner.destroyCount,0);
+});
+
 test('the shared-buffer compatibility fallback reports copied bytes without counting direct uploads', async () => {
   const f = fixture(), r = f.runtime, target = r.createBuffer(8), heap = new Uint32Array(new SharedArrayBuffer(16));
   const write = f.device.queue.writeBuffer;

@@ -5,6 +5,7 @@
 #include "renderer.hpp"
 #include "browserbridge.hpp"
 #include "directwebgpu.hpp"
+#include "browserframe.hpp"
 #include "shaderanalysis.hpp"
 #include <osgUtil/RenderStage>
 #include <osg/FrameBufferObject>
@@ -20,7 +21,7 @@
 #include <emscripten.h>
 EM_JS(unsigned int, omw_webcuda_device_generation, (), { return Module.webcudaEnabled ? (Module.webcudaDeviceGeneration || 0) : 0; })
 EM_JS(void, omw_webcuda_recovery_ready, (), { Module.webcudaRecoveryPending=false; })
-EM_JS(void, omw_webcuda_capture_image, (unsigned int id,unsigned int width,unsigned int height,int finalScreen), {
+EM_JS(void, omw_webcuda_capture_image_immediate, (unsigned int id,unsigned int width,unsigned int height,int finalScreen), {
     Module.webcudaImageResults ??= new Map();
     const entry={pending:true};
     Module.webcudaImageResults.set(id,entry);
@@ -63,70 +64,196 @@ EM_JS(unsigned int, omw_webcuda_query_pixels, (unsigned int id), {
 EM_JS(int, omw_webcuda_requested, (), { return Module.webcudaSelected === true || Module.webcudaEnabled === true ? 1 : 0; })
 EM_JS(int, omw_webcuda_begin_frame, (), {
     if (typeof Module.webcudaBeginFrame !== 'function') throw Error('Missing WebCuda frame host');
-    return Module.webcudaBeginFrame() ? 1 : 0;
+    if(!Module.webcudaBeginFrame())return 0;
+    return typeof Module['webgpuSubmitFrame']==='function' ? 2 : 1;
 })
 EM_JS(int, omw_webcuda_profile_capture, (), { return Module.webcudaProfileCapture?1:0; })
-EM_JS(void, omw_webcuda_capture_timings, (const double* values), {
+EM_JS(void, omw_webcuda_capture_timings_immediate, (const double* values), {
     const start=Number(values)/8;
     if(!Number.isSafeInteger(start)||start<0||start+8>HEAPF64.length)throw Error('Invalid capture timing range');
     const v=HEAPF64.subarray(start,start+8);
     Module.webcudaCaptureTimings={materialCopyMs:v[0],materialEncodeMs:v[1],geometryEncodeMs:v[2],atlasResizeMs:v[3],
         materialCopies:v[4],materialEncodes:v[5],geometryEncodes:v[6],atlasResizes:v[7]};
 })
-EM_JS(void, omw_webcuda_shader_analysis_stats, (double hits,double misses,double bypasses), {
+EM_JS(void, omw_webcuda_shader_analysis_stats_immediate, (double hits,double misses,double bypasses), {
     Module.webcudaShaderAnalysisStats={};
     Module.webcudaShaderAnalysisStats.hits=hits;
     Module.webcudaShaderAnalysisStats.misses=misses;
     Module.webcudaShaderAnalysisStats.bypasses=bypasses;
 })
-EM_JS(void, omw_webcuda_snapshot, (unsigned int target,unsigned int width,unsigned int height), {
+EM_JS(void, omw_webcuda_snapshot_immediate, (unsigned int target,unsigned int width,unsigned int height), {
     Module.webcudaSnapshotPreviousFrame(target,width,height);
 })
-EM_JS(void, omw_webcuda_end_frame, (int commit), {
-    Module.webcudaEndFrame(Boolean(commit));
+EM_JS(void, omw_webcuda_end_frame_immediate, (int commit), {
+    if(!commit && typeof Module['webgpuAbortFrame']==='function') Module['webgpuAbortFrame']();
+    else Module.webcudaEndFrame(Boolean(commit));
 })
-EM_JS(void, omw_webcuda_resolve_attachment, (unsigned int source,unsigned int target,unsigned int plane,unsigned int format,unsigned int width,unsigned int height,int x,int y,unsigned int vw,unsigned int vh), {
+EM_JS(void, omw_webcuda_resolve_attachment_immediate, (unsigned int source,unsigned int target,unsigned int plane,unsigned int format,unsigned int width,unsigned int height,int x,int y,unsigned int vw,unsigned int vh), {
     Module.webcudaResolveAttachment({sourceId:source,targetId:target,plane,format,width,height,viewport:[x,y,vw,vh]});
 })
-EM_JS(void, omw_webcuda_retire_target, (unsigned int id), {
+EM_JS(void, omw_webcuda_retire_target_immediate, (unsigned int id), {
     Module.webcudaRetireTarget(id);
 })
-EM_JS(void, omw_webcuda_depth_isolation, (int begin,float depth), {
+EM_JS(void, omw_webcuda_depth_isolation_immediate, (int begin,float depth), {
     Module.webcudaDepthIsolation(Boolean(begin),depth);
 })
-EM_JS(void, omw_webcuda_debug, (unsigned int depth,unsigned int normals,unsigned int flags,const float* values), {
+EM_JS(void, omw_webcuda_debug_immediate, (unsigned int depth,unsigned int normals,unsigned int flags,const float* values), {
     const start=Number(values)/4;
     Module.webcudaDebugScene(depth,normals,flags,HEAPF32.slice(start,start+19));
 })
-EM_JS(void, omw_webcuda_bloom, (unsigned int depth,const float* values,int reverse), {
+EM_JS(void, omw_webcuda_bloom_immediate, (unsigned int depth,const float* values,int reverse), {
     const start=Number(values)/4;
     Module.webcudaBloomScene(depth,HEAPF32.slice(start,start+11),Boolean(reverse));
 })
-EM_JS(void, omw_webcuda_luminance, (unsigned int source,unsigned int width,unsigned int height,
+EM_JS(void, omw_webcuda_luminance_immediate, (unsigned int source,unsigned int width,unsigned int height,
     float sx,float sy,float speed,int reset,double time,unsigned int viewportWidth,unsigned int viewportHeight), {
     Module.webcudaSceneLuminance({sourceId:source,width,height,sx,sy,speed,reset:Boolean(reset),time,viewportWidth,viewportHeight});
 })
-EM_JS(void, omw_webcuda_distort, (unsigned int target), { Module.webcudaDistortScene(target); })
-EM_JS(void, omw_webcuda_adjust, (float gamma,float contrast), { Module.webcudaAdjustScene(gamma,contrast); })
-EM_JS(void, omw_webcuda_resolve, (unsigned int scene,unsigned int distortion,unsigned int format,unsigned int destinationFormat,float scaleX,float scaleY), {
+EM_JS(void, omw_webcuda_distort_immediate, (unsigned int target), { Module.webcudaDistortScene(target); })
+EM_JS(void, omw_webcuda_adjust_immediate, (float gamma,float contrast), { Module.webcudaAdjustScene(gamma,contrast); })
+EM_JS(void, omw_webcuda_resolve_immediate, (unsigned int scene,unsigned int distortion,unsigned int format,unsigned int destinationFormat,float scaleX,float scaleY), {
     Module.webcudaResolveScene(scene,distortion,format,destinationFormat,scaleX,scaleY);
 })
-EM_JS(void, omw_webcuda_capture_depth, (unsigned int target,unsigned int width,unsigned int height), {
+EM_JS(void, omw_webcuda_capture_depth_immediate, (unsigned int target,unsigned int width,unsigned int height), {
     Module.webcudaCaptureDepth(target,width,height);
 })
-EM_JS(void, omw_webcuda_color_target, (int begin,unsigned int target,unsigned int colorFormat,unsigned int depthFormat), {
+EM_JS(void, omw_webcuda_color_target_immediate, (int begin,unsigned int target,unsigned int colorFormat,unsigned int depthFormat), {
     Module.webcudaColorTarget(Boolean(begin),target,colorFormat,depthFormat);
 })
-EM_JS(void, omw_webcuda_ripples, (unsigned int target,unsigned int width,unsigned int height,
+EM_JS(void, omw_webcuda_ripples_immediate, (unsigned int target,unsigned int width,unsigned int height,
     const float* positions,unsigned int count,float ox,float oy,float time,int simulate), {
     const start=Number(positions)/4;
     if(!Number.isSafeInteger(start)||start<0||count>100||start+count*3>HEAPF32.length)throw Error('Invalid ripple source');
     Module.webcudaSubmitRipple({kind:'ripples',targetId:target,width,height,positions:HEAPF32.slice(start,start+count*3),ox,oy,time,simulate:Boolean(simulate)});
 })
-EM_JS(void, omw_webcuda_pass_state, (unsigned int mask, float red, float green, float blue,
+EM_JS(void, omw_webcuda_pass_state_immediate, (unsigned int mask, float red, float green, float blue,
     float alpha, float depth, unsigned int target,unsigned int depthTarget,unsigned int normalTarget,unsigned int colorFormat,unsigned int depthFormat,int clearStencil,unsigned int stencilBits,unsigned int stencilTarget,unsigned int clearColorMask,int viewportX,int viewportY,unsigned int viewportWidth,unsigned int viewportHeight,unsigned int sampleCount,unsigned int normalFormat), {
     Module.webcudaPassState({clearMask:mask,clearColor:[red,green,blue,alpha],clearDepth:depth,targetId:target,depthTargetId:depthTarget,normalTargetId:normalTarget,normalFormat,sampleCount,colorFormat,depthFormat,clearStencil,stencilBits,stencilTargetId:stencilTarget,clearColorMask,viewport:[viewportX,viewportY,viewportWidth,viewportHeight]});
 })
+namespace
+{
+    // Capture camera/effect state in WASM. Only finishBrowserFrame crosses the
+    // application boundary for this stream; legacy hosts keep their existing ABI.
+    void omw_webcuda_capture_image(unsigned int id,unsigned int width,unsigned int height,int finalScreen)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_capture_image_immediate(id,width,height,finalScreen);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::CaptureImage);
+        command.u32(id).u32(width).u32(height).u32(finalScreen!=0);
+    }
+    void omw_webcuda_capture_timings(const double* values)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_capture_timings_immediate(values);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::CaptureTimings);
+        for(std::size_t i=0;i<8;++i)command.f64(values[i]);
+    }
+    void omw_webcuda_shader_analysis_stats(double hits,double misses,double bypasses)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_shader_analysis_stats_immediate(hits,misses,bypasses);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::ShaderStats);
+        command.f64(hits).f64(misses).f64(bypasses);
+    }
+    void omw_webcuda_snapshot(unsigned int target,unsigned int width,unsigned int height)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_snapshot_immediate(target,width,height);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Snapshot);
+        command.u32(target).u32(width).u32(height);
+    }
+    void omw_webcuda_resolve_attachment(unsigned int source,unsigned int target,unsigned int plane,unsigned int format,unsigned int width,unsigned int height,int x,int y,unsigned int vw,unsigned int vh)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_resolve_attachment_immediate(source,target,plane,format,width,height,x,y,vw,vh);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::ResolveAttachment);
+        command.u32(source).u32(target).u32(plane).u32(format).u32(width).u32(height).i32(x).i32(y).u32(vw).u32(vh);
+    }
+    void omw_webcuda_retire_target(unsigned int id)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_retire_target_immediate(id);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::RetireTarget);
+        command.u32(id);
+    }
+    void omw_webcuda_depth_isolation(int begin,float depth)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_depth_isolation_immediate(begin,depth);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::DepthIsolation);
+        command.u32(begin!=0).f32(depth);
+    }
+    void omw_webcuda_debug(unsigned int depth,unsigned int normals,unsigned int flags,const float* values)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_debug_immediate(depth,normals,flags,values);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Debug);
+        command.u32(depth).u32(normals).u32(flags).words(values,19);
+    }
+    void omw_webcuda_bloom(unsigned int depth,const float* values,int reverse)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_bloom_immediate(depth,values,reverse);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Bloom);
+        command.u32(depth).u32(reverse!=0).words(values,11);
+    }
+    void omw_webcuda_luminance(unsigned int source,unsigned int width,unsigned int height,float sx,float sy,float speed,int reset,double time,unsigned int viewportWidth,unsigned int viewportHeight)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_luminance_immediate(source,width,height,sx,sy,speed,reset,time,viewportWidth,viewportHeight);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Luminance);
+        command.u32(source).u32(width).u32(height).f32(sx).f32(sy).f32(speed).u32(reset!=0).f64(time).u32(viewportWidth).u32(viewportHeight);
+    }
+    void omw_webcuda_distort(unsigned int target)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_distort_immediate(target);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Distort);
+        command.u32(target);
+    }
+    void omw_webcuda_adjust(float gamma,float contrast)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_adjust_immediate(gamma,contrast);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Adjust);
+        command.f32(gamma).f32(contrast);
+    }
+    void omw_webcuda_resolve(unsigned int scene,unsigned int distortion,unsigned int format,unsigned int destinationFormat,float scaleX,float scaleY)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_resolve_immediate(scene,distortion,format,destinationFormat,scaleX,scaleY);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Resolve);
+        command.u32(scene).u32(distortion).u32(format).u32(destinationFormat).f32(scaleX).f32(scaleY);
+    }
+    void omw_webcuda_capture_depth(unsigned int target,unsigned int width,unsigned int height)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_capture_depth_immediate(target,width,height);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::CaptureDepth);
+        command.u32(target).u32(width).u32(height);
+    }
+    void omw_webcuda_color_target(int begin,unsigned int target,unsigned int colorFormat,unsigned int depthFormat)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_color_target_immediate(begin,target,colorFormat,depthFormat);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::ColorTarget);
+        command.u32(begin!=0).u32(target).u32(colorFormat).u32(depthFormat);
+    }
+    void omw_webcuda_ripples(unsigned int target,unsigned int width,unsigned int height,const float* positions,unsigned int count,float ox,float oy,float time,int simulate)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_ripples_immediate(target,width,height,positions,count,ox,oy,time,simulate);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::Ripples);
+        if(count>100||(count&&!positions))throw std::invalid_argument("Invalid WASM ripple command");
+        command.u32(target).u32(width).u32(height).u32(count).f32(ox).f32(oy).f32(time).u32(simulate!=0).words(positions,count*3);
+    }
+    void omw_webcuda_pass_state(unsigned int mask,float red,float green,float blue,float alpha,float depth,unsigned int target,unsigned int depthTarget,unsigned int normalTarget,unsigned int colorFormat,unsigned int depthFormat,int clearStencil,unsigned int stencilBits,unsigned int stencilTarget,unsigned int clearColorMask,int viewportX,int viewportY,unsigned int viewportWidth,unsigned int viewportHeight,unsigned int sampleCount,unsigned int normalFormat)
+    {
+        if(!WebCuda::browserFrameActive()){omw_webcuda_pass_state_immediate(mask,red,green,blue,alpha,depth,target,depthTarget,normalTarget,colorFormat,depthFormat,clearStencil,stencilBits,stencilTarget,clearColorMask,viewportX,viewportY,viewportWidth,viewportHeight,sampleCount,normalFormat);return;}
+        WebCuda::BrowserCommand command(WebCuda::BrowserOpcode::PassState);
+        command.u32(mask).f32(red).f32(green).f32(blue).f32(alpha).f32(depth)
+            .u32(target).u32(depthTarget).u32(normalTarget).u32(colorFormat).u32(depthFormat)
+            .i32(clearStencil).u32(stencilBits).u32(stencilTarget).u32(clearColorMask)
+            .i32(viewportX).i32(viewportY).u32(viewportWidth).u32(viewportHeight).u32(sampleCount).u32(normalFormat);
+    }
+    void omw_webcuda_end_frame(int commit)
+    {
+        if(commit) {
+            if(WebCuda::browserFrameActive())WebCuda::finishBrowserFrame();
+            else omw_webcuda_end_frame_immediate(1);
+        } else {
+            // Cancel host prewarm/queued views before destroying retained WASM
+            // storage. The new host's abort is idempotent after decode failures.
+            try {omw_webcuda_end_frame_immediate(0);}
+            catch(...) {WebCuda::abortBrowserFrame();throw;}
+            WebCuda::abortBrowserFrame();
+        }
+    }
+}
 #endif
 namespace WebCuda
 {
@@ -352,7 +479,8 @@ namespace WebCuda
         if(!DirectWebGPU::instance().ready())
             DirectWebGPU::instance().attachBrowserDevice();
         collectImages();
-        if (!omw_webcuda_begin_frame()) return;
+        const int frameMode=omw_webcuda_begin_frame();
+        if(!frameMode)return;
         beginCaptureProfile(omw_webcuda_profile_capture()!=0);
         // Host acceptance is bounded by the browser renderer queue. Capture may
         // overlap GPU execution of the preceding frame, but retained packets keep
@@ -362,6 +490,7 @@ namespace WebCuda
         mColorTargetsWritten.clear();
         mFrameImageRequests.clear();
         try {
+            if(frameMode==2)beginBrowserFrame();
             collectExpiredTargets();
             // Retirement is recorded at the start of the accepted frame. The
             // browser applies it in render order, so capture can overlap the

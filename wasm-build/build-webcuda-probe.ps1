@@ -6,9 +6,9 @@ $repo=Split-Path $PSScriptRoot
 $output="$repo/.local-runtime/webcuda-probe"
 New-Item -ItemType Directory -Force $output | Out-Null
 $compiler="$env:EM_LIBEXEC/em++.exe"
-$flags=@('-m64','-pthread','-fwasm-exceptions','-std=c++20','-DOSG_LIBRARY_STATIC','-include',"$repo/wasm-build/include/gl_compat.h","-I$repo/deps/wasm64/include","-I$repo/openmw")
+$flags=@('-m64','-pthread','-fwasm-exceptions','-std=c++20','-DOSG_LIBRARY_STATIC','--use-port=emdawnwebgpu','-include',"$repo/wasm-build/include/gl_compat.h","-I$repo/deps/wasm64/include","-I$repo/openmw")
 $objects=@()
-foreach($unit in @('submission','renderer','geometrypacket','materialstate','materialtable','browserbridge')) {
+foreach($unit in @('submission','renderer','geometrypacket','materialstate','materialtable','browserbridge','browserframe','directwebgpu')) {
     $object="$output/$unit.o"
     & $compiler @flags -c "$repo/openmw/components/webcuda/$unit.cpp" -o $object
     if($LASTEXITCODE){throw "Failed to compile $unit"}

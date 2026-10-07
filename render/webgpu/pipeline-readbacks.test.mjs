@@ -13,7 +13,7 @@ function fixture() {
     status:0,gate:null,
     createBuffer(byteLength,{label}={}){const resource={byteLength,label,data:new Uint8Array(byteLength)};allocations.push(resource);return resource;},
     write(resource,data,offset=0){resource.data.set(new Uint8Array(data.buffer,data.byteOffset,data.byteLength),offset);},
-    destroyBuffer(){},async idle(){},
+    destroyBuffer(){},destroyBufferCompleted(){},async idle(){},
     async read(resource,Type,byteLength,offset=0){
       reads.push(resource.label);const result=new Type(resource.data.slice(offset,offset+byteLength).buffer);
       if(this.gate)await this.gate;return result;
@@ -65,6 +65,77 @@ test('positioned WGSL preparation uses one upload before each descriptor consume
   assert(!f.commands.some(name=>name==='prepare_fixed_matrices'||name==='prepare_texgen_matrices'));
 });
 
+test('direct packets bind immutable ranges and copy writable preparation inputs entirely on GPU',async()=>{
+  const f=fixture(),scene=f.scene(),writes=[],copies=[];
+  scene.fixedLighting=new Uint32Array(368);scene.fixedLighting.set([1,128,0,1]);
+  new Float32Array(scene.fixedLighting.buffer)[48+23]=180;
+  scene.texgen=new Uint32Array(144);scene.texgen.set([1,5,0,9]);
+  scene.positionedState=new Uint32Array(24);scene.positionedState[0]=9;
+  for(let k=0;k<4;k++)new Float32Array(scene.positionedState.buffer)[8+k*5]=1;
+  const directNames=['vertices','attributes','matrices','matrixIds','triangles','materials','fixedLighting','texgen','positionedState'];
+  scene.directGpuResources=Object.fromEntries(directNames.map(name=>[name,{byteLength:scene[name].byteLength,
+    data:new Uint8Array(scene[name].buffer,scene[name].byteOffset,scene[name].byteLength),label:`direct ${name}`} ]));
+  const write=f.runtime.write,batch=f.runtime.batch;
+  f.runtime.write=(resource,data,offset)=>{writes.push(resource.label);write(resource,data,offset);};
+  f.runtime.batch=()=>{const result=batch(),copy=result.copy;result.copy=function(source,target,range){
+    copies.push({source,target});return copy.call(this,source,target,range);};return result;};
+  const rendered=await f.pipeline.render(scene,32,32,null,f.pass);
+  await f.readbacks.flush();await rendered.queryCompletion;
+  for(const name of directNames)assert(!writes.includes(`OpenMW ${name}`),`${name} must not upload twice`);
+  for(const name of ['vertices','attributes','fixedLighting','texgen'])
+    assert(copies.some(copy=>copy.source===scene.directGpuResources[name]&&copy.target===f.pipeline.buffers.get(name)),`${name} needs writable GPU scratch`);
+  for(const name of ['matrices','matrixIds','triangles','materials','positionedState'])
+    assert(!copies.some(copy=>copy.source===scene.directGpuResources[name]),`${name} stays directly bound`);
+  const expanded=f.invocations.find(call=>call.name==='expand_particles');
+  assert.equal(expanded.resources.matrices,scene.directGpuResources.matrices);
+  assert.notEqual(expanded.resources.source,scene.directGpuResources.vertices);
+  const prepared=f.invocations.find(call=>call.name==='prepare_fixed_matrices');
+  const shaded=f.invocations.find(call=>call.name==='shade_fixed_vertices');
+  assert.equal(prepared.resources.descriptors,shaded.resources.descriptors);
+  assert.notEqual(prepared.resources.descriptors,scene.directGpuResources.fixedLighting);
+});
+
+test('ribbon assembly writes GPU scratch without aliasing immutable packed material inputs',async()=>{
+  const f=fixture(),scene=f.scene(2),writes=[];
+  scene.vertices=new Float32Array(40);scene.attributes=new Float32Array(136);scene.matrixIds=new Uint32Array(4);
+  scene.triangles=new Uint32Array([0,1,2,0,1,2,3,0]);scene.flatColors=new Uint32Array([0xffffffff,0xffffffff]);
+  scene.ribbonRanges=new Uint32Array([0,2,0,0,0,0,0,0,0,0,0,0,0]);
+  new Float32Array(scene.ribbonRanges.buffer)[8]=1;
+  scene.ribbonParticles=new Float32Array(20);
+  scene.directGpuResources=Object.fromEntries(['triangles','flatColors','materials'].map(name=>[name,
+    {byteLength:scene[name].byteLength,data:new Uint8Array(scene[name].buffer)}]));
+  const write=f.runtime.write;f.runtime.write=(resource,data,offset)=>{writes.push(resource.label);write(resource,data,offset);};
+  const result=await f.pipeline.render(scene,32,32,null,f.pass);await f.readbacks.flush();await result.queryCompletion;
+  const assembled=f.invocations.find(call=>call.name==='assemble_ribbon');
+  assert(assembled);
+  assert.notEqual(assembled.resources.triangles,scene.directGpuResources.triangles);
+  assert.notEqual(assembled.resources.flat_colors,scene.directGpuResources.flatColors);
+  assert.equal(assembled.resources.triangles,f.pipeline.buffers.get('triangles'));
+  for(const name of ['triangles','flatColors','materials'])assert(!writes.includes(`OpenMW ${name}`));
+});
+
+test('direct packet rendering preserves texture cache hits and uploads compressed bytes only on misses',async()=>{
+  const f=fixture(),writes=[];
+  f.pipeline.textureResidency=new ImmutableBufferResidency(f.runtime,{budgetBytes:256});
+  const write=f.runtime.write;f.runtime.write=(resource,data,offset)=>{
+    if(resource.label==='OpenMW compressedBlocks')writes.push(data.byteLength);
+    write(resource,data,offset);
+  };
+  const render=async version=>{
+    const scene=f.scene();scene.texels=new Uint32Array(16);scene.compressedBlocks=new Uint32Array([17,23]);
+    scene.textureDecodes=new Uint32Array([0,0,4,4,1]);scene.textureResources=new Uint32Array([version,0,16]);
+    // Ignore old whole-atlas packet ranges and keep the selective residency path.
+    scene.directGpuResources={compressedBlocks:{byteLength:8,data:new Uint8Array(scene.compressedBlocks.buffer)}};
+    const readbacks=new FrameReadbacks(f.runtime,bytes=>f.pipeline.buffer('frameReadback',bytes));
+    const result=await f.pipeline.render(scene,32,32,null,{...f.pass,readback:(...args)=>readbacks.read(...args)});
+    await readbacks.flush();return result.queryCompletion;
+  };
+  await render(1);assert.deepEqual(writes,[8]);assert.equal(f.commands.filter(name=>name==='decode_dxt').length,1);
+  await render(1);assert.deepEqual(writes,[8]);assert.equal(f.commands.filter(name=>name==='decode_dxt').length,1);
+  await render(2);assert.deepEqual(writes,[8,8]);assert.equal(f.commands.filter(name=>name==='decode_dxt').length,2);
+  assert.equal(f.pipeline.textureResidency.snapshot().hits,1);
+});
+
 test('bounded passes queue through reused scratch and defer status mapping until frame end',async()=>{
   const f=fixture(),completions=[];
   for(let i=0;i<4;i++) {
@@ -108,7 +179,13 @@ test('resident vertex streams survive scratch reuse and relocate without another
     scene.vertexLayouts.set([0,count,count,0,0,0,shift,shift+count*10,shift+count*44]);
     scene.vertexInputs=new Float32Array(shift+count*47);scene.vertexInputs[shift]=value;
     scene.vertexResources=new Uint32Array(version?[version,shift,count*10]:[]);
-    scene.vertices=new Float32Array();scene.attributes=new Float32Array();scene.secondaryColors=new Float32Array();return scene;
+    scene.vertices=new Float32Array();scene.attributes=new Float32Array();scene.secondaryColors=new Float32Array();
+    // A direct packet must not bypass residency or trust its version metadata
+    // less strictly. This also covers old engines that packed vertexInputs.
+    scene.directGpuResources={vertexLayouts:{byteLength:scene.vertexLayouts.byteLength,
+      data:new Uint8Array(scene.vertexLayouts.buffer)},vertexInputs:{byteLength:scene.vertexInputs.byteLength,
+      data:new Uint8Array(scene.vertexInputs.buffer)}};
+    return scene;
   };
   const render=async scene=>{
     const frame=new FrameReadbacks(f.runtime,bytes=>f.pipeline.buffer('frameReadback',bytes));

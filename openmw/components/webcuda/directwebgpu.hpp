@@ -3,6 +3,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
+#include <vector>
 
 #ifdef __EMSCRIPTEN__
 #include <webgpu/webgpu.h>
@@ -10,9 +12,9 @@
 
 namespace WebCuda
 {
-    // Transitional owner for the direct WASM -> WebGPU path. The browser device
-    // is imported once from the bootstrapping JS host; all per-frame GPU work
-    // can then be issued through webgpu.h without rebuilding scene packets in JS.
+    // Imports the browser device once and owns the frame upload allocations.
+    // A lease is returned only after all commands referencing it have been
+    // submitted (or discarded), so later queue writes cannot overwrite a frame.
     class DirectWebGPU
     {
     public:
@@ -23,8 +25,25 @@ namespace WebCuda
         void shutdown();
 
 #ifdef __EMSCRIPTEN__
+        struct Upload
+        {
+            WGPUBuffer buffer = nullptr;
+            std::vector<unsigned char> bytes;
+            std::uint64_t capacity = 0;
+            std::uint64_t generation = 0;
+        };
+        using UploadPtr = std::shared_ptr<Upload>;
+
         WGPUDevice device() const noexcept { return mDevice; }
         WGPUQueue queue() const noexcept { return mQueue; }
+
+        UploadPtr acquireUpload();
+        void submitUpload(Upload&);
+        std::uint64_t bufferLimit() const noexcept { return mBufferLimit; }
+        std::uint64_t bindingLimit() const noexcept { return mBindingLimit; }
+        std::uint32_t storageAlignment() const noexcept { return mStorageAlignment; }
+        std::uint32_t bufferAllocations() const noexcept { return mBufferAllocations; }
+        std::uint32_t uploadReuses() const noexcept { return mUploadReuses; }
 
         WGPUBuffer createBuffer(std::uint64_t bytes, WGPUBufferUsage usage, const char* label = nullptr) const;
         void writeBuffer(WGPUBuffer buffer, std::uint64_t offset, const void* data, std::size_t bytes) const;
@@ -36,8 +55,17 @@ namespace WebCuda
         DirectWebGPU& operator=(const DirectWebGPU&) = delete;
 
 #ifdef __EMSCRIPTEN__
+        void recycleUpload(Upload*) noexcept;
         WGPUDevice mDevice = nullptr;
         WGPUQueue mQueue = nullptr;
+        std::vector<std::unique_ptr<Upload>> mFreeUploads;
+        std::uint64_t mGeneration = 0;
+        std::uint64_t mBufferLimit = 0;
+        std::uint64_t mBindingLimit = 0;
+        std::uint64_t mCachedBytes = 0;
+        std::uint32_t mStorageAlignment = 256;
+        std::uint32_t mBufferAllocations = 0;
+        std::uint32_t mUploadReuses = 0;
 #endif
     };
 }

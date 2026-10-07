@@ -8,6 +8,8 @@ import { guardLegacyRendering } from './legacy-draw-guard.js';
 import { targetId as canonicalTargetId, targetCommand } from './target-id.js';
 import { FrameReadbacks } from './frame-readbacks.js';
 import { NativeAttachmentStore } from './native-targets.js';
+import { submitWasmFrame } from './wasm-frame.js';
+import { importDirectPacket } from './direct-packet.js';
 
 // A frame is accepted before culling starts, retains immutable WASM packets,
 // then uploads directly from their heap views in camera order. At most one
@@ -278,6 +280,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   function fail(error) {
     if(failed||disposed)return;
     failed=true; releasePackets(frame);frame=null; state=null;
+    while(renderQueue.length)releasePackets(renderQueue.shift().passes);
     Module.webcudaImageError=String(error);
     for(const request of [...imageRequests])request.reject(error);
     stats.error=String(error?.stack??error);
@@ -293,6 +296,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   runtime.device.lost.then(info=>{
     if(disposed)return;
     failed=true;releasePackets(frame);frame=null;state=null;
+    while(renderQueue.length)releasePackets(renderQueue.shift().passes);
     const error=Error(`WebGPU device lost: ${info.message}`);
     Module.webcudaRecoveryPending=true;
     Module.webcudaImageError=String(error);
@@ -353,29 +357,23 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
   Module.webcudaSubmitPass=packet=>{
     if(!frame||!state||packet.version!==2||packet.storage!=='wasm-retained'||typeof packet.release!=='function')
       throw Error('Unexpected WebGPU pass packet');
-    const direct=packet.scene.directGPU;
-    if(direct?.buffer&&direct.ranges) {
-      const imported={};
-      for(const [name,range] of Object.entries(direct.ranges)) {
-        if(!range||!Number.isSafeInteger(range.offset)||!Number.isSafeInteger(range.bytes)||range.offset<0||range.bytes<=0)
-          throw RangeError('Invalid direct WASM GPU packet range');
-        imported[name]=runtime.importExternalBuffer(direct.buffer,range.bytes,
-          {offset:range.offset,label:`OpenMW direct ${name}`});
-      }
-      packet.scene.directGpuResources=imported;
-      const release=packet.release;
-      let released=false;
-      packet.release=()=>{
-        if(released)return;released=true;
-        for(const resource of Object.values(imported))runtime.releaseExternalBuffer(resource);
-        release();
-      };
-    }
+    importDirectPacket(runtime,packet);
     const captured={...packet,...state};
+    const release=packet.release;
+    let released=false;
+    captured.release=()=>{
+      if(released)return;released=true;
+      release();
+    };
     // Start compiling any cold fixed-state pipelines while OpenMW continues
     // capturing the rest of the frame. This removes first-use material stalls
     // from the actual render critical path.
-    captured.prewarm=Promise.resolve().then(()=>pipeline.prewarm(packet.scene,packet.width,packet.height,captured));
+    captured.prewarm=Promise.resolve().then(()=>{
+      if(released||failed||disposed)return;
+      // prewarm snapshots CPU material state before its first await. Once it
+      // returns a compilation promise it no longer reads retained WASM views.
+      return pipeline.prewarm(packet.scene,packet.width,packet.height,captured);
+    });
     captured.prewarm.catch(()=>{});
     frame.push(captured);lastState=state;state=null;return true;
   };
@@ -997,6 +995,20 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     frame=null;
     renderQueue.push({passes,acceptedAt:frameAcceptedAt});
     void pumpRenderQueue();
+  };
+  Module.webgpuAbortFrame=()=>{
+    if(frame)Module.webcudaEndFrame(false);
+  };
+  Module.webgpuSubmitFrame=(...args)=>{
+    try {
+      if(!frame||disposed||failed)throw Error('Batched WASM frame has no active WebGPU host');
+      submitWasmFrame(Module,...args);
+    } catch(error) {
+      // Invalidate pending prewarm work and borrowed JS views before the engine
+      // releases the remaining tokens from a partially decoded frame.
+      Module.webgpuAbortFrame();
+      throw error;
+    }
   };
   Module.webcudaDeviceGeneration=((Module.webcudaDeviceGeneration??0)+1)>>>0;
   if(Module.webcudaDeviceGeneration===0)Module.webcudaDeviceGeneration=1;

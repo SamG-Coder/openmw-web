@@ -189,11 +189,14 @@ export class WebGPURuntime {
 
   importExternalBuffer(gpuBuffer, byteLength, {offset = 0, label = 'OpenMW direct WASM packet'} = {}) {
     this.assertAlive();
-    if (!gpuBuffer || typeof gpuBuffer.size !== 'number' || !integer(offset) || !integer(byteLength)
-        || offset % 4 || byteLength % 4 || offset + byteLength > gpuBuffer.size)
+    const alignment=this.device.limits.minStorageBufferOffsetAlignment??256;
+    if (!gpuBuffer || !integer(gpuBuffer.size,this.device.limits.maxBufferSize) || !integer(offset)
+        || !integer(byteLength,this.device.limits.maxStorageBufferBindingSize) || !byteLength
+        || offset % alignment || byteLength % 4 || offset + byteLength > gpuBuffer.size
+        || !integer(gpuBuffer.usage,1023) || !(gpuBuffer.usage&B.STORAGE))
       throw new RangeError('Invalid external WebGPU buffer range');
     const resource={runtime:this,gpuBuffer,byteLength,size:byteLength,offset,label,
-      usage:B.STORAGE|B.COPY_SRC|B.COPY_DST|B.VERTEX|B.INDEX|B.INDIRECT,destroyed:false,external:true};
+      usage:gpuBuffer.usage,destroyed:false,external:true};
     this.buffers.add(resource);
     return resource;
   }
@@ -331,6 +334,8 @@ export class WebGPURuntime {
     const seen = new Map();
     for (const binding of metadata.bindings) {
       const resource = resources[binding.name]; this.checkResource(resource);
+      if(resource.external&&!binding.readOnly)
+        throw new RangeError('External WASM packet buffers are immutable; prepare writable data in scratch');
       if (resource.size < binding.stride || resource.size > this.device.limits.maxStorageBufferBindingSize)
         throw new RangeError(`Storage buffer size is invalid for ${binding.name}`);
       if (seen.has(resource.gpuBuffer) && (!binding.readOnly || !seen.get(resource.gpuBuffer)))
@@ -415,6 +420,7 @@ export class WebGPURuntime {
   destroyBuffer(resource) {
     if (!resource || resource.runtime !== this) throw new Error('GPU buffer belongs to another runtime');
     if (resource.destroyed) return;
+    if (resource.external) { this.releaseExternalBuffer(resource); return; }
     // Destruction remains available for cleanup after device loss.
     if (!this.failure && !this.closing && !this.disposed) this.flush();
     this.bindGroupCache.invalidate(resource.gpuBuffer);
@@ -428,6 +434,7 @@ export class WebGPURuntime {
   destroyBufferCompleted(resource) {
     if (!resource || resource.runtime !== this) throw new Error('GPU buffer belongs to another runtime');
     if (resource.destroyed) return;
+    if (resource.external) { this.releaseExternalBuffer(resource); return; }
     this.bindGroupCache.invalidate(resource.gpuBuffer);
     resource.destroyed=true;this.buffers.delete(resource);resource.gpuBuffer.destroy();
   }
@@ -497,6 +504,7 @@ class WebGPUBatch {
 
   copy(source, target, selection) {
     this.open(); this.runtime.checkResource(source); this.runtime.checkResource(target);
+    if(target.external)throw new Error('External WASM packet buffers are immutable in JavaScript');
     if (source.gpuBuffer === target.gpuBuffer) throw new RangeError('Copy requires distinct buffers');
     if (selection === undefined && source.byteLength !== target.byteLength)
       throw new RangeError('Whole-buffer copy requires equal sizes');

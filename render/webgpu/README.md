@@ -32,8 +32,10 @@ part of the new build or startup path.
 
 ## Renderer structure
 
-`runtime.js` owns the WebGPU device, buffer uploads, compute pipelines, binding
-layouts, per-dispatch parameter snapshots and ordered command submissions.
+`runtime.js` owns the WebGPU device, compute pipelines, binding layouts,
+per-dispatch parameter snapshots and ordered command submissions. The C++
+`DirectWebGPU` owner imports that same device and uploads dynamic frame data
+through the WebGPU C API; the runtime retains texture/geometry residency uploads.
 `kernel-manifest.js` supplies the binding/scalar ABI for the 77 retained compute
 entry points; `shaders/prepare-triangles.wgsl` prepares identity triangle slots.
 
@@ -51,11 +53,12 @@ perspective varyings; triangles crossing the eye plane use a homogeneous basis
 that remains defined at zero or negative vertex `w`. Camera and material depth
 ranges remain separate from homogeneous clipping.
 
-`shader-specialization.js` uses immutable material flags to remove inactive WGSL
-branches and unreachable helpers before pipeline compilation. Pipelines and
-shader variants are cached. This keeps a simple draw from compiling every
-water, terrain, sky and generated-line calculation; no CUDA translation is
-involved.
+`shader-specialization.js` removes unselected fragment entry points and
+unreachable helpers. Production material features remain uniform-driven, so
+materials share shader modules for each entry point rather than compiling a
+module for every feature combination. Helpers reachable through those dynamic
+features remain in the shader. Fixed render state still selects cached pipeline
+variants; no CUDA translation is involved.
 
 `visibility-counter.js` preserves exact visible-sample counts for sun glare.
 Native render passes accumulate surviving samples into a separate attachment,
@@ -69,19 +72,99 @@ camera/attachment order, post-processing, snapshots, readbacks and device-loss
 handling. SDL's canvas receives input; a separate WebGPU canvas presents the
 rendered frame.
 
+### WASM frame submission
+
+The current engine records camera state, retained scene descriptors, attachment
+operations, image captures and effects into one fixed-width command stream in
+WASM. `browserframe.cpp` makes one application handoff to `wasm-frame.js` when
+the frame is complete. The separate begin-frame call performs bounded queue
+admission before culling; image-result polling and startup/device recovery are
+outside the frame command stream.
+
+Camera order and state come from the C++ viewer. The JavaScript adapter decodes
+those commands in order and invokes the existing render operations. It does not
+derive camera matrices or copy the scene arrays into a separate JavaScript heap.
+Pointers and counts are encoded as two 32-bit words and checked before creating
+views, preserving wasm64 addresses above 4 GiB without signed bitwise truncation.
+
+All directly bound dynamic input ranges for a frame share one C++-owned
+`GPUBuffer`, aligned to the actual device storage-offset limit. One
+`wgpuQueueWriteBuffer` snapshots the packed frame bytes. Staging vectors and GPU
+allocations are reused after every referencing packet has been submitted or
+discarded. Free CPU/GPU allocations have a combined 256 MiB cache budget and a
+four-entry limit; active frame ownership is bounded by host admission.
+
+Raw vertex streams and compressed textures are deliberately omitted from this
+upload. Their existing residency caches upload only missing or changed ranges.
+Preparation kernels that modify vertices, ribbon triangles, lighting or TexGen
+descriptors use reusable GPU scratch, with GPU-to-GPU copies from packed inputs.
+Read-only ranges bind directly; a writable binding must not alias the shared
+packed buffer in the same WebGPU usage scope.
+
+This is direct C API buffer creation/upload plus one application command
+handoff. Emdawnwebgpu implements the C API on top of the browser WebGPU binding.
+Shader/pipeline creation, preparation dispatches and render-pass encoding still
+use the JavaScript renderer. One frame handoff is not a promise of one total
+GPU submission or one total upload: residency misses, dispatch uniforms and
+post-processing still have their own GPU work.
+
+`?renderdebug=1` includes these cumulative fields under `transport` in the
+renderer report:
+
+| Field | Meaning |
+| --- | --- |
+| `frameSubmissions` | Ordered command streams accepted from WASM |
+| `lastFrameCommands` | Camera/pass/effect commands in the last accepted stream |
+| `directGpuUploads` | C API dynamic-frame uploads; at most one per stream |
+| `directGpuBytes` | Packed bytes uploaded by C++, including alignment padding |
+| `directGpuPasses` | Camera packets with directly bound GPU ranges |
+| `directBufferAllocations` | GPU upload allocations, including growth |
+| `directBufferReuses` | Frame leases acquired from the reuse pool |
+| `retainedPasses` | WASM packets still owned by queued or encoding frames |
+
+The existing immediate pass ABI remains available to older engines and the
+standalone bridge fixtures. New engines use the batched path when the host
+advertises `webgpuSubmitFrame`. Aborted/failed streams cancel pending prewarm
+work before releasing WASM arrays; device generations prevent old allocations
+from entering a replacement device's pool.
+
 ### Attachment compatibility
 
-The existing engine transport uses GPU buffers for image atlases, camera
-attachments and compute post-processing. The render path imports those
-attachments into native WebGPU textures, draws, then exports the results back
-on the GPU. Pixel data does not round-trip through JavaScript for this bridge.
+Supported camera attachments remain native WebGPU textures through rendering,
+attachment resolution, sampling and presentation. Operations that still need
+the compatibility buffer layout import/export their attachments on the GPU.
+Pixel data does not round-trip through JavaScript for these conversions.
 The regular attachment ABI is nine interleaved floats per pixel (RGBA, depth,
 normal RGBA) followed by a separate stencil plane, with independent sample
 planes for MSAA. Depth-only cameras use compact one-float storage.
 
-These compatibility passes have a cost. Further performance work can keep
-attachments and sampled images as native textures throughout post-processing.
-This conversion does not establish a gameplay FPS result or a speedup factor.
+Compatibility passes and preparation still have a cost. Source changes and
+standalone validation do not establish a gameplay FPS result or speedup factor.
+
+## Building the direct WASM path
+
+The direct sources need `--use-port=emdawnwebgpu` during compilation **and**
+linking. The Emscripten port supplies `webgpu/webgpu.h` and its implementation.
+The relevant CMake source properties declare the compile option, and the
+canonical linker supplies the same port. Ninja regenerates those source
+commands even if `CMAKE_CXX_FLAGS` in an existing Windows cache predates the
+direct path; deleting the build tree or rebuilding the dependency stack is
+unnecessary.
+
+After pulling, restart `OpenMW.WebHost` with F5 or
+`dotnet run --project OpenMW.WebHost`. With the default automatic engine selection/build enabled,
+the host fingerprints C++ and build inputs, runs the incremental build and mounts
+the resulting engine. `/status` reports progress or the compiler error. An
+explicit manual incremental build is:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\wasm-build\build-local-windows.ps1
+```
+
+The CMake build tree, Emscripten toolchain and prebuilt dependency stack must
+already exist. The first port use may download Emdawnwebgpu into the SDK cache.
+Changing JavaScript/WGSL alone continues to use the existing engine; changing
+the C++ command producer requires the incremental WASM rebuild.
 
 ## Running with an existing local engine
 
@@ -127,16 +210,26 @@ states is not claimed.
 
 ## Validation
 
-All **75 Node regression tests** passed for this change across the runtime,
-host/packet lifetime, resource residency, shader specialization, visibility
-counter, staging and frame-pump suites below.
+The direct-frame change passes **160 Node regression tests** across the
+runtime, host/packet lifetime, resource residency, command decoding, actual
+EM_JS pointer boundaries, shader specialization, visibility counters, staging
+and frame-pump suites below.
 
 Run JavaScript host, lifetime, packet, residency and submission regressions:
 
 ```sh
 node --experimental-vm-modules --test render/webgpu/*.test.mjs
-node --test wasm-build/webgpu-staging.test.mjs wasm-build/frame-pump.test.mjs
+node --test wasm-build/webgpu-staging.test.mjs wasm-build/frame-pump.test.mjs play/frame-pump-performance.test.mjs
 ```
+
+A native C++ probe also exercised the actual `directwebgpu.cpp` and
+`browserframe.cpp` with the pinned WebGPU header and mocked GPU/browser calls.
+Ten lifecycle/serialization scenarios passed with AddressSanitizer and UBSan,
+including reuse, retained-frame separation, growth, device replacement and
+abort/rejection cleanup. These checks are not an Emscripten link or GPU execution.
+The Windows dependency stack and SDK are not present in the editing environment;
+the full engine build and RTX 5080 gameplay verification remain target-machine
+checks.
 
 `gpu-check.mjs` compiles the actual WGSL and exercises synthetic scenes on a
 WebGPU device, including pixel readback. It can use the optional Dawn `webgpu`
@@ -151,7 +244,8 @@ node render/webgpu/gpu-check.mjs
 Use `--kernels-only` to compile all retained compute shaders and check identity
 triangle assembly without running the raster tests.
 
-For this change, Dawn with a Vulkan SwiftShader device validated all **79 WGSL
+Earlier renderer validation, before the direct-frame transport change, used
+Dawn with a Vulkan SwiftShader device to validate all **79 WGSL
 source modules**, compiled all **78 production compute pipelines**, and passed
 all **28 GPU readback checks**, with no skips or uncaptured GPU errors. Coverage
 includes textures, perspective and eye-plane clipping, depth, ordered blending,

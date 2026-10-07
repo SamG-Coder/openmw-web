@@ -63,6 +63,9 @@ PNG_A="$WARCH/libpng-mt.a"
 OMW_FORCE_INC="$ROOT/wasm-build/include"
 [ -f "$DW/include/gl_compat.h" ] && OMW_FORCE_INC="$DW/include"
 
+# Direct WebGPU sources declare their emdawnwebgpu compile option in
+# openmw/components/CMakeLists.txt so existing Ninja builds pick it up without
+# replacing cached compiler flags or recompiling every unrelated component.
 emcmake cmake -S "$ROOT/openmw" -B "$ROOT/$BUILD_DIR" -G Ninja \
   -DMYGUI_STATIC=ON -DUSE_LUAJIT=OFF -DOSG_STATIC=ON -DOPENMW_USE_SYSTEM_OSG=ON -DOSGPlugins_LIB_DIR="$DW/lib" -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
   -DSDL2_DIR="$DW/lib/cmake/SDL2" -DPNG_LIBRARY:FILEPATH="$PNG_A" \
@@ -83,7 +86,7 @@ emcmake cmake -S "$ROOT/openmw" -B "$ROOT/$BUILD_DIR" -G Ninja \
   `# the MAIN-THREAD canvas -- proven by stack trace: _eglCreateContext -> Browser.createContext` \
   `# -> getContext on the transferred canvas, which throws once it belongs to the worker.` \
   `# Off by default so the shipping build keeps SDL's context exactly as it is.` \
-  -DCMAKE_CXX_FLAGS="${OMW_PROXY:+-DOPENMW_PROXY_GL} -D_LIBCPP_ENABLE_CXX17_REMOVED_FEATURES -DBT_USE_DOUBLE_PRECISION $ARCH_FLAG -fwasm-exceptions -msimd128 --use-port=emdawnwebgpu -include $OMW_FORCE_INC/mygui_char_traits_fix.h -include $OMW_FORCE_INC/gl_compat.h -Wno-missing-template-arg-list-after-template-kw -Wno-error=missing-template-arg-list-after-template-kw -pthread -I$BOOST/../bullet3/src -I$DW/include -I$BOOST" \
+  -DCMAKE_CXX_FLAGS="${OMW_PROXY:+-DOPENMW_PROXY_GL} -D_LIBCPP_ENABLE_CXX17_REMOVED_FEATURES -DBT_USE_DOUBLE_PRECISION $ARCH_FLAG -fwasm-exceptions -msimd128 -include $OMW_FORCE_INC/mygui_char_traits_fix.h -include $OMW_FORCE_INC/gl_compat.h -Wno-missing-template-arg-list-after-template-kw -Wno-error=missing-template-arg-list-after-template-kw -pthread -I$BOOST/../bullet3/src -I$DW/include -I$BOOST" \
   -DCMAKE_C_FLAGS="-pthread -msimd128 $ARCH_FLAG" \
   -DBoost_INCLUDE_DIR="$BOOST" -DBoost_NO_BOOST_CMAKE=OFF \
   -DBoost_USE_STATIC_RUNTIME=ON -DBoost_USE_STATIC_LIBS=ON \

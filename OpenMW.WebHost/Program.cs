@@ -580,14 +580,23 @@ sealed class EngineManager
         }
 
         // These are the C++ pieces that define the browser capture ABI and the
-        // viewer selection/frame loop. JS/WGSL changes do not require WASM relink.
+        // viewer selection/frame loop. Build inputs must participate too: a
+        // changed WebGPU port option needs a ninja/CMake regeneration even when
+        // no C++ source changed. JS/WGSL changes do not require WASM relink.
         AddTree(Path.Combine(_root, "openmw", "components", "webcuda"));
+        AddTree(Path.Combine(_root, "wasm-build", "include"));
         foreach (var file in new[]
         {
             Path.Combine(_root, "openmw", "apps", "openmw", "engine.cpp"),
             Path.Combine(_root, "openmw", "apps", "openmw", "engine.hpp"),
             Path.Combine(_root, "openmw", "apps", "openmw", "main.cpp"),
-            Path.Combine(_root, "wasm-build", "link-openmw.sh")
+            Path.Combine(_root, "openmw", "CMakeLists.txt"),
+            Path.Combine(_root, "openmw", "components", "CMakeLists.txt"),
+            Path.Combine(_root, "openmw", "apps", "openmw", "CMakeLists.txt"),
+            Path.Combine(_root, "configure-openmw.sh"),
+            Path.Combine(_root, "wasm-build", "link-openmw.sh"),
+            Path.Combine(_root, "wasm-build", "build-local-windows.ps1"),
+            Path.Combine(_root, "wasm-build", "bootstrap-windows.ps1")
         })
             if (File.Exists(file)) files.Add(file);
 

@@ -142,6 +142,18 @@ export class MaterialPipeline {
       r.writeBorrowed(resource,data,offset);
     else r.write(resource,data,offset);
   }
+  inputBuffer(scene,name,writable=false) {
+    const source=scene.directGpuResources?.[name];
+    if(!source)return this.buffer(name,scene[name].byteLength,scene[name]);
+    if(!writable)return source;
+    // WebGPU tracks buffer usage for the whole GPUBuffer. A writable range
+    // cannot share a dispatch with any read-only range of the packed buffer,
+    // even when their byte ranges are disjoint. GPU preparation gets reusable
+    // scratch; the packed input never needs another CPU upload.
+    const target=this.buffer(name,scene[name].byteLength);
+    this.runtime.batch().copy(source,target,{byteLength:scene[name].byteLength}).submit();
+    return target;
+  }
   releaseBuffer(name) {
     if(this.busy)throw Error('Cannot release an in-flight pipeline buffer');
     const resource=this.buffers.get(name);
@@ -673,14 +685,13 @@ export class MaterialPipeline {
           for(let shift=0;shift<16;shift+=4)if(((factors>>shift)&15)>14)throw RangeError('Invalid blend factor');
         }
       }
-      const directGpu=scene.directGpuResources??{};
       // Most immutable camera inputs are already in one WASM-owned WebGPU
       // buffer written by C++. Bind its aligned ranges directly instead of
       // issuing dozens of JS queue.writeBuffer calls.
-      const upload=name=>directGpu[name]??this.buffer(name,scene[name].byteLength,scene[name]);
+      const upload=(name,writable=false)=>this.inputBuffer(scene,name,writable);
       if(scene.textureDecodes.length%5)throw RangeError('Invalid texture decode records');
       const texturePlan=this.textureResidency.plan(scene.textureResources??new Uint32Array(),scene.texels.length);
-      const vertexPlan=compactVertices&&!directGpu.vertexInputs
+      const vertexPlan=compactVertices
         ?this.vertexResidency.plan(scene.vertexResources??new Uint32Array(),scene.vertexInputs.length):null;
       const decodePlans=[];
       const validatedMapInputs=new Map();
@@ -734,23 +745,24 @@ export class MaterialPipeline {
           throw RangeError('Invalid compressed texture range');
         recordDecode(words,w*h*((floating||converted)&&!depthImage?4:1));
       }
-      const source=compactVertices?this.buffer('vertices',vertexCount*40):upload('vertices');
+      const source=compactVertices?this.buffer('vertices',vertexCount*40):upload('vertices',true);
       const matrices=upload('matrices'), matrix_ids=upload('matrixIds');
-      const triangles=upload('triangles'), materials=upload('materials'), flat_colors=upload('flatColors'), polygon_edges=upload('polygonEdges');
+      const hasRibbons=Boolean(scene.ribbonRanges?.length);
+      const triangles=upload('triangles',hasRibbons), materials=upload('materials'), flat_colors=upload('flatColors',hasRibbons), polygon_edges=upload('polygonEdges');
       const {texels,cluster_offset}=await this.uploadClusterAtlas(scene,texturePlan);
       this.textureResidency.restore(texturePlan,texels);
       const rawSlots=triangleCount, tiles=Math.ceil(width/16)*Math.ceil(height/16), row_pixels=Math.ceil(width/64)*64;
       const transformed=this.buffer('transformed',vertexCount*40);
-      const sourceAttributes=compactVertices?this.buffer('attributes',vertexCount*136):upload('attributes');
+      const sourceAttributes=compactVertices?this.buffer('attributes',vertexCount*136):upload('attributes',true);
       const secondaryColors=compactVertices?this.buffer('secondaryColors',vertexCount*12):null;
       if(compactVertices&&vertexCount) {
-        const inputs=directGpu.vertexInputs??this.buffer('vertexInputs',scene.vertexInputs.byteLength);
-        if(!directGpu.vertexInputs) {
-          for(const [first,last] of atlasUploadRanges(scene.vertexInputs.length,undefined,scene.vertexInputs.length,vertexPlan.hitRanges))
-            this.upload(inputs,scene.vertexInputs.subarray(first,last),first*4);
-          this.vertexResidency.restore(vertexPlan,inputs);
-          this.vertexResidency.capture(vertexPlan,inputs);
-        }
+        // Immutable meshes stay resident even when the dynamic per-frame
+        // inputs arrive in a direct GPU packet.
+        const inputs=this.buffer('vertexInputs',scene.vertexInputs.byteLength);
+        for(const [first,last] of atlasUploadRanges(scene.vertexInputs.length,undefined,scene.vertexInputs.length,vertexPlan.hitRanges))
+          this.upload(inputs,scene.vertexInputs.subarray(first,last),first*4);
+        this.vertexResidency.restore(vertexPlan,inputs);
+        this.vertexResidency.capture(vertexPlan,inputs);
         r.batch().dispatch(k.unpack_vertex_inputs.bind({inputs,layouts:upload('vertexLayouts'),matrix_ids,
           vertices:source,attributes:sourceAttributes,secondary_colors:secondaryColors},{vertex_count:vertexCount}),dispatchGroups(vertexCount,r.device.limits)).submit();
       }
@@ -785,10 +797,9 @@ export class MaterialPipeline {
         this.validateMultisampleStorage(target,rasterTarget,width,height,sample_count);
       }
       const groups=n=>dispatchGroups(n,r.device.limits);
-      const blocks=directGpu.compressedBlocks??this.buffer('compressedBlocks',scene.compressedBlocks.byteLength);
-      if(!directGpu.compressedBlocks)
-        for(const [first,last] of mergeWordRanges(decodePlans.filter(plan=>!plan.cached).map(plan=>[plan.offset,plan.offset+plan.words]),scene.compressedBlocks.length))
-          this.upload(blocks,scene.compressedBlocks.subarray(first,last),first*4);
+      const blocks=this.buffer('compressedBlocks',scene.compressedBlocks.byteLength);
+      for(const [first,last] of mergeWordRanges(decodePlans.filter(plan=>!plan.cached).map(plan=>[plan.offset,plan.offset+plan.words]),scene.compressedBlocks.length))
+        this.upload(blocks,scene.compressedBlocks.subarray(first,last),first*4);
       const decodeBatch=boundedBatch(r),floatMipOffsets=new Set(),floatMipStorage=new Map(),depthMipStorage=new Map();
       for(let i=0;i<scene.textureDecodes.length;i+=5) {
         const [block_offset,pixel_offset,w,h,format]=scene.textureDecodes.subarray(i,i+5);
@@ -936,7 +947,7 @@ export class MaterialPipeline {
       r.batch().dispatch(k.expand_particles.bind({source,attributes:sourceAttributes,matrices,matrix_ids},{vertex_count:vertexCount}),groups(vertexCount)).submit();
       const positionedBuffer=positionedTransforms.fixed||positionedTransforms.texgen?upload('positionedState'):null;
       if(fixed_enabled) {
-        const descriptors=upload('fixedLighting');
+        const descriptors=upload('fixedLighting',positionedTransforms.fixed);
         if(positionedTransforms.fixed)r.batch().dispatch(k.prepare_fixed_matrices.bind({descriptors,positioned:positionedBuffer},
           {draw_count:scene.matrices.length/32}),groups(scene.matrices.length/4)).submit();
         r.batch().dispatch(k.shade_fixed_vertices.bind({vertices:source,attributes:sourceAttributes,matrices,matrix_ids,
@@ -948,7 +959,7 @@ export class MaterialPipeline {
         .dispatch(k.project_particles.bind({source,attributes:sourceAttributes,matrices,matrix_ids,vertices:transformed,varyings:transformedAttributes,fixed_lighting:fixedLighting,fixed_endpoints:fixedEndpoints},
           {vertex_count:vertexCount,width:viewport_width,height:viewport_height,fixed_enabled,track_world_particles,world_particle_offset,source_point_fade_offset,sample_count}),groups(vertexCount)).submit();
       if(hasTexgen) {
-        const descriptors=upload('texgen');
+        const descriptors=upload('texgen',positionedTransforms.texgen);
         if(positionedTransforms.texgen)r.batch().dispatch(k.prepare_texgen_matrices.bind({descriptors,positioned:positionedBuffer},
           {draw_count:scene.matrices.length/32}),groups(scene.matrices.length/8)).submit();
         r.batch().dispatch(k.generate_texture_coordinates.bind({source,source_attributes:sourceAttributes,matrices,matrix_ids,
@@ -1027,7 +1038,7 @@ export class MaterialPipeline {
       const fullColorClear=color_channels===0||((clearMask&16384)!==0&&clear_color_mask===15);
       const fullDepthClear=(clearMask&256)!==0;
       const fullStencilClear=!stencil_enabled||(clearMask&1024)!==0;
-      const nativeFullClear=fullViewport&&fullColorClear&&fullDepthClear&&fullStencilClear;
+      const nativeFullClear=(slots!==0||nativeDirect)&&fullViewport&&fullColorClear&&fullDepthClear&&fullStencilClear;
       // A zero clear mask has no attachment side effects, and an empty packet
       // cannot produce fragments. Keep texture preparation, status validation
       // and resolves: an empty camera can still clear or publish an attachment.

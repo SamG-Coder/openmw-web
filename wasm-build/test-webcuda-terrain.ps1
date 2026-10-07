@@ -17,7 +17,7 @@ if (@($boost).Count -ne 1) { throw 'Expected one Boost iostreams archive' }
 if ($LASTEXITCODE) { throw 'Failed to build terrain components' }
 & $compiler @flags "$repo/render/webcuda/terrain-blend.test.cpp" '-Wl,--start-group' `
     "$repo/build-wasm64/components/libcomponents.a" @libraries $boost '-Wl,--end-group' `
-    -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 --use-port=zlib --use-port=freetype `
+    -sMAX_WEBGL_VERSION=2 -sFULL_ES3=1 --use-port=emdawnwebgpu --use-port=zlib --use-port=freetype `
     -sEXIT_RUNTIME=1 -sNODERAWFS=1 -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=1 `
     -o "$output/terrain-blend.js"
 if ($LASTEXITCODE) { throw 'Failed to link terrain producer fixture' }

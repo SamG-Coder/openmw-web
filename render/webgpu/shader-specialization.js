@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// The checked-in WGSL remains the source of truth. Remove material families
-// proven inactive by immutable packet metadata before handing WGSL to the
-// driver. This avoids compiling every OpenMW shading family for each pipeline.
+// The checked-in WGSL remains the source of truth. Fold supplied immutable
+// constants and prune helpers unreachable from the selected entry points.
+// The current rasterizer keeps material features in dynamic uniforms and
+// passes no constants, reusing one module per fragment entry point.
 // Unknown expressions remain intact; no source text is executed as JavaScript.
 
 const UNKNOWN = Symbol('unknown WGSL expression');
@@ -148,17 +149,21 @@ function structure(source) {
     // which is invalid WGSL. Walk backwards over contiguous attribute lines
     // while preserving comments/other declarations before them.
     let declarationStart = match.index;
-    const lineStart = masked.lastIndexOf('\n', match.index - 1) + 1;
+    const declarationFloor = functions.length ? functions[functions.length - 1].end : 0;
+    const lineStart = Math.max(declarationFloor, masked.lastIndexOf('\n', match.index - 1) + 1);
     const currentPrefix = masked.slice(lineStart, match.index).trim();
     if (currentPrefix.startsWith('@')) declarationStart = lineStart;
     else if (currentPrefix === '') {
       // Attributes may be on one or more immediately preceding lines.
       let cursor = lineStart;
-      while (cursor > 0) {
+      while (cursor > declarationFloor) {
         const previousEnd = cursor - 1;
         const previousStart = masked.lastIndexOf('\n', previousEnd - 1) + 1;
+        if (previousStart < declarationFloor) break;
         const previous = masked.slice(previousStart, previousEnd).trim();
-        if (!previous.startsWith('@')) break;
+        // A preceding '@fragment fn ... { ... }' or '@group ... var ...;'
+        // line is its own declaration, not this function's attribute list.
+        if (!previous.startsWith('@') || /[;{}]/.test(previous)) break;
         declarationStart = previousStart;
         cursor = previousStart;
       }

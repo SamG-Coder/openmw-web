@@ -10,15 +10,26 @@ dotnet run --project OpenMW.WebHost
 
 The host serves the authored page and WebGPU renderer directly from the repository, so renderer edits do not need a staging command.
 
-Engine discovery order:
+With `OpenMW:EngineVersion` set to `auto`, the host first checks
+`build-wasm64/openmw.{js,wasm,data}`, then stamped bundles in
+`.local-runtime/e/<version>` and `play/e/<version>`. A bundle is current only when
+its source fingerprint matches the renderer C++ and build configuration. Set a
+particular staged version instead of `auto` to reproduce that bundle explicitly.
 
-1. `.local-runtime/e/<version>/openmw.{js,wasm,data}`
-2. `play/e/<version>/openmw.{js,wasm,data}`
-3. `build-wasm64/openmw.{js,wasm,data}`
-4. `play/openmw.{js,wasm,data}`
+If the engine is missing or stale and `BuildEngineWhenMissing` is true, the host
+runs `wasm-build/build-local-windows.ps1` on Windows, or
+`wasm-build/link-openmw.sh` on other systems. Ninja regenerates CMake when its
+inputs change, rebuilds affected objects, and relinks the engine. The host then
+mounts that build directly. Restart F5 after pulling C++ or build configuration
+changes so this check runs again; renderer JavaScript and WGSL edits are served
+directly without a WASM rebuild.
 
-Set `OpenMW:EngineVersion` to a particular staged version instead of `auto` if needed.
-
-If no engine bundle exists and `BuildEngineWhenMissing` is true, the host runs the repository's existing `wasm-build/link-openmw.sh`. That build still requires the OpenMW/Emscripten dependencies used by the repository. A build failure is shown at `/status` and on the startup page rather than terminating ASP.NET.
+The direct WebGPU C++ sources declare `--use-port=emdawnwebgpu` in CMake, and the
+final link uses the same port. This supplies both `webgpu/webgpu.h` and its
+browser implementation, including when the existing CMake cache predates the
+direct backend. The incremental build preserves that cache's dependency paths.
+The Emscripten toolchain and dependency archives must already be installed and
+the `build-wasm64` tree configured. A build failure is shown at `/status` and on
+the startup page rather than terminating ASP.NET.
 
 The host adds COOP/COEP headers required by the threaded WebAssembly build and serves `.wasm`, `.data`, `.wgsl`, JavaScript, game data and byte ranges itself.

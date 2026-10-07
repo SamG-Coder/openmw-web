@@ -2,7 +2,7 @@
 # See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 project (Components)
 
-add_component_dir(webcuda submission renderer geometrypacket materialstate materialtable browserbridge viewer directwebgpu)
+add_component_dir(webcuda submission renderer geometrypacket materialstate materialtable browserbridge browserframe viewer directwebgpu)
 
 if(APPLE)
     set(BUNDLE_RESOURCES_DIR "${APP_BUNDLE_DIR}/Contents/Resources")
@@ -589,6 +589,25 @@ if (OPENMW_USE_SYSTEM_SQLITE3)
 endif()
 
 add_library(components STATIC ${COMPONENT_FILES})
+
+if (EMSCRIPTEN)
+    # The WebHost runs ninja against an existing CMake cache. Declaring the port
+    # here makes a source update regenerate the affected compile commands even
+    # when CMAKE_CXX_FLAGS was cached before the direct WebGPU backend existed.
+    # emdawnwebgpu supplies both webgpu/webgpu.h and the browser implementation;
+    # passing --use-port only to the final linker does not expose its headers.
+    set_property(SOURCE
+        webcuda/browserbridge.cpp
+        webcuda/browserframe.cpp
+        webcuda/directwebgpu.cpp
+        webcuda/viewer.cpp
+        "${CMAKE_CURRENT_BINARY_DIR}/ub_webcuda.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS "--use-port=emdawnwebgpu"
+    )
+    # CMake-linked consumers need the implementation too. The canonical
+    # out-of-band link in wasm-build/link-openmw.sh passes the same port.
+    target_link_options(components INTERFACE "--use-port=emdawnwebgpu")
+endif()
 
 if (ANDROID)
     set_property(TARGET components PROPERTY POSITION_INDEPENDENT_CODE ON)
