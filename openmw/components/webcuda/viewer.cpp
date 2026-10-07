@@ -305,6 +305,9 @@ namespace WebCuda
         const bool replacement=mDeviceGeneration!=0||generation>1;
         mDeviceGeneration=generation;
         if(!replacement)return false;
+        DirectWebGPU::instance().shutdown();
+        if(!DirectWebGPU::instance().attachBrowserDevice())
+            throw std::runtime_error("Unable to attach replacement WebGPU device to WASM");
         if(mTable)throw std::logic_error("Device replacement during render submission");
         for(const auto& camera:mSubmittedCompletionCameras)if(camera.valid())camera->setUserValue("webcuda.passComplete",false);
         for(const auto& camera:mFrameCompletionCameras)if(camera.valid())camera->setUserValue("webcuda.passComplete",false);
