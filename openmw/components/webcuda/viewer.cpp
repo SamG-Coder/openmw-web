@@ -346,6 +346,8 @@ namespace WebCuda
     void Viewer::renderingTraversals()
     {
 #ifdef __EMSCRIPTEN__
+        if(!DirectWebGPU::instance().ready())
+            DirectWebGPU::instance().attachBrowserDevice();
         collectImages();
         if (!omw_webcuda_begin_frame()) return;
         beginCaptureProfile(omw_webcuda_profile_capture()!=0);
