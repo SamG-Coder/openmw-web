@@ -3,12 +3,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#include "shaderanalysis.hpp"
-#endif
-
-namespace WebCuda
+ namespace WebCuda
 {
     // Diagnostic counters for the single render-submission thread. Nested
     // material encoding counts once in the inclusive material total; atlas
@@ -22,22 +17,7 @@ namespace WebCuda
         std::array<unsigned int,Count> depth{};
     };
     inline CaptureProfile captureProfile;
-    inline void beginCaptureProfile(bool enabled)
-    {
-        captureProfile={};captureProfile.enabled=enabled;
-#ifdef __EMSCRIPTEN__
-        // Opt-in CPU counters only. No GPU readback, queue wait, or per-vertex
-        // JS callback; report cumulative shader-analysis reuse once per accepted frame.
-        if(enabled)
-        {
-            const auto stats=ShaderAnalysisDetail::cache().stats();
-            EM_ASM({
-                Module.webcudaShaderAnalysisStats = { hits: $0, misses: $1, bypasses: $2 };
-            }, static_cast<double>(stats.hits), static_cast<double>(stats.misses),
-                static_cast<double>(stats.bypasses));
-        }
-#endif
-    }
+    inline void beginCaptureProfile(bool enabled) { captureProfile={};captureProfile.enabled=enabled; }
     class CaptureScope
     {
     public:
