@@ -2576,18 +2576,31 @@ window.omw = (function(){
            // cross-origin isolation — caught below, so a non-isolated context just skips the
            // pack rather than failing the boot.
            StreamFS.init();
-           // Two candidates: moddata/ for a local/self-host tree, data/ for the deployed site where
-           // the read-only dataset volume mounts at /srv/data. First one that answers with a
-           // Content-Range wins, so the same build works in both without configuration.
+           // Local ASP.NET development can ask the host first, avoiding two
+           // expected 404 probes in DevTools when the optional pack is absent.
            var url = null, size = 0;
-           for (const cand of ['moddata/' + ASSET_PACK_NAME, 'data/' + ASSET_PACK_NAME]) {
+           var localHost = /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(location.hostname);
+           if (localHost) {
              try {
-               var r = await fetch(cand, { headers: { Range: 'bytes=0-0' } });
-               if (!r.ok && r.status !== 206) continue;
-               var cr = r.headers.get('Content-Range');
-               var n = cr ? parseInt(cr.split('/')[1], 10) : NaN;
-               if (n) { url = cand; size = n; break; }
-             } catch (e) { /* try the next candidate */ }
+               var infoResponse = await fetch('optional-assets.json', { cache: 'no-store' });
+               if (infoResponse.ok) {
+                 var info = await infoResponse.json();
+                 if (info && info.available) { url = info.url; size = info.size; }
+               }
+             } catch (e) {}
+           }
+           if (!localHost || url) {
+             // Two candidates: moddata/ for a local/self-host tree, data/ for the
+             // deployed site where the read-only dataset volume mounts at /srv/data.
+             if (!url) for (const cand of ['moddata/' + ASSET_PACK_NAME, 'data/' + ASSET_PACK_NAME]) {
+               try {
+                 var r = await fetch(cand, { headers: { Range: 'bytes=0-0' } });
+                 if (!r.ok && r.status !== 206) continue;
+                 var cr = r.headers.get('Content-Range');
+                 var n = cr ? parseInt(cr.split('/')[1], 10) : NaN;
+                 if (n) { url = cand; size = n; break; }
+               } catch (e) { /* try the next candidate */ }
+             }
            }
            if (!url) throw new Error('not found (tried moddata/ and data/)');
            FS.mkdirTree('/mods');
