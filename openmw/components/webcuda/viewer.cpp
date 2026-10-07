@@ -406,6 +406,12 @@ namespace WebCuda
             saved.resolveX=mResolveX;saved.resolveY=mResolveY;
             saved.resolveWidth=mResolveWidth;saved.resolveHeight=mResolveHeight;
             saved.passCamera=mPassCamera;saved.resolveAttachments=std::move(mResolveAttachments);
+            saved.depthTarget=mActiveDepthTarget;saved.normalTarget=mActiveNormalTarget;saved.stencilTarget=mActiveStencilTarget;
+            saved.colorFormat=mActiveColorFormat;saved.depthFormat=mActiveDepthFormat;saved.normalFormat=mActiveNormalFormat;
+            saved.stencilBits=mActiveStencilBits;saved.clearColorMask=mActiveClearColorMask;saved.sampleCount=mActiveSampleCount;
+            saved.viewportX=mActiveViewportX;saved.viewportY=mActiveViewportY;
+            saved.viewportWidth=mActiveViewportWidth;saved.viewportHeight=mActiveViewportHeight;
+            saved.clearDepth=mActiveClearDepth;saved.clearStencil=mActiveClearStencil;
             if(!submitBrowserPass(std::move(mPacket),saved.table,mWidth,mHeight))
                 throw std::runtime_error("Nested WebCuda parent stage boundary rejected");
             mStageStack.push_back(std::move(saved));
@@ -641,6 +647,12 @@ namespace WebCuda
             ?(channels->getRedMask()?1u:0u)|(channels->getGreenMask()?2u:0u)
                 |(channels->getBlueMask()?4u:0u)|(channels->getAlphaMask()?8u:0u):15u;
         omw_webcuda_pass_state(clearMask,color.r(),color.g(),color.b(),color.a(),stage.getClearDepth(),targetId,depthId,normalId,colorFormat,depthFormat,stage.getClearStencil(),stencilBits,stencilId,clearColorMask,viewport->x(),viewport->y(),viewport->width(),viewport->height(),sampleCount,normalFormat);
+        mActiveDepthTarget=depthId;mActiveNormalTarget=normalId;mActiveStencilTarget=stencilId;
+        mActiveColorFormat=colorFormat;mActiveDepthFormat=depthFormat;mActiveNormalFormat=normalFormat;
+        mActiveStencilBits=stencilBits;mActiveClearColorMask=clearColorMask;mActiveSampleCount=sampleCount;
+        mActiveViewportX=static_cast<int>(viewport->x());mActiveViewportY=static_cast<int>(viewport->y());
+        mActiveViewportWidth=static_cast<unsigned int>(viewport->width());mActiveViewportHeight=static_cast<unsigned int>(viewport->height());
+        mActiveClearDepth=stage.getClearDepth();mActiveClearStencil=stage.getClearStencil();
 #endif
     }
     void Viewer::endPass(const osgUtil::RenderStage&)
@@ -675,6 +687,22 @@ namespace WebCuda
             mResolveX=saved.resolveX;mResolveY=saved.resolveY;
             mResolveWidth=saved.resolveWidth;mResolveHeight=saved.resolveHeight;
             mPassCamera=saved.passCamera;mResolveAttachments=std::move(saved.resolveAttachments);
+            mActiveDepthTarget=saved.depthTarget;mActiveNormalTarget=saved.normalTarget;mActiveStencilTarget=saved.stencilTarget;
+            mActiveColorFormat=saved.colorFormat;mActiveDepthFormat=saved.depthFormat;mActiveNormalFormat=saved.normalFormat;
+            mActiveStencilBits=saved.stencilBits;mActiveClearColorMask=saved.clearColorMask;mActiveSampleCount=saved.sampleCount;
+            mActiveViewportX=saved.viewportX;mActiveViewportY=saved.viewportY;
+            mActiveViewportWidth=saved.viewportWidth;mActiveViewportHeight=saved.viewportHeight;
+            mActiveClearDepth=saved.clearDepth;mActiveClearStencil=saved.clearStencil;
+#ifdef __EMSCRIPTEN__
+            // Continue the parent camera without clearing its already-rendered
+            // portion. This re-establishes the JS host state consumed by the
+            // parent's next retained packet.
+            omw_webcuda_pass_state(0,0.f,0.f,0.f,0.f,mActiveClearDepth,mCurrentTarget,
+                mActiveDepthTarget,mActiveNormalTarget,mActiveColorFormat,mActiveDepthFormat,
+                mActiveClearStencil,mActiveStencilBits,mActiveStencilTarget,mActiveClearColorMask,
+                mActiveViewportX,mActiveViewportY,mActiveViewportWidth,mActiveViewportHeight,
+                mActiveSampleCount,mActiveNormalFormat);
+#endif
         }
     }
     void Viewer::geometry(const osg::Geometry& geometry,const DrawContext& context)
