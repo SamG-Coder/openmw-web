@@ -387,6 +387,37 @@ export class HardwareRasterizer {
     }
     try{return await pending;}catch(error){this.pipelines.delete(state.key);throw error;}
   }
+  async prewarm(scene, params, pass={}, triangleCount=scene.triangles.length/4) {
+    if(this.disposed)return;
+    const config=this.config(params),states=new Map(),unique=new Map();
+    const getState=(material,face=null)=>{
+      const local=material*3+(face==='front'?1:face==='back'?2:0);
+      if(states.has(local))return states.get(local);
+      const state=this.state(scene,material,config,params,pass,face);
+      states.set(local,state);return state;
+    };
+    for(const run of buildDrawRuns(scene,triangleCount)) {
+      const state=getState(run.material);
+      if(!state)continue;
+      if(state.splitFaces) {
+        for(const face of ['front','back']) {
+          const split=getState(run.material,face);
+          if(split&&!unique.has(split.key))unique.set(split.key,split);
+        }
+      } else if(!unique.has(state.key))unique.set(state.key,state);
+    }
+    const cold=[...unique.values()].filter(state=>!this.pipelines.has(state.key));
+    if(!cold.length)return;
+    this.performanceStats.prewarmRequests=(this.performanceStats.prewarmRequests??0)+cold.length;
+    let cursor=0;
+    await Promise.all(Array.from({length:Math.min(6,cold.length)},async()=>{
+      for(;;){
+        const index=cursor++;
+        if(index>=cold.length)return;
+        await this.pipeline(cold[index]);
+      }
+    }));
+  }
   attachments(target, config, loadOp='load', clear={}) {
     const clearColor=clear.color??[0,0,0,0],clearDepth=clear.depth??1,clearStencil=clear.stencil??0;
     const colorView=target.color?.renderView??target.colorView;
