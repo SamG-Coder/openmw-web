@@ -184,6 +184,20 @@ app.MapPost("/dev/clear-cache", () => Results.Json(new
     message = "Reload the game page. Local StreamFS URLs use this revision and no longer reuse older cached chunks."
 }));
 
+app.MapGet("/optional-assets.json", () =>
+{
+    var candidates = new[]
+    {
+        (Path: Path.Combine(playRoot, "moddata", "openmw-web-assets.bsa"), Url: "moddata/openmw-web-assets.bsa"),
+        (Path: Path.Combine(repoRoot, "data", "openmw-web-assets.bsa"), Url: "data/openmw-web-assets.bsa"),
+        (Path: Path.Combine(playRoot, "data", "openmw-web-assets.bsa"), Url: "data/openmw-web-assets.bsa")
+    };
+    var found = candidates.FirstOrDefault(candidate => File.Exists(candidate.Path));
+    return String.IsNullOrWhiteSpace(found.Path)
+        ? Results.Json(new { available = false })
+        : Results.Json(new { available = true, url = found.Url, size = new FileInfo(found.Path).Length });
+});
+
 app.MapGet("/dev/assets", () =>
 {
     var root = gameData.Current;
