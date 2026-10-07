@@ -22,9 +22,7 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
     const float* vertices, size_t vertexFloats,
     const float* matrices, size_t matrixFloats, const unsigned int* matrixIds, size_t matrixCount,
     const unsigned int* triangles, size_t triangleWords, const unsigned int* materials, size_t materialWords,
-    const unsigned int* texels, size_t texelCount, size_t texelWordCount,
-    const unsigned int* attachmentDescriptors, size_t attachmentDescriptorWords,
-    const unsigned int* blocks, size_t blockWords,
+    const unsigned int* texels, size_t texelCount, size_t texelWordCount, const unsigned int* blocks, size_t blockWords,
     const unsigned int* decodes, size_t decodeWords, const unsigned int* copies, size_t copyWords,
     const unsigned int* textureResources,size_t textureResourceWords,
     const float* uvMatrices, size_t uvFloats, const unsigned int* mips, size_t mipWords,
@@ -73,7 +71,6 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
         vertices:view(HEAPF32,vertices,vertexFloats),matrices:view(HEAPF32,matrices,matrixFloats),
         matrixIds:view(HEAPU32,matrixIds,matrixCount),triangles:view(HEAPU32,triangles,triangleWords),
         materials:view(HEAPU32,materials,materialWords),texels:view(HEAPU32,texels,texelCount),texelWordCount:Number(texelWordCount),
-        attachmentDescriptors:view(HEAPU32,attachmentDescriptors,attachmentDescriptorWords),
         compressedBlocks:view(HEAPU32,blocks,blockWords),textureDecodes:view(HEAPU32,decodes,decodeWords),
         textureCopies:view(HEAPU32,copies,copyWords),textureResources:view(HEAPU32,textureResources,textureResourceWords)
         ,uvMatrices:view(HEAPF32,uvMatrices,uvFloats),mipGenerations:view(HEAPU32,mips,mipWords),
@@ -102,7 +99,7 @@ EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEnco
 #endif
 namespace WebCuda
 {
-    bool submitBrowserPass(GeometryPacket sourceGeometry,std::shared_ptr<const MaterialTable> sourceTable,
+    bool submitBrowserPass(GeometryPacket sourceGeometry,std::shared_ptr<MaterialTable> sourceTable,
         std::uint32_t width,std::uint32_t height)
     {
 #ifdef __EMSCRIPTEN__
@@ -124,9 +121,7 @@ namespace WebCuda
             geometry.vertices.data(),geometry.vertices.size(),
             geometry.matrices.data(),geometry.matrices.size(),geometry.matrixIds.data(),geometry.matrixIds.size(),
             geometry.triangles.data(),geometry.triangles.size(),table.materials().data(),table.materials().size(),
-            table.texels().data(),table.texels().size(),table.texelWordCount(),
-            table.attachmentDescriptors().data(),table.attachmentDescriptors().size(),
-            table.compressedBlocks().data(),table.compressedBlocks().size(),
+            table.texels().data(),table.texels().size(),table.texelWordCount(),table.compressedBlocks().data(),table.compressedBlocks().size(),
             table.textureDecodes().data(),table.textureDecodes().size(),
             table.textureCopies().data(),table.textureCopies().size(),
             table.textureResources().data(),table.textureResources().size(),
