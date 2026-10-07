@@ -36,6 +36,14 @@ function nativeBuffer(buffer) {
     throw TypeError('Hardware rasterizer requires a WebGPU buffer');
   return result;
 }
+function nativeBinding(buffer) {
+  const gpu=nativeBuffer(buffer);
+  const offset=buffer?.offset??0;
+  const size=buffer?.size??buffer?.byteLength??(gpu.size-offset);
+  if(!Number.isSafeInteger(offset)||!Number.isSafeInteger(size)||offset<0||size<=0||offset+size>gpu.size)
+    throw RangeError('Invalid native WebGPU buffer binding range');
+  return {buffer:gpu,offset,size};
+}
 function requireFeature(device, name, reason) {
   if (!device.features.has(name)) throw Error(`Native WebGPU rendering requires ${name} for ${reason}`);
 }
@@ -563,7 +571,7 @@ export class HardwareRasterizer {
     device.queue.writeBuffer(uniforms,0,uniformData.buffer,0,uniformBytes);
     this.performanceStats.uniformUploadBytes+=uniformBytes;
     const bindGroup=device.createBindGroup({label:'OpenMW native material draw buffers',layout:this.materialLayout,entries:[
-      ...['vertices','triangles','materials','texels','attributes'].map((key,binding)=>({binding,resource:{buffer:native[key]}})),
+      ...['vertices','triangles','materials','texels','attributes'].map((key,binding)=>({binding,resource:nativeBinding(buffers[key])})),
       {binding:5,resource:{buffer:uniforms,size:112}},
     ]});
     let bridgeUniform=null,bridgeBindings=null;
@@ -574,7 +582,7 @@ export class HardwareRasterizer {
         config.compact?1:0,i===0?0:1<<(i-1),params.color_channels,params.normal_channels],i*this.uniformStride/4);
       device.queue.writeBuffer(bridgeUniform,0,bridgeData);
       bridgeBindings=(pipeline,index=0,source=true)=>device.createBindGroup({layout:pipeline.getBindGroupLayout(0),entries:[
-        ...(source?[{binding:0,resource:{buffer:native.target}}]:[]),
+        ...(source?[{binding:0,resource:nativeBinding(buffers.target)}]:[]),
         {binding:1,resource:{buffer:bridgeUniform,offset:index*this.uniformStride,size:32}},
       ]});
     }
@@ -648,7 +656,7 @@ export class HardwareRasterizer {
         stencil.setStencilReference(255);stencil.draw(3);stencil.end();
       }
       const exportBindings=device.createBindGroup({layout:bridge.export.getBindGroupLayout(0),entries:[
-        {binding:0,resource:{buffer:native.target}},{binding:1,resource:{buffer:bridgeUniform,size:32}},
+        {binding:0,resource:nativeBinding(buffers.target)},{binding:1,resource:{buffer:bridgeUniform,size:32}},
         {binding:2,resource:target.depthSampleView},
         ...(config.compact?[]:[{binding:3,resource:target.colorView}]),
         ...(config.normal?[{binding:4,resource:target.normalView}]:[]),
@@ -679,9 +687,8 @@ export class HardwareRasterizer {
     data.set([config.width,config.height,config.width*config.height,1,config.compact?1:0,0,
       params.color_channels,params.normal_channels]);
     device.queue.writeBuffer(uniform,0,data);
-    const gpuBuffer=nativeBuffer(buffer);
     const entries=[
-      {binding:0,resource:{buffer:gpuBuffer}},{binding:1,resource:{buffer:uniform,size:32}},
+      {binding:0,resource:nativeBinding(buffer)},{binding:1,resource:{buffer:uniform,size:32}},
       {binding:2,resource:target.depth.sampleView},
       ...(config.compact?[]:[{binding:3,resource:target.color.sampleView}]),
       ...(config.normal?[{binding:4,resource:target.normal.sampleView}]:[]),
@@ -703,7 +710,7 @@ export class HardwareRasterizer {
       params.color_channels,params.normal_channels]);
     this.device.queue.writeBuffer(uniform,0,data);
     const bind=this.device.createBindGroup({layout:bridge.seed.getBindGroupLayout(0),entries:[
-      {binding:0,resource:{buffer:nativeBuffer(buffer)}},{binding:1,resource:{buffer:uniform,size:32}}
+      {binding:0,resource:nativeBinding(buffer)},{binding:1,resource:{buffer:uniform,size:32}}
     ]});
     const encoder=this.device.createCommandEncoder({label:'OpenMW import compatibility attachment'});
     const pass=encoder.beginRenderPass({label:'OpenMW compatibility-to-native import',
