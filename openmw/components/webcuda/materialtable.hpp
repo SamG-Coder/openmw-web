@@ -104,7 +104,7 @@ namespace WebCuda
         std::map<std::array<std::uint32_t,9>,std::uint32_t> mFogRecords;
     };
 
-    std::shared_ptr<const MaterialTable> captureMaterialTable(std::shared_ptr<const MaterialTable>);
+    std::shared_ptr<const MaterialTable> captureMaterialTable(std::shared_ptr<MaterialTable>);
 
     // A submitted pass keeps its table immutable while browser dispatch is
     // pending. Ordinary draws in an unsubmitted table continue in place.
