@@ -108,6 +108,16 @@ namespace WebCuda
         int mResolveX=0,mResolveY=0;
         unsigned int mResolveWidth=0,mResolveHeight=0;
         const osg::Camera* mPassCamera=nullptr;
+        struct SavedStage {
+            std::shared_ptr<MaterialTable> table;
+            unsigned int width=0,height=0;
+            std::uint32_t currentTarget=0,resolveSource=0;
+            int resolveX=0,resolveY=0;
+            unsigned int resolveWidth=0,resolveHeight=0;
+            const osg::Camera* passCamera=nullptr;
+            std::vector<ResolveAttachment> resolveAttachments;
+        };
+        std::vector<SavedStage> mStageStack;
         struct SavedTarget { std::shared_ptr<MaterialTable> table;unsigned int width,height;std::uint32_t target; };
         std::vector<SavedTarget> mTargetStack;
         std::set<std::uint32_t> mColorTargetsWritten;
