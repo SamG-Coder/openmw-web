@@ -7,11 +7,14 @@
     var channel = new env.MessageChannel();
     var generation = 0, pending = false, stopped = true;
     var raf = null, timer = null, lastStart = null;
-    // [start, interval, task delay, engine duration, stream stall, misses, bytes].
+    // [start, interval, task delay, engine duration, stream stall, misses, bytes,
+    //  fresh capture flag, four capture times, four capture call counts].
     // Fixed storage avoids allocating/shifting a diagnostic record every tick.
-    var capacity = 360, stride = 7, samples = new Float64Array(capacity * stride), cursor = 0, count = 0, total = 0;
+    var capacity = 360, stride = 16, samples = new Float64Array(capacity * stride), cursor = 0, count = 0, total = 0;
     var profile = /[?&]engineprofile=1(?:&|$)/.test(env.location && env.location.search || '');
     var profileModule = null, previousProfile, button = null;
+    var phaseKeys = ['materialCopyMs', 'materialEncodeMs', 'geometryEncodeMs', 'atlasResizeMs',
+      'materialCopies', 'materialEncodes', 'geometryEncodes', 'atlasResizes'];
     function cancel() {
       generation++;
       if (raf !== null) env.cancelAnimationFrame(raf);
@@ -45,6 +48,7 @@
         module.webcudaProfileCapture = true;
       }
       var ioBefore = profile ? env.__streamfsStats : null;
+      var captureBefore = profile && module ? module.webcudaCaptureTimings : null;
       var start = env.performance.now();
       try { tick(); }
       finally {
@@ -60,6 +64,13 @@
             samples[offset + 4] = ioBefore && ioAfter ? Math.max(0, ioAfter.stallMs - ioBefore.stallMs) : 0;
             samples[offset + 5] = ioBefore && ioAfter ? Math.max(0, ioAfter.misses - ioBefore.misses) : 0;
             samples[offset + 6] = ioBefore && ioAfter ? Math.max(0, ioAfter.bytes - ioBefore.bytes) : 0;
+            if (profile) {
+              var phases = module && module.webcudaCaptureTimings;
+              var fresh = phases && phases !== captureBefore;
+              samples[offset + 7] = fresh ? 1 : 0;
+              for (var field = 0; field < phaseKeys.length; field++)
+                samples[offset + 8 + field] = fresh && Number.isFinite(phases[phaseKeys[field]]) ? phases[phaseKeys[field]] : 0;
+            }
             cursor = (cursor + 1) % capacity;
             count = Math.min(count + 1, capacity);
           }
@@ -74,7 +85,12 @@
       var result = [];
       for (var i = 0; i < count; i++) {
         var offset = ((cursor - count + i + capacity) % capacity) * stride;
-        result.push({ startAt: samples[offset], intervalMs: samples[offset + 1],
+        var capture = null;
+        if (profile && samples[offset + 7]) {
+          capture = {};
+          for (var field = 0; field < phaseKeys.length; field++) capture[phaseKeys[field]] = samples[offset + 8 + field];
+        }
+        result.push({ capture: capture, startAt: samples[offset], intervalMs: samples[offset + 1],
           taskDelayMs: samples[offset + 2], engineMs: samples[offset + 3],
           streamStallMs: profile ? samples[offset + 4] : null, streamMisses: profile ? samples[offset + 5] : null,
           streamBytes: profile ? samples[offset + 6] : null });
