@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const source=fs.readFileSync(new URL('./frame-pump.js',import.meta.url),'utf8');
-function fixture({search='',durations=[5],io=false}={}) {
+function fixture({search='',durations=[5],io=false,onTick=null}={}) {
   const sandbox={};vm.runInNewContext(source,sandbox);
   let now=0,nextId=0,index=0,frames=new Map(),timers=new Map(),messages=[];
   const listeners=new Map(),nodes=[],downloads=[],revoked=[];
@@ -24,7 +24,7 @@ function fixture({search='',durations=[5],io=false}={}) {
     Module:{webgpuEnabled:true,webcudaProfileCapture:false},
   };
   Object.defineProperty(env,'__streamfsStats',{get(){ioReads++;return {...ioStats};}});
-  const tick=()=>{now+=durations[index++%durations.length];if(io){ioStats.stallMs+=2;ioStats.misses++;ioStats.bytes+=64;}};
+  const tick=()=>{now+=durations[index++%durations.length];if(onTick)onTick(env,index);if(io){ioStats.stallMs+=2;ioStats.misses++;ioStats.bytes+=64;}};
   const pump=sandbox.createOpenMWFramePump(env,tick);
   const raf=()=>{assert.equal(frames.size,1);const [id,fn]=frames.entries().next().value;frames.delete(id);now+=16;fn();};
   const message=(delay=0)=>{now+=delay;assert(messages.length);messages.shift()();};
@@ -86,4 +86,15 @@ test('save button emits a bounded JSON performance report',()=>{
 test('repeated start does not add a second engine driver; stop cancels scheduled work',()=>{
   const f=fixture();f.pump.start();f.pump.start();assert.equal(f.frames.size,1);f.step();f.pump.stop();assert.equal(f.frames.size,0);
   f.pump.start();f.step();assert.equal(f.ticks,2);f.pump.stop();
+});
+
+test('a hitch retains its own capture phases and rejected capture ticks do not repeat stale values',()=>{
+  const f=fixture({search:'?engineprofile=1',durations:[5,90,5,5],onTick(env,index){
+    if(index!==4)env.Module.webcudaCaptureTimings={geometryEncodeMs:index===2?75:2,materialEncodeMs:1,geometryEncodes:200};
+  }});
+  f.pump.start();for(let i=0;i<4;i++)f.step();
+  const frames=f.pump.report().engineFrames;
+  assert.equal(frames[0].engineMs,90);assert.equal(frames[0].capture.geometryEncodeMs,75);
+  assert.equal(frames[1].capture.geometryEncodeMs,2);assert.equal(frames[2].capture,null);
+  f.pump.stop();
 });
