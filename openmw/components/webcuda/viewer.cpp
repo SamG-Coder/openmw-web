@@ -340,17 +340,18 @@ namespace WebCuda
         collectImages();
         if (!omw_webcuda_begin_frame()) return;
         beginCaptureProfile(omw_webcuda_profile_capture()!=0);
-        // Host acceptance follows successful GPU idle of the previous frame.
-        // Failed or disposed hosts never accept another frame.
+        // Host acceptance is bounded by the browser renderer queue. Capture may
+        // overlap GPU execution of the preceding frame, but retained packets keep
+        // every WASM view alive until the browser releases that frame.
         for(const auto& camera:mSubmittedCompletionCameras)if(camera.valid())camera->setUserValue("webcuda.passComplete",true);
         mSubmittedCompletionCameras.clear();mFrameCompletionCameras.clear();
         mColorTargetsWritten.clear();
         mFrameImageRequests.clear();
         try {
             collectExpiredTargets();
-            // The host accepted a frame only after finishing the previous one.
-            // Retire before recording this frame; mid-frame expirations wait
-            // here until the next accepted frame, including after an abort.
+            // Retirement is recorded at the start of the accepted frame. The
+            // browser applies it in render order, so capture can overlap the
+            // preceding GPU frame without destroying resources still in use.
             for(const auto id:mRetiredTargets)omw_webcuda_retire_target(id);
             mRetiredTargets.clear();
             for(const auto& texture:mFrameSnapshots)
