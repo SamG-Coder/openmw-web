@@ -5,6 +5,7 @@
 #include "renderer.hpp"
 #include "browserbridge.hpp"
 #include "directwebgpu.hpp"
+#include "nativewebgpu.hpp"
 #include "browserframe.hpp"
 #include "shaderanalysis.hpp"
 #include <osgUtil/RenderStage>
@@ -310,7 +311,8 @@ namespace WebCuda
     bool Viewer::requested()
     {
 #ifdef __EMSCRIPTEN__
-        return omw_webcuda_requested()!=0;
+        // The browser build owns its WebGPU device and renderer in WASM/C++.
+        return true;
 #else
         return false;
 #endif
@@ -318,15 +320,17 @@ namespace WebCuda
     Viewer::Viewer()
     {
         setThreadingModel(SingleThreaded);
-        // Import the already-requested browser WebGPU device once. This is the
-        // migration point for issuing render commands directly from WASM via
-        // webgpu.h instead of rebuilding the render graph in JavaScript.
+        // Start the asynchronous adapter/device request from WASM itself.
+        // Application JavaScript never owns or imports the renderer device.
         DirectWebGPU::instance().attachBrowserDevice();
         // The base constructor cannot dispatch to our virtual factory.
         getCamera()->setRenderer(createRenderer(getCamera()));
     }
     Viewer::~Viewer()
     {
+#ifdef __EMSCRIPTEN__
+        NativeWebGPURenderer::instance().shutdown();
+#endif
         DirectWebGPU::instance().shutdown();
         auto requests=std::move(mImageRequests);
         for(auto& [id,request]:requests) {
@@ -476,54 +480,69 @@ namespace WebCuda
     void Viewer::renderingTraversals()
     {
 #ifdef __EMSCRIPTEN__
-        if(!DirectWebGPU::instance().ready())
-            DirectWebGPU::instance().attachBrowserDevice();
+        auto& direct = DirectWebGPU::instance();
+        if (!direct.ready())
+        {
+            direct.attachBrowserDevice();
+            if (!direct.initializationError().empty())
+                throw std::runtime_error(direct.initializationError());
+            return;
+        }
+        if (!direct.initializationError().empty())
+            throw std::runtime_error(direct.initializationError());
+
         collectImages();
-        const int frameMode=omw_webcuda_begin_frame();
-        if(!frameMode)return;
-        beginCaptureProfile(omw_webcuda_profile_capture()!=0);
-        // Host acceptance is bounded by the browser renderer queue. Capture may
-        // overlap GPU execution of the preceding frame, but retained packets keep
-        // every WASM view alive until the browser releases that frame.
-        for(const auto& camera:mSubmittedCompletionCameras)if(camera.valid())camera->setUserValue("webcuda.passComplete",true);
-        mSubmittedCompletionCameras.clear();mFrameCompletionCameras.clear();
+        beginCaptureProfile(false);
+        for(const auto& camera:mSubmittedCompletionCameras)
+            if(camera.valid())camera->setUserValue("webcuda.passComplete",true);
+        mSubmittedCompletionCameras.clear();
+        mFrameCompletionCameras.clear();
         mColorTargetsWritten.clear();
         mFrameImageRequests.clear();
-        try {
-            if(frameMode==2)beginBrowserFrame();
+
+        try
+        {
+            // Every render command below is captured into WASM-owned storage.
+            // finishBrowserFrame decodes it in nativewebgpu.cpp and issues
+            // WebGPU C++ API calls directly.
+            beginBrowserFrame();
             collectExpiredTargets();
-            // Retirement is recorded at the start of the accepted frame. The
-            // browser applies it in render order, so capture can overlap the
-            // preceding GPU frame without destroying resources still in use.
-            for(const auto id:mRetiredTargets)omw_webcuda_retire_target(id);
+            for(const auto id:mRetiredTargets)
+                omw_webcuda_retire_target(id);
             mRetiredTargets.clear();
             for(const auto& texture:mFrameSnapshots)
-                omw_webcuda_snapshot(mTargets.at(texture.get()).id,texture->getTextureWidth(),texture->getTextureHeight());
+                omw_webcuda_snapshot(mTargets.at(texture.get()).id,
+                    texture->getTextureWidth(),texture->getTextureHeight());
+
             osgViewer::Viewer::renderingTraversals();
-            for(auto& [id,request]:mImageRequests)if(!request.submitted&&request.finalScreen) {
-                omw_webcuda_capture_image(id,request.width,request.height,1);
-                request.submitted=true;mFrameImageRequests.push_back(id);
-            }
-            if(captureProfile.enabled) {
-                omw_webcuda_capture_timings(captureProfile.values.data());
-                const auto shaderStats=ShaderAnalysisDetail::cache().stats();
-                omw_webcuda_shader_analysis_stats(static_cast<double>(shaderStats.hits),
-                    static_cast<double>(shaderStats.misses),static_cast<double>(shaderStats.bypasses));
-            }
-            omw_webcuda_end_frame(1);
+
+            // Image readback remains a browser service for now; it is not part
+            // of normal frame rendering or presentation.
+            for(auto& [id,request]:mImageRequests)
+                if(!request.submitted&&request.finalScreen)
+                {
+                    omw_webcuda_capture_image(id,request.width,request.height,1);
+                    request.submitted=true;
+                    mFrameImageRequests.push_back(id);
+                }
+
+            finishBrowserFrame();
             mSubmittedCompletionCameras=std::move(mFrameCompletionCameras);
             mFrameSnapshots.clear();
-        } catch (...) {
+        }
+        catch (...)
+        {
             mPacket=GeometryPacket(true);
-            mTargetStack.clear();mStageStack.clear();
+            mTargetStack.clear();
+            mStageStack.clear();
             mFrameCompletionCameras.clear();
-            omw_webcuda_end_frame(0);
-            // Only requests recorded in this aborted frame can be retried. The
-            // JS result entry is canceled so late promise rejection is ignored.
-            for(const auto id:mFrameImageRequests) {
+            abortBrowserFrame();
+            for(const auto id:mFrameImageRequests)
+            {
                 omw_webcuda_cancel_image(id);
                 const auto found=mImageRequests.find(id);
-                if(found!=mImageRequests.end())found->second.submitted=false;
+                if(found!=mImageRequests.end())
+                    found->second.submitted=false;
             }
             mFrameImageRequests.clear();
             throw;

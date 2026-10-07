@@ -5,29 +5,6 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
-
-EM_JS_DEPS(omw_webgpu_interop_deps, "$WebGPU");
-EM_JS(WGPUDevice, omw_webgpu_import_boot_device, (), {
-    let pointer = 0;
-    if (Module['webcudaJsDevice']) {
-        if (typeof WebGPU === 'undefined' || typeof WebGPU.importJsDevice !== 'function')
-            throw new Error('Emdawnwebgpu object interop is unavailable');
-#if __wasm64__
-        // emdawnwebgpu's importJsDevice() default parentPtr is the JS Number 0.
-        // MEMORY64 pointer imports are Wasm i64 values, so the generated
-        // _emwgpuCreateQueue/_emwgpuCreateDevice imports require a BigInt.
-        // Pass an explicit null pointer with the correct JS representation.
-        pointer = WebGPU.importJsDevice(Module['webcudaJsDevice'], BigInt(0));
-#else
-        pointer = WebGPU.importJsDevice(Module['webcudaJsDevice']);
-#endif
-    }
-#if __wasm64__
-    return BigInt(pointer);
-#else
-    return pointer;
-#endif
-});
 #endif
 
 namespace WebCuda
@@ -41,37 +18,94 @@ namespace WebCuda
     bool DirectWebGPU::attachBrowserDevice()
     {
 #ifdef __EMSCRIPTEN__
-        if (mDevice)
+        if (ready())
             return true;
-
-        mDevice = omw_webgpu_import_boot_device();
-        if (!mDevice)
+        if (mRequestStarted)
             return false;
 
-        mQueue = wgpuDeviceGetQueue(mDevice);
-        if (!mQueue)
+        mRequestStarted = true;
+        mInitializationError.clear();
+        mInstance = wgpuCreateInstance(nullptr);
+        if (!mInstance)
         {
-            wgpuDeviceRelease(mDevice);
-            mDevice = nullptr;
+            mInitializationError = "Unable to create WebGPU instance";
             return false;
         }
-        WGPULimits limits{};
-        if (wgpuDeviceGetLimits(mDevice, &limits) != WGPUStatus_Success
-            || !limits.maxBufferSize || !limits.maxStorageBufferBindingSize
-            || !limits.minStorageBufferOffsetAlignment)
-        {
-            shutdown();
-            throw std::runtime_error("Unable to query direct WebGPU buffer limits");
-        }
-        mBufferLimit = limits.maxBufferSize;
-        mBindingLimit = limits.maxStorageBufferBindingSize;
-        mStorageAlignment = limits.minStorageBufferOffsetAlignment;
-        ++mGeneration;
-        return true;
+
+        mInstance.RequestAdapter(nullptr, wgpu::CallbackMode::AllowSpontaneous,
+            [this](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, wgpu::StringView message)
+            {
+                if (status != wgpu::RequestAdapterStatus::Success || !adapter)
+                {
+                    mInitializationError = "WebGPU adapter request failed";
+                    if (message.length)
+                        mInitializationError += ": " + std::string(message.data, message.length);
+                    return;
+                }
+
+                mAdapter = adapter;
+                wgpu::DeviceDescriptor descriptor{};
+                descriptor.SetUncapturedErrorCallback(
+                    [this](const wgpu::Device&, wgpu::ErrorType, wgpu::StringView message)
+                    {
+                        mInitializationError = "WebGPU validation error";
+                        if (message.length)
+                            mInitializationError += ": " + std::string(message.data, message.length);
+                    });
+
+                mAdapter.RequestDevice(&descriptor, wgpu::CallbackMode::AllowSpontaneous,
+                    [this](wgpu::RequestDeviceStatus deviceStatus, wgpu::Device device, wgpu::StringView deviceMessage)
+                    {
+                        if (deviceStatus != wgpu::RequestDeviceStatus::Success || !device)
+                        {
+                            mInitializationError = "WebGPU device request failed";
+                            if (deviceMessage.length)
+                                mInitializationError += ": " + std::string(deviceMessage.data, deviceMessage.length);
+                            return;
+                        }
+
+                        mOwnedDevice = device;
+                        mOwnedQueue = device.GetQueue();
+                        mDevice = mOwnedDevice.Get();
+                        mQueue = mOwnedQueue.Get();
+                        try
+                        {
+                            finishDeviceSetup();
+                        }
+                        catch (const std::exception& error)
+                        {
+                            mInitializationError = error.what();
+                            mDevice = nullptr;
+                            mQueue = nullptr;
+                            mOwnedQueue = {};
+                            mOwnedDevice = {};
+                        }
+                    });
+            });
+        return false;
 #else
         return false;
 #endif
     }
+
+#ifdef __EMSCRIPTEN__
+    void DirectWebGPU::finishDeviceSetup()
+    {
+        if (!mDevice || !mQueue)
+            throw std::runtime_error("WebGPU device did not expose a queue");
+
+        WGPULimits limits{};
+        if (wgpuDeviceGetLimits(mDevice, &limits) != WGPUStatus_Success
+            || !limits.maxBufferSize || !limits.maxStorageBufferBindingSize
+            || !limits.minStorageBufferOffsetAlignment)
+            throw std::runtime_error("Unable to query direct WebGPU buffer limits");
+
+        mBufferLimit = limits.maxBufferSize;
+        mBindingLimit = limits.maxStorageBufferBindingSize;
+        mStorageAlignment = limits.minStorageBufferOffsetAlignment;
+        ++mGeneration;
+    }
+#endif
 
     bool DirectWebGPU::ready() const noexcept
     {
@@ -96,16 +130,14 @@ namespace WebCuda
         mCachedBytes = 0;
         mBufferLimit = 0;
         mBindingLimit = 0;
-        if (mQueue)
-        {
-            wgpuQueueRelease(mQueue);
-            mQueue = nullptr;
-        }
-        if (mDevice)
-        {
-            wgpuDeviceRelease(mDevice);
-            mDevice = nullptr;
-        }
+        mDevice = nullptr;
+        mQueue = nullptr;
+        mOwnedQueue = {};
+        mOwnedDevice = {};
+        mAdapter = {};
+        mInstance = {};
+        mRequestStarted = false;
+        mInitializationError.clear();
 #endif
     }
 

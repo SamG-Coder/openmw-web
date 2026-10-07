@@ -5,9 +5,11 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+#include <string>
 
 #ifdef __EMSCRIPTEN__
 #include <webgpu/webgpu.h>
+#include <webgpu/webgpu_cpp.h>
 #endif
 
 namespace WebCuda
@@ -36,6 +38,11 @@ namespace WebCuda
 
         WGPUDevice device() const noexcept { return mDevice; }
         WGPUQueue queue() const noexcept { return mQueue; }
+        const wgpu::Instance& instanceObject() const noexcept { return mInstance; }
+        const wgpu::Adapter& adapterObject() const noexcept { return mAdapter; }
+        const wgpu::Device& deviceObject() const noexcept { return mOwnedDevice; }
+        const wgpu::Queue& queueObject() const noexcept { return mOwnedQueue; }
+        const std::string& initializationError() const noexcept { return mInitializationError; }
 
         UploadPtr acquireUpload();
         void submitUpload(Upload&);
@@ -56,6 +63,13 @@ namespace WebCuda
 
 #ifdef __EMSCRIPTEN__
         void recycleUpload(Upload*) noexcept;
+        void finishDeviceSetup();
+        wgpu::Instance mInstance;
+        wgpu::Adapter mAdapter;
+        wgpu::Device mOwnedDevice;
+        wgpu::Queue mOwnedQueue;
+        bool mRequestStarted = false;
+        std::string mInitializationError;
         WGPUDevice mDevice = nullptr;
         WGPUQueue mQueue = nullptr;
         std::vector<std::unique_ptr<Upload>> mFreeUploads;

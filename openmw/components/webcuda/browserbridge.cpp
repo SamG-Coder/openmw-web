@@ -10,15 +10,6 @@
 #include <emscripten.h>
 namespace
 {
-    struct RetainedPass
-    {
-        WebCuda::GeometryPacket geometry;
-        std::shared_ptr<const WebCuda::MaterialTable> table;
-        WebCuda::DirectWebGPU::UploadPtr directUpload;
-        std::vector<unsigned int> directRanges;
-        std::size_t directBytes = 0;
-    };
-
     constexpr std::size_t DirectRangeCount = 31;
     template<class T>
     bool appendDirectRange(std::vector<unsigned char>& bytes, std::vector<unsigned int>& ranges,
@@ -42,7 +33,7 @@ namespace
         return true;
     }
 
-    void buildDirectPacket(RetainedPass& retained)
+    void buildDirectPacket(WebCuda::RetainedPass& retained)
     {
         auto& direct=WebCuda::DirectWebGPU::instance();
         if(!direct.ready())return;
@@ -91,12 +82,23 @@ namespace
         retained.directRanges=std::move(ranges);retained.directBytes=bytes.size();
         if(!WebCuda::browserFrameActive())direct.submitUpload(*retained.directUpload);
     }
-    std::map<unsigned int, RetainedPass> retainedPasses;
+    std::map<unsigned int, WebCuda::RetainedPass> retainedPasses;
     unsigned int nextPassToken=0;
 }
-extern "C" EMSCRIPTEN_KEEPALIVE void omw_webcuda_release_pass(unsigned int token)
+const WebCuda::RetainedPass* WebCuda::retainedBrowserPass(unsigned int token) noexcept
+{
+    const auto found = retainedPasses.find(token);
+    return found == retainedPasses.end() ? nullptr : &found->second;
+}
+
+void WebCuda::releaseBrowserPass(unsigned int token) noexcept
 {
     retainedPasses.erase(token);
+}
+
+extern "C" EMSCRIPTEN_KEEPALIVE void omw_webcuda_release_pass(unsigned int token)
+{
+    WebCuda::releaseBrowserPass(token);
 }
 EM_JS_DEPS(omw_webgpu_packet_deps, "$WebGPU");
 EM_JS(int, omw_webcuda_submit_pass, (unsigned int token, unsigned int vertexEncoding,
@@ -215,8 +217,10 @@ namespace WebCuda
         auto tableOwner=sourceGeometry.triangles.empty()?emptyTable:captureMaterialTable(std::move(sourceTable));
         auto& retained=retainedPasses.emplace(token,RetainedPass{std::move(sourceGeometry),std::move(tableOwner)}).first->second;
         try {
-            if(browserFrameActive())trackBrowserPass(token);
-            buildDirectPacket(retained);
+            if(browserFrameActive())
+                trackBrowserPass(token);
+            else
+                buildDirectPacket(retained);
         } catch(...) {
             retainedPasses.erase(token);
             throw;

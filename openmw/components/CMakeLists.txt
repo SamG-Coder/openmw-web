@@ -2,7 +2,7 @@
 # See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 project (Components)
 
-add_component_dir(webcuda submission renderer geometrypacket materialstate materialtable browserbridge browserframe viewer directwebgpu)
+add_component_dir(webcuda submission renderer geometrypacket materialstate materialtable browserbridge browserframe viewer directwebgpu nativewebgpu)
 
 if(APPLE)
     set(BUNDLE_RESOURCES_DIR "${APP_BUNDLE_DIR}/Contents/Resources")
@@ -600,6 +600,7 @@ if (EMSCRIPTEN)
         webcuda/browserbridge.cpp
         webcuda/browserframe.cpp
         webcuda/directwebgpu.cpp
+        webcuda/nativewebgpu.cpp
         webcuda/viewer.cpp
         "${CMAKE_CURRENT_BINARY_DIR}/ub_webcuda.cpp"
         APPEND PROPERTY COMPILE_OPTIONS "--use-port=emdawnwebgpu"
