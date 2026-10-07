@@ -70,6 +70,20 @@ export class MaterialPipeline {
     this.textureResidency=new TextureResidency(runtime,{budgetBytes:textureBudget});
     this.vertexResidency=new ImmutableBufferResidency(runtime,{budgetBytes:64*1024*1024,label:'OpenMW resident vertex input arena',kind:'vertex stream'});
   }
+  prewarm(scene,width,height,pass={}) {
+    try {
+      if(!(scene?.triangles instanceof Uint32Array)||!(scene?.materials instanceof Uint32Array)
+        ||!(scene?.texels instanceof Uint32Array)||!(scene?.rasterParams instanceof Float32Array))return Promise.resolve();
+      const compact=Boolean((pass.targetId??0)&0x80000000);
+      const color=colorStorage(pass.colorFormat??0x8058),normal=colorStorage(pass.normalFormat??0x8058);
+      const params={width,height,capacity:0,raster_offset:0,boundary_offset:0,point_fade_offset:0,lighting_offset:0,
+        cluster_offset:0,fixed_offset:0,falloff_offset:0,fixed_enabled:0,normal_enabled:pass.normalTargetId?1:0,
+        normal_channels:normal.channels,normal_storage:normal.storage,color_channels:compact?0:color.channels,
+        color_storage:color.storage,depth_bits:depthStorage(pass.depthFormat??0x81a6),
+        stencil_enabled:(pass.stencilBits??0)||pass.stencilTargetId?1:0,sample_count:pass.sampleCount??1};
+      return this.rasterizer.prewarm(scene,params,pass,scene.triangles.length/4);
+    } catch(error) { return Promise.reject(error); }
+  }
   seedMultisample(source, samples, width, height, sampleCount) {
     this.validateMultisampleStorage(source,samples,width,height,sampleCount);
     this.runtime.batch().dispatch(this.kernels.seed_multisample.bind({source,samples},
