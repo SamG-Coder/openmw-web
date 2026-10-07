@@ -4,6 +4,7 @@
 #include <osg/Geometry>
 #include "renderer.hpp"
 #include "browserbridge.hpp"
+#include "directwebgpu.hpp"
 #include "shaderanalysis.hpp"
 #include <osgUtil/RenderStage>
 #include <osg/FrameBufferObject>
@@ -190,11 +191,16 @@ namespace WebCuda
     Viewer::Viewer()
     {
         setThreadingModel(SingleThreaded);
+        // Import the already-requested browser WebGPU device once. This is the
+        // migration point for issuing render commands directly from WASM via
+        // webgpu.h instead of rebuilding the render graph in JavaScript.
+        DirectWebGPU::instance().attachBrowserDevice();
         // The base constructor cannot dispatch to our virtual factory.
         getCamera()->setRenderer(createRenderer(getCamera()));
     }
     Viewer::~Viewer()
     {
+        DirectWebGPU::instance().shutdown();
         auto requests=std::move(mImageRequests);
         for(auto& [id,request]:requests) {
 #ifdef __EMSCRIPTEN__
