@@ -348,7 +348,7 @@ async function createWebGPUHost(Module,onError,releaseOwnership) {
     // Start compiling any cold fixed-state pipelines while OpenMW continues
     // capturing the rest of the frame. This removes first-use material stalls
     // from the actual render critical path.
-    captured.prewarm=pipeline.prewarm(packet.scene,packet.width,packet.height,captured);
+    captured.prewarm=Promise.resolve().then(()=>pipeline.prewarm(packet.scene,packet.width,packet.height,captured));
     captured.prewarm.catch(()=>{});
     frame.push(captured);lastState=state;state=null;return true;
   };
