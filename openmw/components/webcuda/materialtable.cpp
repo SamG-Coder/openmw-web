@@ -94,13 +94,10 @@ namespace WebCuda
     std::shared_ptr<const MaterialTable> captureMaterialTable(std::shared_ptr<const MaterialTable> source)
     {
         if(!source)throw std::invalid_argument("Missing material snapshot source");
-        if(!source->mAttachmentWords||source->mAttachmentsResolved)return source;
-        CaptureScope captureScope(CapturePhase::MaterialCopy);
-        // Clone only CPU data and metadata. No shadow/RTT pixel storage exists
-        // here to initialize, clone, or transport from the WASM heap.
-        auto snapshot=std::make_shared<MaterialTable>(*source);
-        snapshot->resolveAttachmentAddresses();
-        return snapshot;
+        // Keep deferred render-attachment addresses encoded in the immutable
+        // packet. The WebGPU preparation pass resolves them directly in the GPU
+        // atlas, avoiding a full MaterialTable clone on every camera boundary.
+        return source;
     }
 
     std::uint32_t MaterialTable::encodeGlyph(const DrawContext& context,const osg::Texture2D* texture,bool redCoverage,bool distanceField,float glyphDimension,float textureDimension,const float* backdrop)
