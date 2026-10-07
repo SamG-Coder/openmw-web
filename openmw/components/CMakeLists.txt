@@ -2,7 +2,7 @@
 # See WASM_ADAPTATIONS.md at the repository root for details of the changes.
 project (Components)
 
-add_component_dir(webcuda submission renderer geometrypacket materialstate materialtable browserbridge viewer)
+add_component_dir(webcuda submission renderer geometrypacket materialstate materialtable browserbridge viewer directwebgpu)
 
 if(APPLE)
     set(BUNDLE_RESOURCES_DIR "${APP_BUNDLE_DIR}/Contents/Resources")
