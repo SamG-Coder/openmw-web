@@ -73,7 +73,10 @@ EM_JS(void, omw_webcuda_capture_timings, (const double* values), {
         materialCopies:v[4],materialEncodes:v[5],geometryEncodes:v[6],atlasResizes:v[7]};
 })
 EM_JS(void, omw_webcuda_shader_analysis_stats, (double hits,double misses,double bypasses), {
-    Module.webcudaShaderAnalysisStats={hits:hits,misses:misses,bypasses:bypasses};
+    Module.webcudaShaderAnalysisStats={};
+    Module.webcudaShaderAnalysisStats.hits=hits;
+    Module.webcudaShaderAnalysisStats.misses=misses;
+    Module.webcudaShaderAnalysisStats.bypasses=bypasses;
 })
 EM_JS(void, omw_webcuda_snapshot, (unsigned int target,unsigned int width,unsigned int height), {
     Module.webcudaSnapshotPreviousFrame(target,width,height);
