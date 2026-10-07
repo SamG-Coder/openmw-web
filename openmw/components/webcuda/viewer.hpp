@@ -116,6 +116,15 @@ namespace WebCuda
             unsigned int resolveWidth=0,resolveHeight=0;
             const osg::Camera* passCamera=nullptr;
             std::vector<ResolveAttachment> resolveAttachments;
+            // JS-side pass state must be reopened when the parent resumes after
+            // a nested OSG camera. Clear is deliberately suppressed on resume.
+            std::uint32_t depthTarget=0,normalTarget=0,stencilTarget=0;
+            unsigned int colorFormat=0x8058,depthFormat=0x81A6,normalFormat=0x8058;
+            unsigned int stencilBits=0,clearColorMask=15,sampleCount=1;
+            int viewportX=0,viewportY=0;
+            unsigned int viewportWidth=0,viewportHeight=0;
+            float clearDepth=1.f;
+            int clearStencil=0;
         };
         std::vector<SavedStage> mStageStack;
         struct SavedTarget { std::shared_ptr<MaterialTable> table;unsigned int width,height;std::uint32_t target; };
