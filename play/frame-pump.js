@@ -24,16 +24,34 @@
       lastStart = null;
     }
     function schedule() {
-      if (stopped || pending) return;
-      pending = true;
+      if (stopped) return;
       var token = generation;
-      function post() {
-        if (stopped || token !== generation) return;
-        raf = timer = null;
-        channel.port2.postMessage({ generation: token, queuedAt: env.performance.now() });
+      if (env.document.hidden) {
+        if (timer !== null) return;
+        timer = env.setTimeout(function pulseHidden() {
+          timer = null;
+          if (stopped || token !== generation) return;
+          if (!pending) {
+            pending = true;
+            channel.port2.postMessage({ generation: token, queuedAt: env.performance.now() });
+          }
+          schedule();
+        }, 33);
+        return;
       }
-      if (env.document.hidden) timer = env.setTimeout(post, 33);
-      else raf = env.requestAnimationFrame(post);
+      if (raf !== null) return;
+      // Keep the browser's next-vsync callback armed independently of the
+      // engine tick. Scheduling rAF only after tick() completes can miss the
+      // compositor deadline and turn a small CPU spike into a full-frame hitch.
+      raf = env.requestAnimationFrame(function pulseVisible() {
+        raf = null;
+        if (stopped || token !== generation) return;
+        if (!pending) {
+          pending = true;
+          channel.port2.postMessage({ generation: token, queuedAt: env.performance.now() });
+        }
+        schedule();
+      });
     }
     channel.port1.onmessage = function (event) {
       if (stopped || !pending || event.data.generation !== generation) return;
